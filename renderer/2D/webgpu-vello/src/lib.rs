@@ -980,6 +980,58 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
     }
 
+    fn phased_fine_segment_seed_u(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        seg_lo: u32,
+        seg_target: u32,
+        target: &wgpu::TextureView,
+    ) {
+        let session = self.phased_session.as_mut().expect("phased_fine_segment_seed_u without phased_begin");
+        self.renderer
+            .inner
+            .phased_fine_segment_seed_u_into(session, device, queue, enc, seg_lo, seg_target, target)
+            .expect("phased_fine_segment_seed_u_into");
+    }
+
+    fn phased_fine_segment_rwu(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        seg_lo: u32,
+        seg_target: u32,
+        snap: &wgpu::TextureView,
+        slot10: Option<(bool, &wgpu::TextureView)>,
+        target: &wgpu::TextureView,
+    ) {
+        let session = self.phased_session.as_mut().expect("phased_fine_segment_rwu without phased_begin");
+        self.renderer
+            .inner
+            .phased_fine_segment_rwu_into(session, device, queue, enc, seg_lo, seg_target, snap, slot10, target)
+            .expect("phased_fine_segment_rwu_into");
+    }
+
+    fn phased_fine_segment_loadu(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        seg_lo: u32,
+        seg_target: u32,
+        snap: &wgpu::TextureView,
+        slot10: Option<(bool, &wgpu::TextureView)>,
+        out: &wgpu::TextureView,
+    ) {
+        let session = self.phased_session.as_mut().expect("phased_fine_segment_loadu without phased_begin");
+        self.renderer
+            .inner
+            .phased_fine_segment_loadu_into(session, device, queue, enc, seg_lo, seg_target, snap, slot10, out)
+            .expect("phased_fine_segment_loadu_into");
+    }
+
     fn phase_scratch_origins(&mut self, scratch_out: [u32; 2], scratch_in: [u32; 2]) {
         if let Some(session) = self.phased_session.as_mut() {
             session.set_scratch_origins(scratch_out, scratch_in);

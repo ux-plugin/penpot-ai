@@ -260,6 +260,60 @@ pub trait RasterBackend {
         unimplemented!("phased session is classic-only")
     }
 
+    /// Dispatch the SEED window over the PACKED accumulator (`fine_area_u`): clears to the base
+    /// color and writes the r32uint `target` (one `pack4x8unorm` texel per pixel, STORAGE_BINDING).
+    /// r32uint read-write storage is core WebGPU — this path needs no adapter features on any
+    /// platform. Classic-only; default panics.
+    fn phased_fine_segment_seed_u(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _enc: &mut wgpu::CommandEncoder,
+        _seg_lo: u32,
+        _seg_target: u32,
+        _target: &wgpu::TextureView,
+    ) {
+        unimplemented!("phased session is classic-only")
+    }
+
+    /// Dispatch an in-place COMPOSITE window over the packed accumulator (`fine_area_rwu*`):
+    /// `target` is read-modified-written per own pixel — an untouched tile keeps its pixels, so a
+    /// sparse window costs only its listed tiles. `snap` is the round's packed backdrop SNAPSHOT
+    /// (the accumulator is never bound readable — see the sink's snapshot blits); `slot10` is
+    /// `Some((is_draft, view))` for a chained input or blur draft. Classic-only; default panics.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    fn phased_fine_segment_rwu(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _enc: &mut wgpu::CommandEncoder,
+        _seg_lo: u32,
+        _seg_target: u32,
+        _snap: &wgpu::TextureView,
+        _slot10: Option<(bool, &wgpu::TextureView)>,
+        _target: &wgpu::TextureView,
+    ) {
+        unimplemented!("phased session is classic-only")
+    }
+
+    /// Dispatch a MATERIALIZE window whose backdrop is the packed snapshot (`fine_area_loadu*`):
+    /// `out` is the rgba8 draft (lease or fallback), `snap`/`slot10` as in
+    /// [`Self::phased_fine_segment_rwu`]. Classic-only; default panics.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    fn phased_fine_segment_loadu(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _enc: &mut wgpu::CommandEncoder,
+        _seg_lo: u32,
+        _seg_target: u32,
+        _snap: &wgpu::TextureView,
+        _slot10: Option<(bool, &wgpu::TextureView)>,
+        _out: &wgpu::TextureView,
+    ) {
+        unimplemented!("phased session is classic-only")
+    }
+
     /// Set the reach-crop origins for the NEXT `phased_fine_segment*` call: `scratch_out` shifts where
     /// the producer writes `output`, `scratch_in` where the consumer samples its scratch (`draft`/
     /// `input`). Consumed by that one dispatch, then reset — a following full-viewport call is inert, so

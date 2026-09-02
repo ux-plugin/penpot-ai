@@ -155,6 +155,10 @@ pub struct Compositor {
     sharp_pipeline: wgpu::RenderPipeline,
     /// The mask-clipped twin of `sharp_pipeline` (same layout as `masked_pipeline`).
     masked_sharp_pipeline: wgpu::RenderPipeline,
+    /// SrcOver blit whose SOURCE is the packed r32uint accumulator (`pack4x8unorm` texels): the
+    /// present path unpacks per texel with `textureLoad` (no sampler — 1:1 or nearest).
+    packed_pipeline: wgpu::RenderPipeline,
+    packed_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
 }
 
@@ -607,6 +611,79 @@ impl Compositor {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let packed_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("compositor packed blit"),
+            source: wgpu::ShaderSource::Wgsl(PACKED_SHADER.into()),
+        });
+        let packed_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("compositor packed bind layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let packed_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("compositor packed pipeline layout"),
+            bind_group_layouts: &[Some(&packed_layout)],
+            immediate_size: 0,
+        });
+        let packed_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("compositor packed pipeline"),
+            layout: Some(&packed_pl),
+            vertex: wgpu::VertexState {
+                module: &packed_shader,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &packed_shader,
+                entry_point: Some("fs"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         Self {
             pipeline,
             layout,
@@ -619,6 +696,8 @@ impl Compositor {
             dstout_pipeline,
             sharp_pipeline,
             masked_sharp_pipeline,
+            packed_pipeline,
+            packed_layout,
             sampler,
         }
     }
@@ -860,6 +939,65 @@ impl Compositor {
             multiview_mask: None,
         });
         pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.draw(0..4, 0..1);
+    }
+
+    /// [`Self::blit`] whose source is the PACKED r32uint accumulator: each fragment unpacks one
+    /// `pack4x8unorm` texel via `textureLoad` (no sampler — exact at 1:1, nearest otherwise).
+    pub fn blit_packed(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        target_size: (f32, f32),
+        blit: &Blit,
+    ) {
+        let (tw, th) = target_size;
+        let (dx, dy, dw, dh) = blit.dst;
+        let ndc_x = |x: f32| (x / tw) * 2.0 - 1.0;
+        let ndc_y = |y: f32| 1.0 - (y / th) * 2.0;
+        let (sw, sh) = blit.src_size;
+        let (sx, sy, srw, srh) = blit.src_rect;
+        let params = Params {
+            dst_min: [ndc_x(dx), ndc_y(dy)],
+            dst_max: [ndc_x(dx + dw), ndc_y(dy + dh)],
+            uv_min: [sx / sw, sy / sh],
+            uv_max: [(sx + srw) / sw, (sy + srh) / sh],
+            alpha: blit.alpha.clamp(0.0, 1.0),
+            _pad: [0.0; 3],
+        };
+        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("compositor packed params"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("compositor packed bind"),
+            layout: &self.packed_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(blit.src) },
+            ],
+        });
+        crate::vello::sink::note_passes(1);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("compositor packed blit"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.packed_pipeline);
         pass.set_bind_group(0, &bind, &[]);
         pass.draw(0..4, 0..1);
     }
@@ -1107,6 +1245,42 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
 fn fs(in: VSOut) -> @location(0) vec4<f32> {
     // Premultiplied source; scaling the whole RGBA by the layer opacity is the correct group fade.
     return textureSample(tex, samp, in.uv) * p.alpha;
+}
+"#;
+
+const PACKED_SHADER: &str = r#"
+struct Params {
+    dst_min: vec2<f32>,
+    dst_max: vec2<f32>,
+    uv_min: vec2<f32>,
+    uv_max: vec2<f32>,
+    alpha: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+};
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var tex: texture_2d<u32>;
+
+struct VSOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
+    let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
+    var out: VSOut;
+    out.pos = vec4<f32>(mix(p.dst_min, p.dst_max, corner), 0.0, 1.0);
+    out.uv = mix(p.uv_min, p.uv_max, corner);
+    return out;
+}
+
+@fragment
+fn fs(in: VSOut) -> @location(0) vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(tex));
+    let px = vec2<i32>(in.uv * dims);
+    return unpack4x8unorm(textureLoad(tex, px, 0).x) * p.alpha;
 }
 "#;
 

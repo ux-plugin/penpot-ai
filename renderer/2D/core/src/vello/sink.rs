@@ -1944,22 +1944,26 @@ impl Sink {
         let phase_usage = self.raster_usage
             | wgpu::TextureUsages::COPY_SRC
             | wgpu::TextureUsages::TEXTURE_BINDING;
-        // rw single-accumulator: a frame updates in place unless some mark GATHERS — a
-        // neighbourhood read (blur/warp/scatter) or any input-register operand needs the frozen
-        // ping-pong backdrop; a pointwise inline mark (a backdrop tint) reads only its own pixel.
-        let inline_only = marks.values().flatten().all(|m| {
-            m.ctl == 0
-                && (m.desc[0] as u32) & (crate::vello::bake::bits::WARP | crate::vello::bake::bits::BLUR | crate::vello::bake::bits::SCATTER)
-                    == 0
-                && m.rec.iter().all(|r| r[0] != 2.0)
-        });
-        let rw = backend.rw_accumulator() && format == wgpu::TextureFormat::Rgba8Unorm && inline_only;
-        let n_slots: usize = if rw { 1 } else { 2 };
-        let texs: Vec<wgpu::Texture> = (0..n_slots)
-            .map(|_| self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv phase"))
-            .collect();
-        let views: Vec<wgpu::TextureView> =
-            texs.iter().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default())).collect();
+        // THE accumulator: ONE packed r32uint texture (pack4x8unorm texels), updated IN PLACE by
+        // every accumulating window through core-portable read-write storage — no ping-pong, no
+        // second slot, no adapter features. Fine never reads it as a texture: its only reads are
+        // own-pixel RMW inside a dispatch, and encoder-level snapshot blits at round boundaries
+        // (below) into `snap`, which serves every backdrop read (`base_in`).
+        let acc_usage = wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::RENDER_ATTACHMENT;
+        let acc_tex = self.pool.acquire_target(device, width, acc_h, wgpu::TextureFormat::R32Uint, acc_usage, "wv acc");
+        let acc = acc_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let snap_tex = self.pool.acquire_target(
+            device,
+            width,
+            acc_h,
+            wgpu::TextureFormat::R32Uint,
+            wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            "wv snap",
+        );
+        let snap = snap_tex.create_view(&wgpu::TextureViewDescriptor::default());
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_ROUNDS").is_ok() {
             eprintln!(
@@ -2042,17 +2046,53 @@ impl Sink {
             (0..gathers.len()).any(|j| hit(rounds[j]) && draws_after(j) > 0)
                 || active_rounds.iter().any(|&r| hit(r))
         };
-        // Sparse dispatch lists: replay the loop's window partition, and for every materialize
-        // window whose round owns a packed lease, emit the exact tiles its in-window markers cover
-        // (a window has work on a tile ONLY where such a marker advanced it — see `marker_rects`).
-        // The list rides the tail of `effect_params`; the dispatch shrinks to one workgroup per
-        // listed tile (`phase_sparse_window`). Composite windows stay full-grid: under the ping-pong
-        // every tile must copy the backdrop forward. A window whose round fell back to a
-        // full-viewport draft also stays full-grid — its unstamped records read the draft anywhere.
+        // Sparse dispatch lists + snapshot rects, from ONE replay of the loop's window partition.
+        //
+        // Sparse: a window has work on a tile ONLY where a marker with an in-window round advanced
+        // it (`marker_rects` is exact), so every non-seed window shrinks to one workgroup per
+        // covered tile — the list rides the tail of `effect_params` (`phase_sparse_window`). The
+        // one exception stays full-grid: a materialize round that fell back to a full-viewport
+        // draft (its unstamped records read the draft anywhere, so every tile must store).
+        //
+        // Snapshots: the accumulator is a WRITE-ONLY target for fine — every backdrop read
+        // (`base_in`) is served by the `snap` texture, refreshed per window by encoder blits of the
+        // rects its marks can read: each mark's quad padded by its tap margin (3σ for a blur's
+        // escaped taps; a flat allowance for warp displacement, chromatic shift and flood offsets).
         #[cfg(not(target_arch = "wasm32"))]
         let sparse_on = std::env::var("WV_SPARSE").map_or(true, |v| v != "0");
         #[cfg(target_arch = "wasm32")]
         let sparse_on = true;
+        #[cfg(not(target_arch = "wasm32"))]
+        let snap_full = std::env::var("WV_SNAP_FULL").is_ok();
+        #[cfg(target_arch = "wasm32")]
+        let snap_full = false;
+        let snap_round_rects: HashMap<u32, Vec<[f32; 4]>> = {
+            use crate::vello::units::UnitOp;
+            let tap_pad = |node: usize| -> f32 {
+                match dag.nodes[node].op {
+                    UnitOp::Blur { sigma, .. } => 64.0_f32.max((3.0 * sigma).ceil() + 8.0),
+                    _ => 64.0,
+                }
+            };
+            let dev: HashMap<u128, [f32; 4]> =
+                gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
+            let mut m: HashMap<u32, Vec<[f32; 4]>> = HashMap::new();
+            for (gid, ms) in &marks {
+                let Some(&q) = dev.get(gid) else { continue };
+                for mk in ms {
+                    let pad = tap_pad(mk.node);
+                    m.entry(mk.round).or_default().push([q[0] - pad, q[1] - pad, q[2] + pad, q[3] + pad]);
+                }
+            }
+            for (j, &(_, _, kind)) in gathers.iter().enumerate() {
+                if kind == FX_STACK {
+                    let q = reaches[j];
+                    m.entry(rounds[j]).or_default().push([q[0] - 64.0, q[1] - 64.0, q[2] + 64.0, q[3] + 64.0]);
+                }
+            }
+            m
+        };
+        let mut snap_windows: HashMap<u32, Vec<[u32; 4]>> = HashMap::new();
         let sparse_windows: HashMap<u32, (u32, u32)> = {
             let wt = width.div_ceil(TILE_PX);
             let ht = acc_h.div_ceil(TILE_PX);
@@ -2064,16 +2104,43 @@ impl Sink {
                 if !window_has_draws(lo, hi) {
                     continue;
                 }
+                let in_window =
+                    |round: u32| round >= lo && (hi == crate::vello::rasterize::SEG_ALL || round < hi);
+                if lo != 0 {
+                    let mut rects: Vec<[u32; 4]> = Vec::new();
+                    let mut rect_area = 0u64;
+                    for (&round, rs) in &snap_round_rects {
+                        if !in_window(round) {
+                            continue;
+                        }
+                        for q in rs {
+                            let x0 = ((q[0].max(0.0) as u32) / TILE_PX * TILE_PX).min(width);
+                            let y0 = ((q[1].max(0.0) as u32) / TILE_PX * TILE_PX).min(acc_h);
+                            let x1 = ((q[2].max(0.0).ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(width);
+                            let y1 = ((q[3].max(0.0).ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(acc_h);
+                            if x1 > x0 && y1 > y0 {
+                                rect_area += u64::from(x1 - x0) * u64::from(y1 - y0);
+                                rects.push([x0, y0, x1, y1]);
+                            }
+                        }
+                    }
+                    if !rects.is_empty() {
+                        if snap_full || rect_area * 2 > u64::from(width) * u64::from(acc_h) {
+                            rects = vec![[0, 0, width, acc_h]];
+                        }
+                        snap_windows.insert(lo, rects);
+                    }
+                }
                 let eligible = sparse_on
                     && lo != 0
-                    && round_nodes.get(&lo).is_some_and(|nodes| {
-                        dag.binding_shape(nodes[0]).is_some_and(|shp| shp.to_draft)
-                            && atlas_of.contains_key(&nodes[0])
+                    && round_nodes.get(&lo).is_none_or(|nodes| {
+                        !dag.binding_shape(nodes[0]).is_some_and(|shp| shp.to_draft)
+                            || atlas_of.contains_key(&nodes[0])
                     });
                 if eligible {
                     let mut tiles: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
                     for &(round, rect) in &marker_rects {
-                        if round >= lo && (hi == crate::vello::rasterize::SEG_ALL || round < hi) {
+                        if in_window(round) {
                             let tx0 = ((rect[0].max(0.0) as u32) / TILE_PX).min(wt.saturating_sub(1));
                             let ty0 = ((rect[1].max(0.0) as u32) / TILE_PX).min(ht.saturating_sub(1));
                             let tx1 = ((rect[2].max(0.0).ceil() as u32).div_ceil(TILE_PX)).clamp(tx0 + 1, wt);
@@ -2291,11 +2358,12 @@ impl Sink {
 
         let _tpl = crate::vello::prof::now();
         let mut window_lo = 0u32;
-        let mut cur: Option<usize> = None;
+        let mut seeded = false;
+        // Clearing the packed accumulator: the clear value is the premultiplied background packed
+        // as one u32 texel (the same encoding `fine_area_u`'s base-color seed writes).
         let seed_clear = |enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
-            let bg = crate::vello::abi::background().components;
-            Compositor::clear(enc, view,
-                [f64::from(bg[0]), f64::from(bg[1]), f64::from(bg[2]), f64::from(bg[3])], None);
+            let bg = crate::vello::abi::background().premultiply().to_rgba8().to_u32();
+            Compositor::clear(enc, view, [f64::from(bg), 0.0, 0.0, 0.0], None);
         };
         for r in 1..=max_round + 1 {
             // The extra iteration is the FINAL window ([last, SEG_ALL)) — same dispatch, open end.
@@ -2316,7 +2384,7 @@ impl Sink {
                 }
                 note_passes(2);
                 #[cfg(not(target_arch = "wasm32"))]
-                if std::env::var("WV_DBG_WIN").is_ok() { eprintln!("WV_DBG_WIN: [{window_lo},{hi}) nodes={:?} cur={cur:?}", round_nodes.get(&window_lo)); }
+                if std::env::var("WV_DBG_WIN").is_ok() { eprintln!("WV_DBG_WIN: [{window_lo},{hi}) nodes={:?} seeded={seeded}", round_nodes.get(&window_lo)); }
                 if let Some(unit_nodes) = round_nodes.get(&window_lo) {
                     // Shape-driven dispatch: the round's binding shape — not a winner node's op —
                     // decides the pass: what fills fine's three slots and which permutation reads slot
@@ -2392,32 +2460,57 @@ impl Sink {
                             None => acquire(),
                         }
                     };
-                    if shp.to_draft {
-                        if let Some(&(sb, sn)) = sparse_windows.get(&window_lo) {
-                            backend.phase_sparse_window(sb, sn);
+                    if let Some(&(sb, sn)) = sparse_windows.get(&window_lo) {
+                        backend.phase_sparse_window(sb, sn);
+                    }
+                    // Refresh the window's backdrop snapshot: encoder blits of exactly the rects
+                    // this window's marks can read, accumulator -> snap at identical coordinates
+                    // (no record shifts). Copy cost scales with effect reach, not the viewport.
+                    if let Some(rects) = snap_windows.get(&window_lo) {
+                        for r4 in rects {
+                            enc.copy_texture_to_texture(
+                                wgpu::TexelCopyTextureInfo {
+                                    texture: &acc_tex,
+                                    mip_level: 0,
+                                    origin: wgpu::Origin3d { x: r4[0], y: r4[1], z: 0 },
+                                    aspect: wgpu::TextureAspect::All,
+                                },
+                                wgpu::TexelCopyTextureInfo {
+                                    texture: &snap_tex,
+                                    mip_level: 0,
+                                    origin: wgpu::Origin3d { x: r4[0], y: r4[1], z: 0 },
+                                    aspect: wgpu::TextureAspect::All,
+                                },
+                                wgpu::Extent3d {
+                                    width: r4[2] - r4[0],
+                                    height: r4[3] - r4[1],
+                                    depth_or_array_layers: 1,
+                                },
+                            );
                         }
+                    }
+                    if shp.to_draft {
                         let dv = match (shp.base, shp.input) {
                             (Slot::Backdrop, Slot::None) => {
-                                let base = cur.map(|c| views[c].clone()).expect("a backdrop materialize reads the accumulator");
                                 let dv = draft_target(backend, rep);
-                                backend.phased_fine_segment(device, queue, &mut enc, window_lo, hi, Some(&base), &dv);
+                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, None, &dv);
                                 dv
                             }
                             (Slot::Backdrop, Slot::Source) => {
-                                // A frost warp over a sampled (SDF) field: base = the backdrop, slot 10
-                                // = the baked SDF, materialize the refracted sample for the blur chain.
-                                let base = cur.map(|c| views[c].clone()).expect("a backdrop materialize reads the accumulator");
+                                // A frost warp over a sampled (SDF) field: base = the backdrop
+                                // snapshot, slot 10 = the baked SDF, materialize the refracted
+                                // sample for the blur chain.
                                 let src = read_edge(rep)
                                     .and_then(|e| node_scratch.get(&e))
                                     .expect("SDF baked for the round")
                                     .clone();
                                 let dv = draft_target(backend, rep);
-                                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &base, &src, &dv);
+                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, Some((false, &src)), &dv);
                                 dv
                             }
                             (Slot::Source, Slot::Source) => {
                                 // Materialize from a rasterized source: base_in = input_in = the round's
-                                // co-located source texture.
+                                // co-located source texture (rgba8 — no backdrop involved).
                                 let sil = read_edge(rep)
                                     .and_then(|e| node_scratch.get(&e))
                                     .expect("source co-located for the round")
@@ -2427,22 +2520,28 @@ impl Sink {
                                 dv
                             }
                             (_, Slot::Draft(_)) => {
-                                // Materialize from a prior draft; base_in is the chain's root surface,
-                                // and the slot-10 permutation follows the shape's `draft_taps`.
+                                // Materialize from a prior draft. A Source base keeps the rgba8
+                                // root-surface path; a Backdrop base reads the snapshot.
                                 let src = read_edge(rep)
                                     .and_then(|e| node_scratch.get(&e))
                                     .expect("draft aliased for the round")
                                     .clone();
-                                let base = match shp.base {
-                                    Slot::Source => dag_base_rasterize(&dag, rep).and_then(|rz| node_scratch.get(&rz)).cloned(),
-                                    _ => cur.map(|c| views[c].clone()),
-                                }
-                                .expect("materialize base bound");
                                 let dv = draft_target(backend, rep);
-                                if shp.draft_taps {
-                                    backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, hi, &base, &src, &dv);
-                                } else {
-                                    backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &base, &src, &dv);
+                                match shp.base {
+                                    Slot::Source => {
+                                        let base = dag_base_rasterize(&dag, rep)
+                                            .and_then(|rz| node_scratch.get(&rz))
+                                            .cloned()
+                                            .expect("materialize base bound");
+                                        if shp.draft_taps {
+                                            backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, hi, &base, &src, &dv);
+                                        } else {
+                                            backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &base, &src, &dv);
+                                        }
+                                    }
+                                    _ => {
+                                        backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, Some((shp.draft_taps, &src)), &dv);
+                                    }
                                 }
                                 dv
                             }
@@ -2452,49 +2551,68 @@ impl Sink {
                             node_scratch.insert(n, dv.clone());
                         }
                     } else {
-                        let c = cur.expect("a composite reads the accumulator");
-                        let out = 1 - c;
-                        match shp.input {
+                        debug_assert!(seeded, "a composite window runs after the base window seeded the accumulator");
+                        let src;
+                        let slot10 = match shp.input {
                             Slot::Draft(_) if shp.draft_taps => {
-                                let src = read_edge(rep)
+                                src = read_edge(rep)
                                     .and_then(|e| node_scratch.get(&e))
                                     .expect("draft aliased for the round")
                                     .clone();
-                                backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, hi, &views[c], &src, &views[out]);
+                                Some((true, &src))
                             }
                             Slot::Draft(_) | Slot::Source => {
-                                let src = read_edge(rep)
+                                src = read_edge(rep)
                                     .and_then(|e| node_scratch.get(&e))
                                     .expect("slot-10 source bound")
                                     .clone();
-                                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &views[c], &src, &views[out]);
+                                Some((false, &src))
                             }
-                            Slot::None => {
-                                backend.phased_fine_segment(device, queue, &mut enc, window_lo, hi, Some(&views[c]), &views[out]);
-                            }
+                            Slot::None => None,
                             other => panic!("unit dispatch: unexpected composite input {other:?}"),
-                        }
-                        cur = Some(out);
+                        };
+                        backend.phased_fine_segment_rwu(device, queue, &mut enc, window_lo, hi, &snap, slot10, &acc);
                     }
-                } else if rw {
-                    // The FIRST window keeps the plain clearing permutation; the rest update in place.
-                    if cur.is_none() {
-                        backend.phased_fine_segment(device, queue, &mut enc, window_lo, hi, None, &views[0]);
-                        cur = Some(0);
-                    } else {
-                        backend.phased_fine_segment_rw(device, queue, &mut enc, window_lo, hi, &views[0]);
-                    }
+                } else if !seeded {
+                    // The base window: fine_area_u seeds the packed accumulator from the config
+                    // base color and paints the round-0 draws.
+                    backend.phased_fine_segment_seed_u(device, queue, &mut enc, window_lo, hi, &acc);
+                    seeded = true;
                 } else {
-                    // A plain ping-pong window: read the current accumulator, write the other slot.
-                    let out = cur.map_or(0, |c| 1 - c);
-                    let base = cur.map(|c| &views[c]);
-                    backend.phased_fine_segment(device, queue, &mut enc, window_lo, hi, base, &views[out]);
-                    cur = Some(out);
+                    // A plain draw window (no unit nodes): in-place update. Its inline marks read
+                    // the backdrop through the snapshot, refreshed for this window's rects.
+                    if let Some(&(sb, sn)) = sparse_windows.get(&window_lo) {
+                        backend.phase_sparse_window(sb, sn);
+                    }
+                    if let Some(rects) = snap_windows.get(&window_lo) {
+                        for r4 in rects {
+                            enc.copy_texture_to_texture(
+                                wgpu::TexelCopyTextureInfo {
+                                    texture: &acc_tex,
+                                    mip_level: 0,
+                                    origin: wgpu::Origin3d { x: r4[0], y: r4[1], z: 0 },
+                                    aspect: wgpu::TextureAspect::All,
+                                },
+                                wgpu::TexelCopyTextureInfo {
+                                    texture: &snap_tex,
+                                    mip_level: 0,
+                                    origin: wgpu::Origin3d { x: r4[0], y: r4[1], z: 0 },
+                                    aspect: wgpu::TextureAspect::All,
+                                },
+                                wgpu::Extent3d {
+                                    width: r4[2] - r4[0],
+                                    height: r4[3] - r4[1],
+                                    depth_or_array_layers: 1,
+                                },
+                            );
+                        }
+                    }
+                    backend.phased_fine_segment_rwu(device, queue, &mut enc, window_lo, hi, &snap, None, &acc);
                 }
                 window_lo = r;
-            } else if cur.is_none() {
-                seed_clear(&mut enc, &views[0]);
-                cur = Some(0);
+            } else if !seeded {
+                seed_clear(&mut enc, &acc);
+                seeded = true;
             }
             let mut i = 0;
             while i < sil_live.len() {
@@ -2513,27 +2631,13 @@ impl Sink {
         for (t, _) in sil_live.drain(..) {
             self.pool.release(t);
         }
-        let final_slot = match cur {
-            Some(c) => c,
-            None => {
-                seed_clear(&mut enc, &views[0]);
-                0
-            }
-        };
+        if !seeded {
+            seed_clear(&mut enc, &acc);
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(v) = std::env::var("WV_DUMP_SCRATCH")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .and_then(|n| node_scratch.get(&n))
-        {
-            Compositor::clear(&mut enc, &views[final_slot], [0.0, 0.0, 0.0, 0.0], None);
-            self.compositor.blit(device, &mut enc, &views[final_slot], acc_sz, &Blit {
-                src: v,
-                dst: (0.0, 0.0, acc_sz.0, acc_sz.1),
-                src_rect: (0.0, 0.0, acc_sz.0, acc_sz.1),
-                src_size: acc_sz,
-                alpha: 1.0,
-            });
+        if std::env::var("WV_DUMP_SCRATCH").is_ok() {
+            let _ = &node_scratch;
+            eprintln!("WV_DUMP_SCRATCH: unsupported on the packed accumulator (r32uint target)");
         }
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_ALLOC").is_ok() {
@@ -2542,15 +2646,14 @@ impl Sink {
             let lives = dag.materialized_lives(&sched_dbg);
             let (peak, peak_round) =
                 crate::vello::frame_dag::FrameDag::peak_scratch_bytes(&lives);
-            let slot_bytes = (n_slots as u64) * u64::from(width) * u64::from(acc_h) * 4;
+            let slot_bytes = 2 * u64::from(width) * u64::from(acc_h) * 4;
             let draft_bytes: u64 =
                 draft_texs.iter().map(|t| u64::from(t.width()) * u64::from(t.height()) * 4).sum();
             eprintln!(
-                "WV_DBG_ALLOC: planned lives={} peak={:.1}MB@r{} | executor: slots={}x{}x{} ({:.1}MB) loop-drafts={} ({:.1}MB, atlas={:?}) sil-groups={} sil-peak={sil_peak}",
+                "WV_DBG_ALLOC: planned lives={} peak={:.1}MB@r{} | executor: acc+snap {}x{} ({:.1}MB) loop-drafts={} ({:.1}MB, atlas={:?}) sil-groups={} sil-peak={sil_peak}",
                 lives.len(),
                 mb(peak),
                 peak_round,
-                n_slots,
                 width,
                 acc_h,
                 mb(slot_bytes),
@@ -2579,9 +2682,9 @@ impl Sink {
         crate::vello::prof::dbg_add(27, crate::vello::prof::now() - _tpl);
 
         if let Some(p) = self.pass_prof.as_mut() {
-            p.stamp(&mut enc, &views[final_slot], crate::vello::graph::prof_bucket::OTHER);
+            p.stamp(&mut enc, &acc, crate::vello::graph::prof_bucket::OTHER);
         }
-        self.present_final(&mut enc, device, &sw_view, &views[final_slot], width, height, format, sz, acc_sz, full_view);
+        self.present_final(&mut enc, device, &sw_view, &acc, width, height, format, sz, acc_sz, full_view);
         if let Some(p) = self.pass_prof.as_mut() {
             p.stamp(&mut enc, &sw_view, crate::vello::graph::prof_bucket::SWAP_BLIT);
         }
@@ -2609,7 +2712,8 @@ impl Sink {
         if let Some(p) = self.pass_prof.as_mut() {
             p.resolve(&mut enc);
         }
-        drop(views);
+        drop(acc);
+        drop(snap);
         crate::vello::prof::inc_submit();
         queue.submit([enc.finish()]);
         backend.after_submit();
@@ -2619,9 +2723,8 @@ impl Sink {
         if let Some(p) = self.pass_prof.as_mut() {
             p.after_submit();
         }
-        for t in texs {
-            self.frame_transient.push(t);
-        }
+        self.frame_transient.push(acc_tex);
+        self.frame_transient.push(snap_tex);
     }
 
     /// A full-viewport 1:1 src-over blit of `src` onto `target`.
@@ -2687,11 +2790,11 @@ impl Sink {
             self.ensure_canvas(device, width, height, format);
             let cv = self.canvas.as_ref().expect("canvas ensured").1.clone();
             Compositor::clear(enc, &cv, [0.0, 0.0, 0.0, 0.0], None);
-            self.compositor.blit(device, enc, &cv, sz, &viewport);
-            self.compositor.blit(device, enc, sw_view, sz, &viewport);
+            self.compositor.blit_packed(device, enc, &cv, sz, &viewport);
+            self.compositor.blit_packed(device, enc, sw_view, sz, &viewport);
             self.canvas_view = Some(full_view);
         } else {
-            self.compositor.blit(device, enc, sw_view, sz, &viewport);
+            self.compositor.blit_packed(device, enc, sw_view, sz, &viewport);
         }
     }
 
