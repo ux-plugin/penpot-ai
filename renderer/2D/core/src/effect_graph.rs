@@ -230,6 +230,26 @@ pub(crate) fn unit_pass(op: UnitKind, w: f32, h: f32, colour: [f32; 4]) -> Effec
     }
 }
 
+/// The **radial** falloff field: specular and mask fade linearly from 1 at the circle's centre
+/// (`u[0].zw`) to 0 at its radius (`u[1].x`) — what a background field-tint's gradient measures.
+/// A circle distance plus the ordinary inward [`crate::field::FieldOp::Ramp`]: `-(d - R)/r` with
+/// `R = max(r, 1)` is `clamp(1 - length/r, 0, 1)` for any real radius, and the sub-pixel clamp in
+/// the source keeps a degenerate radius from dividing by zero.
+#[must_use]
+pub fn radial_field_program() -> crate::field::FieldProgram {
+    use crate::field::{FieldOp, FieldRef, FieldSource, Slot, Slot2};
+    crate::field::FieldProgram {
+        nodes: vec![
+            FieldOp::Distance(FieldSource::Circle {
+                centre: Slot2::new(0, 2),
+                radius: Slot::new(1, 0),
+            }),
+            FieldOp::Ramp { d: FieldRef::Node(0), edge: Slot::new(1, 0), clamp_edge_to_extent: false },
+        ],
+        outputs: vec![("specular", FieldRef::Node(1)), ("mask", FieldRef::Node(1))],
+    }
+}
+
 /// The **texture** effect's field: fractal noise, read as a centred displacement. It measures no
 /// distance and so declares no source — the operators are the whole program.
 #[must_use]

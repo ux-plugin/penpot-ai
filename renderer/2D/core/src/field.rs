@@ -42,6 +42,10 @@ pub enum FieldSource {
     /// source this one cannot be re-derived per pixel — the path *is* the parameter — so it is baked
     /// once per shape and cached across frames.
     Sampled { centre: Slot2, half: Slot2, decode: Slot },
+    /// Analytic circle: `length(p) - radius`, with the radius clamped up to one device pixel so the
+    /// ramp above a degenerate source never divides by (near) zero. The radial falloff field —
+    /// what a background field-tint fades by.
+    Circle { centre: Slot2, radius: Slot },
 }
 
 /// A reference to one scalar in the consumer's uniform: `vec4` index and component.
@@ -245,7 +249,7 @@ impl FieldProgram {
     }
 
     /// The shape this program measures distance from, if it has one.
-    fn source(&self) -> Option<FieldSource> {
+    pub(crate) fn source(&self) -> Option<FieldSource> {
         self.nodes.iter().find_map(|n| match n {
             FieldOp::Distance(s) => Some(*s),
             _ => None,
@@ -266,6 +270,16 @@ impl FieldProgram {
             panic!("this operator needs a shape source; the program has none")
         };
         source_centre(src).wgsl()
+    }
+
+    /// The uniform slot the field's coordinate anchor lives in — the declared source's centre.
+    /// This is what lets an emitter stamp the anchor into an operand record uniformly, table-driven,
+    /// instead of matching on program ids; a shapeless program (pure noise) has no centre and
+    /// declares its anchor in its registry entry instead
+    /// ([`crate::vello::fine_field::programs`]).
+    #[must_use]
+    pub fn anchor(&self) -> Option<Slot2> {
+        self.source().map(source_centre)
     }
 
     /// The operator implementations this program needs, as WGSL. Emitting only what is used keeps a
@@ -318,14 +332,17 @@ impl FieldProgram {
 /// measures distance to.
 fn source_centre(src: FieldSource) -> Slot2 {
     match src {
-        FieldSource::RoundedBox { centre, .. } | FieldSource::Sampled { centre, .. } => centre,
+        FieldSource::RoundedBox { centre, .. }
+        | FieldSource::Sampled { centre, .. }
+        | FieldSource::Circle { centre, .. } => centre,
     }
 }
 
-/// The half-extent slot of any source.
+/// The half-extent slot of any source that has one.
 fn source_half(src: FieldSource) -> Slot2 {
     match src {
         FieldSource::RoundedBox { half, .. } | FieldSource::Sampled { half, .. } => half,
+        FieldSource::Circle { .. } => panic!("a circle source has no half-extents"),
     }
 }
 
@@ -334,8 +351,20 @@ fn source_half(src: FieldSource) -> Slot2 {
 /// and no operator above this line knows which happened.
 fn source_wgsl(src: FieldSource) -> String {
     match src {
+        FieldSource::RoundedBox { .. } => {
+            format!("{SDF_ROUNDED_BOX}{}", source_distance_fn(src))
+        }
+        FieldSource::Sampled { .. } | FieldSource::Circle { .. } => source_distance_fn(src),
+    }
+}
+
+/// The `fieldDistance` function alone, without the shape constant it may lean on — what a consumer
+/// that hosts several programs in one shader ([`crate::vello::fine_field`]) emits per program,
+/// after emitting each shape constant once.
+pub(crate) fn source_distance_fn(src: FieldSource) -> String {
+    match src {
         FieldSource::RoundedBox { half, corner, .. } => format!(
-            "{SDF_ROUNDED_BOX}\nfn fieldDistance(gi: u32, p: vec2<f32>) -> f32 {{\n    return sdfRoundedBox(p, {h}, min({r}, min({h}.x, {h}.y)));\n}}\n",
+            "\nfn fieldDistance(gi: u32, p: vec2<f32>) -> f32 {{\n    return sdfRoundedBox(p, {h}, min({r}, min({h}.x, {h}.y)));\n}}\n",
             h = half.wgsl(),
             r = corner.wgsl()
         ),
@@ -343,6 +372,10 @@ fn source_wgsl(src: FieldSource) -> String {
             "\nfn fieldDistance(gi: u32, p: vec2<f32>) -> f32 {{\n    let uv = p / (2.0 * {h}) + vec2<f32>(0.5, 0.5);\n    return (textureSampleLevel(fieldTex, samp, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).r - 0.5) * {d};\n}}\n",
             h = half.wgsl(),
             d = decode.wgsl()
+        ),
+        FieldSource::Circle { radius, .. } => format!(
+            "\nfn fieldDistance(gi: u32, p: vec2<f32>) -> f32 {{\n    return length(p) - max({r}, 1.0);\n}}\n",
+            r = radius.wgsl()
         ),
     }
 }

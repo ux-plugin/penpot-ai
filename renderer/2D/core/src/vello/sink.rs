@@ -1211,10 +1211,7 @@ impl Sink {
                             desc[14..18].copy_from_slice(&c);
                         }
                         let mut rec = [[0.0f32; 4]; 4];
-                        if matches!(desc[1] as u32, 1 | 3) {
-                            rec[3][1] = desc[4];
-                            rec[3][2] = desc[5];
-                        }
+                        crate::vello::bake::stamp_field_anchor(&desc, &mut rec);
                         out.push(UnitMark {
                             node: compose_idx,
                             round: sched.round[compose_idx],
@@ -1347,17 +1344,7 @@ impl Sink {
                         {
                             rec[2][0] = 2.0;
                         }
-                        match desc[1] as u32 {
-                            1 | 3 => {
-                                rec[3][1] = desc[4];
-                                rec[3][2] = desc[5];
-                            }
-                            2 => {
-                                rec[3][1] = desc[10];
-                                rec[3][2] = desc[11];
-                            }
-                            _ => {}
-                        }
+                        crate::vello::bake::stamp_field_anchor(&desc, &mut rec);
                         out.push(UnitMark { node: i, round: sched.round[i], desc, rec, ctl, masked, band, off: 0 });
                     }
                     // A band whose flood coverage the marker's own area cannot reproduce (`analytic:

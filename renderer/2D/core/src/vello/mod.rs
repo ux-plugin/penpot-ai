@@ -22,6 +22,7 @@ pub mod blend;
 pub mod draw;
 pub mod editor;
 pub mod fx;
+pub mod fine_field;
 pub mod frame_dag;
 pub mod units;
 pub mod gputime;

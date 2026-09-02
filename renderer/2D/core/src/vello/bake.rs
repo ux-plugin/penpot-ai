@@ -239,6 +239,28 @@ pub fn bake_unit(op: &UnitOp, policy: Policy) -> [f32; 26] {
     }
 }
 
+/// Stamp a descriptor's field ANCHOR into operand record 3 (`rec[3].yz`) — the device point the
+/// program measures its field relative to. WHERE the anchor lives in the uniform is each program's
+/// declared fact ([`crate::vello::fine_field::programs`], the source's centre slot), so this is a
+/// table lookup, never a per-program branch; a program with no anchor (or no field at all) leaves
+/// the record untouched.
+pub fn stamp_field_anchor(desc: &[f32; 26], rec: &mut [[f32; 4]; 4]) {
+    static ANCHORS: std::sync::OnceLock<Vec<(u32, usize)>> = std::sync::OnceLock::new();
+    let table = ANCHORS.get_or_init(|| {
+        crate::vello::fine_field::programs()
+            .iter()
+            .filter_map(|e| {
+                e.anchor.map(|s| (e.id, 2 + 4 * usize::from(s.vec4) + usize::from(s.comp)))
+            })
+            .collect()
+    });
+    let id = desc[1] as u32;
+    if let Some(&(_, i)) = table.iter().find(|&&(p, _)| p == id) {
+        rec[3][1] = desc[i];
+        rec[3][2] = desc[i + 1];
+    }
+}
+
 /// The field program a run measures: a lens field when any unit reads it (a head or a field-measuring
 /// pointwise), else no field (a plain stamp). A radial/sampled/custom field is set by the effect at
 /// bake time — this covers the common lens case.

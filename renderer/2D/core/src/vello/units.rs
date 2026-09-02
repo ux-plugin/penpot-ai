@@ -528,7 +528,7 @@ fn lens_field_program_with(source: crate::field::FieldSource) -> crate::field::F
 /// The lens's specular streak: a Gaussian band across the bevel, modulated by how squarely the
 /// surface faces the light. The band is [`crate::field::FIELD_BAND`] — the same operator a stroke or
 /// an outline uses — and only the lighting term below is particular to lens.
-const UNIT_SPECULAR: &str = r#"
+pub(crate) const UNIT_SPECULAR: &str = r#"
 fn unitSpecular(t: f32, bezel: f32, lightAngle: f32, dir: vec2<f32>, scale: f32) -> f32 {
     if (t <= 0.0 || t >= 1.0) { return 0.0; }
     let band = fieldBand(t * bezel, 2.0 * scale, scale);
@@ -539,16 +539,10 @@ fn unitSpecular(t: f32, bezel: f32, lightAngle: f32, dir: vec2<f32>, scale: f32)
 }
 "#;
 
-/// `computeField`, generated from [`lens_field_program`] plus the lens-specific assembly. The
-/// early-out sits immediately after the distance so nothing beyond the shape is evaluated, which is
-/// why the program is emitted in two runs rather than one.
-pub(crate) fn field_prelude(p: &crate::field::FieldProgram) -> String {
-    // A lens declares `refracted`, and only a lens wants the bezel/zoom/specular assembly below.
-    // Any other program — a procedural displacement, a stroke, a bevel — is packed straight from
-    // whatever it says it produces, defaulting to no displacement and full coverage. This is the
-    // seam that lets `computeField` serve a field with no shape at all.
-    let tail = if p.declares("refracted") {
-        r#"    let bezel = min(fieldU(gi, 2u).x, min(fieldU(gi, 1u).x, fieldU(gi, 1u).y));
+/// The lens-specific `computeField` assembly — edge boost, zoom, specular — over the outputs
+/// [`lens_field_program`] declares. In `fieldU(gi, n)` slot form; [`super::fine_field`] re-emits it
+/// through its dialect transform so fine's lens arm and the über lens stay one text.
+pub(crate) const LENS_ASSEMBLY: &str = r#"    let bezel = min(fieldU(gi, 2u).x, min(fieldU(gi, 1u).x, fieldU(gi, 1u).y));
     var disp = refracted * scale;
     let edgeFade = pow(1.0 - edgeT, 1.5);
     disp = disp * (1.0 + fieldU(gi, 3u).z * edgeFade);
@@ -557,15 +551,31 @@ pub(crate) fn field_prelude(p: &crate::field::FieldProgram) -> String {
     dpx = dpx + localPos * zoomFactor;
     let specular = unitSpecular(edgeT, bezel, fieldU(gi, 2u).w, dir, scale);
     return vec4<f32>(dpx.x, dpx.y, specular, mask);
-"#
-        .to_string()
+"#;
+
+/// Pack a non-lens program's declared outputs as the `(displacement.xy, specular, mask)` field
+/// vector, defaulting each undeclared component — no displacement, no shine, full coverage.
+pub(crate) fn generic_field_pack(p: &crate::field::FieldProgram) -> String {
+    format!(
+        "    return vec4<f32>({d}.x, {d}.y, {s}, {m});\n",
+        d = if p.declares("displacement") { "displacement" } else { "vec2<f32>(0.0)" },
+        s = if p.declares("specular") { "specular" } else { "0.0" },
+        m = if p.declares("mask") { "mask" } else { "1.0" },
+    )
+}
+
+/// `computeField`, generated from [`lens_field_program`] plus the lens-specific assembly. The
+/// early-out sits immediately after the distance so nothing beyond the shape is evaluated, which is
+/// why the program is emitted in two runs rather than one.
+pub(crate) fn field_prelude(p: &crate::field::FieldProgram) -> String {
+    // A lens declares `refracted`, and only a lens wants the bezel/zoom/specular assembly. Any
+    // other program — a procedural displacement, a stroke, a bevel — is packed straight from
+    // whatever it says it produces, defaulting to no displacement and full coverage. This is the
+    // seam that lets `computeField` serve a field with no shape at all.
+    let tail = if p.declares("refracted") {
+        LENS_ASSEMBLY.to_string()
     } else {
-        format!(
-            "    return vec4<f32>({d}.x, {d}.y, {s}, {m});\n",
-            d = if p.declares("displacement") { "displacement" } else { "vec2<f32>(0.0)" },
-            s = if p.declares("specular") { "specular" } else { "0.0" },
-            m = if p.declares("mask") { "mask" } else { "1.0" },
-        )
+        generic_field_pack(p)
     };
     // The outside-the-shape early-out only exists for a program measuring distance from a shape.
     let (guard, distance, rest) = if p.declares("dist") {
