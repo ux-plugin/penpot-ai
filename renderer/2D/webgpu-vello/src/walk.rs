@@ -86,6 +86,15 @@ pub struct BodyCache {
     pub misses: u64,
 }
 
+impl BodyCache {
+    /// Drop every fragment. Called when a shared registry a fragment can bake from advances —
+    /// a new font face (re-shapes existing text) or a newly uploaded image/diamond bake — since
+    /// those change rendering without any node revision bump.
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
+}
+
 /// [`draw_scene_range`] with fragment splicing for leaf bodies — the whole-viewport walk's
 /// production path. Containers, masks and clips walk exactly as [`draw_node`] does.
 pub fn draw_scene_range_cached<E: DrawEnv>(

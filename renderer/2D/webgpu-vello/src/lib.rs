@@ -694,7 +694,9 @@ impl ClassicBackend {
     /// render. The wasm shell calls this once per frame before the sink runs.
     pub fn upload_pending_images(&mut self) {
         render_core::vello::abi::stage_diamond_bakes();
+        let mut any = false;
         for img in render_core::vello::abi::take_pending_images() {
+            any = true;
             let expected = (img.width as usize) * (img.height as usize) * 4;
             if img.width == 0 || img.height == 0 || img.rgba.len() != expected {
                 continue;
@@ -711,6 +713,9 @@ impl ClassicBackend {
             self.images.borrow_mut().insert(id, data);
             render_core::vello::abi::record_image(img.id, id);
         }
+        if any {
+            self.body_cache.clear();
+        }
     }
 
     /// The Parley engine, so a test can register a face directly (the browser path uses
@@ -724,7 +729,9 @@ impl ClassicBackend {
     /// font. Reads the shared font registry through this backend's own cursor, so other consumers
     /// see the same faces. The wasm shell calls this once per frame before the sink runs.
     pub fn sync_fonts(&mut self) {
-        self.text.sync_fonts();
+        if self.text.sync_fonts() > 0 {
+            self.body_cache.clear();
+        }
     }
 
     /// Fold the queued text-editor commands into the live [`render_core::vello::rich_editor::RichEditor`]

@@ -68,9 +68,13 @@ impl TextState {
     /// Reads the shared registry through this state's own cursor ([`crate::vello::abi::fonts_since`]),
     /// so any number of `TextState`s — one per renderer, one for measurement — each receive every
     /// face exactly once, regardless of creation order. Idempotent; the backend calls it once per
-    /// frame before laying text out.
-    pub fn sync_fonts(&mut self) {
+    /// frame before laying text out. Returns how many new faces arrived — a nonzero count means
+    /// previously laid-out text can render differently, so anything caching encoded text (the
+    /// classic body-fragment cache) must invalidate.
+    pub fn sync_fonts(&mut self) -> usize {
+        let mut fresh = 0;
         for font in crate::vello::abi::fonts_since(&mut self.registry_cursor) {
+            fresh += 1;
             let registered = self.font_cx.collection.register_fonts(
                 font.bytes,
                 Some(FontInfoOverride {
@@ -86,6 +90,7 @@ impl TextState {
                 self.font_cx.collection.append_generic_families(GenericFamily::Emoji, ids);
             }
         }
+        fresh
     }
 
     /// Bring the editor in step with the ABI: rebuild it when focus moves, apply the queued edit
