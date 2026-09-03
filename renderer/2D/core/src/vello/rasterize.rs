@@ -345,6 +345,25 @@ pub trait RasterBackend {
     /// until after the sink's submit). Only classic; default is a no-op.
     fn phased_finish(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _enc: &mut wgpu::CommandEncoder) {}
 
+    /// Issue any deferred (pass-batched) fine dispatches into `enc`. MUST run before the caller
+    /// touches the encoder directly (copies, clears, render passes) or finishes it.
+    fn phase_flush(&mut self, _enc: &mut wgpu::CommandEncoder) {}
+
+    /// Refresh snapshot `rects` from the packed accumulator as compute dispatches (one per rect)
+    /// instead of encoder blits, so a batched compute pass need not close around the copy. Returns
+    /// false when unsupported — the caller falls back to `phase_flush` + encoder blits.
+    fn phase_snap_copy(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _enc: &mut wgpu::CommandEncoder,
+        _rects: &[[u32; 4]],
+        _src: &wgpu::TextureView,
+        _dst: &wgpu::TextureView,
+    ) -> bool {
+        false
+    }
+
     /// The [`wgpu::TextureUsages`] a texture must carry for this backend to rasterize into it. Hybrid
     /// renders as an attachment (`RENDER_ATTACHMENT`, the default); classic writes through a compute
     /// pass, so it overrides this with `STORAGE_BINDING`. The sink ORs it into every texture it

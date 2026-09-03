@@ -2431,7 +2431,7 @@ impl Sink {
             width,
             acc_h,
             wgpu::TextureFormat::R32Uint,
-            wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
             "wv snap",
         );
         let snap = snap_tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -2773,12 +2773,13 @@ impl Sink {
                 b_r: Vec<u64>,
                 poisoned: bool,
             }
-            let mut groups: Vec<Vec<usize>> = Vec::new();
-            {
+            let compute_groups = |unify: bool| -> Vec<Vec<usize>> {
+                let mut groups: Vec<Vec<usize>> = Vec::new();
                 let mut open: HashMap<(u8, i64), Group> = HashMap::new();
+                let c_of = |w: &Win| if unify { w.cls.map(|_| (0u8, 0i64)) } else { w.cls };
                 for (i, w) in wins.iter().enumerate() {
                     let mut joined = false;
-                    if let Some(c) = w.cls {
+                    if let Some(c) = c_of(w) {
                         if let Some(g) = open.get_mut(&c) {
                             let joins = !g.poisoned
                                 && disjoint(&w.tbits, &g.m_tiles)
@@ -2808,7 +2809,7 @@ impl Sink {
                     if !joined {
                         let poison = w.tiles.is_empty() && w.lo != 0;
                         for (&c, g) in open.iter_mut() {
-                            if Some(c) == w.cls && g.members.contains(&i) {
+                            if Some(c) == c_of(w) && g.members.contains(&i) {
                                 continue;
                             }
                             if poison {
@@ -2823,7 +2824,7 @@ impl Sink {
                         // is earlier than any window scanned later; later joiners of other groups
                         // must therefore be independent of it: block it into every other group.
                         for (&c, g) in open.iter_mut() {
-                            if Some(c) == w.cls {
+                            if Some(c) == c_of(w) {
                                 continue;
                             }
                             or_in(&mut g.b_w, &w.tbits);
@@ -2837,6 +2838,17 @@ impl Sink {
                     }
                 }
                 groups.sort();
+                groups
+            };
+            let groups = compute_groups(false);
+            #[cfg(not(target_arch = "wasm32"))]
+            if std::env::var("WV_DBG_MERGE").is_ok() {
+                let ceiling = compute_groups(true);
+                let cf: usize = ceiling.iter().map(|g| g.len() - 1).sum();
+                eprintln!(
+                    "WV_DBG_MERGE: CEILING (classes ignored, counting only): groups={} followers={cf}",
+                    ceiling.len(),
+                );
             }
             let mut map = HashMap::new();
             let mut merged: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -2970,7 +2982,6 @@ impl Sink {
                     // decides the pass: what fills fine's three slots and which permutation reads slot
                     // 10. All nodes in the round share the bindings (co-located sources, one output).
                     use crate::vello::frame_dag::Slot;
-                    use crate::vello::units::UnitOp;
                     let rep = unit_nodes[0];
                     let shp = dag.binding_shape(rep).expect("a scheduled round's nodes own the dispatch");
                     #[cfg(not(target_arch = "wasm32"))]
@@ -3012,11 +3023,22 @@ impl Sink {
                     // Refresh the window's backdrop snapshot: encoder blits of exactly the rects
                     // this window's marks can read, accumulator -> snap at identical coordinates
                     // (no record shifts). Copy cost scales with effect reach, not the viewport.
-                    for wlo in std::iter::once(window_lo)
+                    // A dispatch that never binds snap (a materialize whose base is a source or a
+                    // draft) skips the refresh entirely — every snap READER blits its own rects at
+                    // its own window, so an unread refresh is pure cost and a pass-batch breaker.
+                    let binds_snap = !shp.to_draft || shp.base == Slot::Backdrop;
+                    let refresh: Vec<[u32; 4]> = std::iter::once(window_lo)
                         .chain(merged_windows.get(&window_lo).into_iter().flatten().copied())
+                        .take_while(|_| binds_snap)
+                        .filter_map(|wlo| snap_windows.get(&wlo))
+                        .flatten()
+                        .copied()
+                        .collect();
+                    if !refresh.is_empty()
+                        && !backend.phase_snap_copy(device, queue, &mut enc, &refresh, &acc, &snap)
                     {
-                        let Some(rects) = snap_windows.get(&wlo) else { continue };
-                        for r4 in rects {
+                        backend.phase_flush(&mut enc);
+                        for r4 in &refresh {
                             enc.copy_texture_to_texture(
                                 wgpu::TexelCopyTextureInfo {
                                     texture: &acc_tex,
@@ -3140,11 +3162,17 @@ impl Sink {
                     if let Some(&(sb, sn)) = sparse_windows.get(&window_lo) {
                         backend.phase_sparse_window(sb, sn);
                     }
-                    for wlo in std::iter::once(window_lo)
+                    let refresh: Vec<[u32; 4]> = std::iter::once(window_lo)
                         .chain(merged_windows.get(&window_lo).into_iter().flatten().copied())
+                        .filter_map(|wlo| snap_windows.get(&wlo))
+                        .flatten()
+                        .copied()
+                        .collect();
+                    if !refresh.is_empty()
+                        && !backend.phase_snap_copy(device, queue, &mut enc, &refresh, &acc, &snap)
                     {
-                        let Some(rects) = snap_windows.get(&wlo) else { continue };
-                        for r4 in rects {
+                        backend.phase_flush(&mut enc);
+                        for r4 in &refresh {
                             enc.copy_texture_to_texture(
                                 wgpu::TexelCopyTextureInfo {
                                     texture: &acc_tex,
@@ -3170,6 +3198,7 @@ impl Sink {
                 }
                 window_lo = r;
             } else if !seeded {
+                backend.phase_flush(&mut enc);
                 seed_clear(&mut enc, &acc);
                 seeded = true;
             }
@@ -3179,6 +3208,7 @@ impl Sink {
             }
         }
         if !seeded {
+            backend.phase_flush(&mut enc);
             seed_clear(&mut enc, &acc);
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -4440,6 +4470,7 @@ impl Sink {
         queue: &wgpu::Queue,
         backend: &mut B,
     ) {
+        backend.phase_flush(frame_enc);
         let fresh = device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink batch") });
         let done = std::mem::replace(frame_enc, fresh);
