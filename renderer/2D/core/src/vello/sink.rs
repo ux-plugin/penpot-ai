@@ -3038,6 +3038,10 @@ impl Sink {
                         && !backend.phase_snap_copy(device, queue, &mut enc, &refresh, &acc, &snap)
                     {
                         backend.phase_flush(&mut enc);
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if std::env::var("WV_DBG_SNAPCOPY").is_ok() {
+                            eprintln!("WV_DBG_SNAPCOPY: {} rects (blit)", refresh.len());
+                        }
                         for r4 in &refresh {
                             enc.copy_texture_to_texture(
                                 wgpu::TexelCopyTextureInfo {
@@ -3172,6 +3176,10 @@ impl Sink {
                         && !backend.phase_snap_copy(device, queue, &mut enc, &refresh, &acc, &snap)
                     {
                         backend.phase_flush(&mut enc);
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if std::env::var("WV_DBG_SNAPCOPY").is_ok() {
+                            eprintln!("WV_DBG_SNAPCOPY: {} rects (blit)", refresh.len());
+                        }
                         for r4 in &refresh {
                             enc.copy_texture_to_texture(
                                 wgpu::TexelCopyTextureInfo {

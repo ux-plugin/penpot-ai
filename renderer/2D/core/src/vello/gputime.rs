@@ -162,6 +162,9 @@ impl GpuTimer {
 
     /// Start the async map for this frame's slot. Call once the frame's encoder has been submitted;
     /// the callback lands on a later turn of the event loop and accumulates into [`crate::vello::prof`].
+    /// The span is read as `abs_diff`: Metal samples empty-pass boundary stamps at encoder
+    /// boundaries and can land the pair in either order (measured swapped on Apple M-series), so
+    /// the magnitude is the frame span regardless of which stamp resolved later.
     pub fn after_submit(&mut self) {
         let Some(i) = self.cur.take() else { return };
         let s = &self.slots[i];
@@ -179,8 +182,12 @@ impl GpuTimer {
                         b.copy_from_slice(&view[j * 8..j * 8 + 8]);
                         *slot = u64::from_le_bytes(b);
                     }
-                    let ticks = t[1].saturating_sub(t[0]);
-                    if ticks > 0 {
+                    let ticks = t[0].abs_diff(t[1]);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if std::env::var("WV_DBG_GPUTIME").is_ok() {
+                        eprintln!("WV_DBG_GPUTIME: t0={} t1={} ticks={ticks}", t[0], t[1]);
+                    }
+                    if ticks > 0 && t[0] > 0 && t[1] > 0 {
                         crate::vello::prof::add_gpu(ticks as f64 * period / 1.0e6);
                     }
                 }

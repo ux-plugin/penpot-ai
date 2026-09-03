@@ -33,6 +33,7 @@ fn main() {
         .expect("adapter");
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("wv_cpu_profile"),
+        required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
         ..Default::default()
     }))
     .expect("device");
@@ -75,12 +76,14 @@ fn main() {
     }
 
     let read = |which: u32| render_core::vello::abi::prof_read(which);
-    let base: Vec<f64> = [0u32, 1, 2, 126, 127].iter().map(|&b| read(b)).collect();
+    let base: Vec<f64> = [0u32, 1, 2, 3, 126, 127, 18, 19].iter().map(|&b| read(b)).collect();
+    let (p0, d0) = vello::low_level::dispatch_stats();
     let t0 = Instant::now();
     for _ in 0..TIMED {
         frame(&mut sink, &mut backend);
     }
     let wall = t0.elapsed().as_secs_f64() * 1000.0 / TIMED as f64;
+    let (p1, d1) = vello::low_level::dispatch_stats();
     let delta = |i: usize, b: u32| (read(b) - base[i]) / TIMED as f64;
 
     println!("== real frames (avg of {TIMED}, 4K) ==");
@@ -88,8 +91,18 @@ fn main() {
     println!("build (sched)         {:8.3} ms", delta(0, 0));
     println!("scene (encode walk)   {:8.3} ms", delta(1, 1));
     println!("render (record)       {:8.3} ms", delta(2, 2));
-    println!("gather detect         {:8.3} ms", delta(3, 126));
-    println!("phase loop record     {:8.3} ms", delta(4, 127));
+    println!("submit                {:8.3} ms", delta(3, 3));
+    println!("gather detect         {:8.3} ms", delta(4, 126));
+    println!("phase loop record     {:8.3} ms", delta(5, 127));
+    let gpu_frames = read(19) - base[7];
+    if gpu_frames > 0.0 {
+        println!("GPU busy/frame        {:8.3} ms  (frame-span timestamps, {} samples)", (read(18) - base[6]) / gpu_frames, gpu_frames as u64);
+    }
+    println!(
+        "compute passes/frame  {:8.1}     dispatches/frame {:8.1}",
+        (p1 - p0) as f64 / TIMED as f64,
+        (d1 - d0) as f64 / TIMED as f64
+    );
 
     println!("\n== isolated components (same model, avg of {TIMED}) ==");
     let reps = TIMED;
