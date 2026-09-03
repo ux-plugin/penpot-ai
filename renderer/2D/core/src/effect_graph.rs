@@ -381,6 +381,73 @@ pub fn lens_device_field(
     ]
 }
 
+fn field_profile(x: f32, kind: i32) -> f32 {
+    let t = 1.0 - x;
+    if kind == 0 {
+        return (1.0 - t * t).max(0.0).sqrt();
+    }
+    let t4 = t * t * t * t;
+    if kind == 1 {
+        return (1.0 - t4).max(0.0).powf(0.25);
+    }
+    if kind == 2 {
+        return 1.0 - (1.0 - t4).max(0.0).powf(0.25);
+    }
+    let c = (1.0 - t4).max(0.0).powf(0.25);
+    let sx = x.clamp(0.0, 1.0);
+    let ss = sx * sx * sx * (sx * (sx * 6.0 - 15.0) + 10.0);
+    c * (1.0 - ss) + (1.0 - c) * ss
+}
+
+fn field_refract(t: f32, thick: f32, n2: f32, kind: i32) -> f32 {
+    if t <= 0.0 || t >= 1.0 {
+        return 0.0;
+    }
+    let delta = 0.001;
+    let h = field_profile(t, kind) * thick;
+    let dh = (field_profile((t + delta).min(1.0), kind) - field_profile((t - delta).max(0.0), kind))
+        / (2.0 * delta)
+        * thick;
+    let t_i = dh.atan().abs();
+    let s = (1.0 / n2) * t_i.sin();
+    if s.abs() > 1.0 {
+        return 0.0;
+    }
+    let t_r = s.asin();
+    (h * t_r.tan() - h * t_i.tan()) * dh.signum()
+}
+
+/// The largest displacement (device px) the lens WARP can sample away from its own pixel — the
+/// Snell refraction maxed over the bevel ramp (a Rust mirror of `fieldRefract`, sampled), boosted
+/// by `edge_boost`, plus the magnification term (`|1/zoom − 1|`, largest at the lens corner —
+/// `half_diag_dev` is the half-diagonal in device px) and the chromatic-aberration shift. The
+/// planner's honest snapshot-refresh pad: taps past it read stale rows, so guessing low is a
+/// visible artifact and guessing high is only blit area.
+#[must_use]
+pub fn lens_warp_slack(g: &Glass, scale: f32, half_diag_dev: f32) -> f32 {
+    let kind = g.surface_type as i32;
+    let mut refr: f32 = 0.0;
+    for i in 1..512 {
+        let t = i as f32 / 512.0;
+        refr = refr.max(field_refract(t, g.thickness, g.refractive_index, kind).abs());
+    }
+    let warp = refr * 1.15 * scale * (1.0 + g.edge_boost.max(0.0));
+    let zoom_term = half_diag_dev * (1.0 / g.zoom.max(0.1) - 1.0).abs();
+    warp + zoom_term + g.chromatic_aberration.max(0.0) + 1.0
+}
+
+/// The largest offset (device px) the frost SCATTER jitters its draft taps by — the shader's
+/// `frost × 6 × scale` per axis, as a vector norm, plus the bilinear texel. Zero when frost is off
+/// (the scatter degenerates to one aligned read).
+#[must_use]
+pub fn lens_scatter_slack(g: &Glass, scale: f32) -> f32 {
+    if g.frost > 0.01 {
+        g.frost * 6.0 * scale * std::f32::consts::SQRT_2 + 2.0
+    } else {
+        0.0
+    }
+}
+
 #[must_use]
 pub fn lens_graph(
     g: &Glass,

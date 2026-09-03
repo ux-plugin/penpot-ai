@@ -72,15 +72,22 @@ fn main() {
     );
 
     let step = std::env::var("WV_STEP").ok().and_then(|v| v.parse::<f32>().ok());
-    let cells = match step {
-        Some(st) => {
+    let glass = std::env::var("WV_GLASS").ok().and_then(|v| v.parse::<u32>().ok());
+    let cells = match (glass, step) {
+        (Some(frost), _) => render_core::vello::abi::load_glass_grid_scene(1, frost),
+        (None, Some(st)) => {
             let size = std::env::var("WV_SIZE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.9);
             render_core::vello::abi::load_scale_scene_sized(n, every, st, size, 0)
         }
-        None => render_core::vello::abi::load_scale_scene(n, every),
+        (None, None) => render_core::vello::abi::load_scale_scene(n, every),
     };
+    let env_f32 = |key: &str, default: f32| {
+        std::env::var(key).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(default)
+    };
+    let zoom = env_f32("WV_ZOOM", 1.0);
+    let (panx, pany) = (env_f32("WV_PANX", 0.0), env_f32("WV_PANY", 0.0));
     render_core::vello::abi::set_render_options(0, 1.0);
-    render_core::vello::abi::set_view(1.0, 0.0, 0.0);
+    render_core::vello::abi::set_view(zoom, panx, pany);
     render_core::vello::abi::set_canvas_background(0xffff_ffff);
     render_core::vello::abi::set_scheduler(1);
     render_core::vello::abi::set_tile_effects(1);
@@ -141,7 +148,7 @@ fn main() {
     let mut profiled_frames = 0u32;
 
     let mut frame = |sink: &mut Sink, backend: &mut ClassicBackend, timed: bool| {
-        render_core::vello::abi::set_view(1.0, 0.0, 0.0);
+        render_core::vello::abi::set_view(zoom, panx, pany);
         let t0 = Instant::now();
         sink.render_whole_viewport(backend, &device, &queue, &target, Affine::IDENTITY, w, h, true);
         let t1 = Instant::now();
@@ -235,4 +242,51 @@ fn main() {
     let gpun = delta(19).max(1e-9);
     println!("\n== GPU whole-frame span (GpuTimer) ==");
     println!("gpu busy/frame          {:8.3} ms  ({:.0} samples)", delta(18) / gpun, gpun);
+
+    if let Ok(path) = std::env::var("WV_DUMP") {
+        let unpadded = w * 4;
+        let padded = unpadded.div_ceil(256) * 256;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wv profile dump"),
+            size: u64::from(padded) * u64::from(h),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit([enc.finish()]);
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let data = slice.get_mapped_range();
+        let mut out = Vec::with_capacity((unpadded * h) as usize);
+        for row in 0..h {
+            let start = (row * padded) as usize;
+            out.extend_from_slice(&data[start..start + unpadded as usize]);
+        }
+        drop(data);
+        buffer.unmap();
+        let file = std::fs::File::create(&path).expect("create png");
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.write_header().unwrap().write_image_data(&out).unwrap();
+        println!("wrote {path}");
+    }
 }

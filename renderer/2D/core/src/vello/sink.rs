@@ -2574,15 +2574,34 @@ impl Sink {
                 }
                 (shp.input != Slot::None && mk.rec[1][0] != 2.0).then_some(0.0)
             };
+            // A glass gather's base reads land up to its true warp displacement away — the honest
+            // per-param bound, never the flat allowance, floored at the old constant so refresh
+            // regions only ever grow.
+            let glass_slack: HashMap<u128, f32> = marks
+                .keys()
+                .filter_map(|&gid| {
+                    crate::vello::abi::with_scene(|live, _, modifiers| {
+                        let n = live.get(gid)?;
+                        let m = modifiers.get(&gid).copied().unwrap_or(Affine::IDENTITY);
+                        let (g, geom) = crate::effect_graph::lens_geometry(n, m)?;
+                        let cs = full_view.as_coeffs();
+                        let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
+                        let half_diag =
+                            ((geom.width * 0.5).hypot(geom.height * 0.5) * f64::from(scale)) as f32;
+                        Some((gid, crate::effect_graph::lens_warp_slack(&g, scale, half_diag)))
+                    })
+                })
+                .collect();
             let mut m: HashMap<u32, Vec<[f32; 4]>> = HashMap::new();
             let mut mr: HashMap<u32, Vec<[f32; 4]>> = HashMap::new();
             for (gid, ms) in &marks {
                 let Some(&q) = dev.get(gid) else { continue };
+                let slack = glass_slack.get(gid).copied().unwrap_or(0.0);
                 for mk in ms {
                     if mk.desc[0] as u32 == 0 {
                         continue;
                     }
-                    let pad = snap_pad(mk);
+                    let pad = snap_pad(mk).map(|p| if p > 0.0 { p.max(slack) } else { p });
                     if let Some(pad) = pad {
                         m.entry(mk.round).or_default().push([q[0] - pad, q[1] - pad, q[2] + pad, q[3] + pad]);
                     }
@@ -2596,14 +2615,18 @@ impl Sink {
                             dag.binding_shape(mk.node),
                         );
                     }
-                    let mp = merge_pad(mk);
+                    let mp = {
+                        let p = merge_pad(mk);
+                        if p > 0.0 { p.max(slack) } else { p }
+                    };
                     mr.entry(mk.round).or_default().push([q[0] - mp, q[1] - mp, q[2] + mp, q[3] + mp]);
                 }
             }
-            for (j, &(_, _, kind)) in gathers.iter().enumerate() {
+            for (j, &(_, gid, kind)) in gathers.iter().enumerate() {
                 if kind == FX_STACK {
                     let q = reaches[j];
-                    m.entry(rounds[j]).or_default().push([q[0] - 64.0, q[1] - 64.0, q[2] + 64.0, q[3] + 64.0]);
+                    let pad = glass_slack.get(&gid).copied().unwrap_or(0.0).max(64.0);
+                    m.entry(rounds[j]).or_default().push([q[0] - pad, q[1] - pad, q[2] + pad, q[3] + pad]);
                     mr.entry(rounds[j]).or_default().push(q);
                 }
             }
@@ -3526,6 +3549,9 @@ impl Sink {
         let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
         // A sampling head (Lens) displaces past its blur, so it pads wider (refraction slack); a plain
         // gather blur pads to its own reach. Both numerators are `3·sigma`, from the head op itself.
+        // The reach is the marker's WRITE extent (tile coverage, composite area) — read validity is
+        // padded separately (snapshot refresh slack, the scatter's draft tap clamp), never here:
+        // widening the stamp trespasses on neighbouring effects' tiles.
         let reach = match head {
             Some(Op::Lens(g)) => 3.0 * f64::from(g.total_blur_sigma() * scale) + 20.0,
             _ => 3.0 * f64::from(self.gather_sigma(id, full_view, 1.0)) + 6.0,
