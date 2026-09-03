@@ -330,20 +330,10 @@ impl FrameDag {
         if dst.op == UnitOp::Reload {
             return Some(Barrier::Reload);
         }
-        // A FOLDED silhouette (texture-read analytic coverage — the fold predicate in
-        // `binding_shape`, seen here per edge) is produced by an in-frame dispatch now, so every
-        // texture read of it needs that dispatch complete: one round later, always — including the
-        // tiny-reach case on-chip fusion used to absorb, and the sharp-punch EraseBy edge that
-        // carries no other barrier.
-        let fold_src = matches!(
-            src.op,
-            UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { analytic: true, .. })
-        ) || (matches!(src.op, UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. }))
-            && matches!(src.source, Source::Effect { .. }));
-        if fold_src
-            && ((matches!(dst.op, UnitOp::Blur { .. }) && dst.inputs.first() == Some(&from))
-                || (matches!(dst.op, UnitOp::EraseBy(_)) && dst.inputs.get(1) == Some(&from)))
-        {
+        // A FOLDED source ([`Self::folded_source`]) is produced by an in-frame dispatch whose
+        // only output is the lease, so EVERY read of it needs that dispatch complete: one round
+        // later, always — including the tiny-reach on-chip fusion the JIT sources used to allow.
+        if self.folded_source(from) {
             return Some(Barrier::Materialize);
         }
         if dst.op.is_gather() && src.op != UnitOp::Reload {
@@ -379,26 +369,17 @@ impl FrameDag {
     /// then physically shared (silhouette co-location, draft aliasing). `None` = the node owns no
     /// dispatch: a structural node, an imperative raster source, or a pointwise unit that chains in
     /// `fine`'s register inside another node's pass.
-    #[must_use]
-    pub fn binding_shape(&self, i: usize) -> Option<BindingShape> {
-        let n = &self.nodes[i];
-        let (mat_set, tex_read) = self.bind_idx.get_or_init(|| {
+    /// The lazily-built reverse indexes behind [`Self::binding_shape`] and
+    /// [`Self::folded_source`]: per node, whether a gather reads it (`mat`), and whether some
+    /// consumer binds it as a TEXTURE (`tex`) — found by walking each sampling consumer's read
+    /// spine (an erase's punch, otherwise the first-input chain) down to the rasterized root, the
+    /// same walk the executor's `read_edge` performs. An erase's FLOOD input is read analytically
+    /// (the marker's own coverage) and is deliberately never marked.
+    fn bind_idx(&self) -> &(Vec<bool>, Vec<bool>) {
+        self.bind_idx.get_or_init(|| {
             let mut mat = vec![false; self.nodes.len()];
             let mut tex = vec![false; self.nodes.len()];
             for m in &self.nodes {
-                match m.op {
-                    UnitOp::Blur { .. } => {
-                        if let Some(&j) = m.inputs.first() {
-                            tex[j] = true;
-                        }
-                    }
-                    UnitOp::EraseBy(_) => {
-                        if let Some(&j) = m.inputs.get(1) {
-                            tex[j] = true;
-                        }
-                    }
-                    _ => {}
-                }
                 if matches!(
                     m.op,
                     UnitOp::Blur { .. } | UnitOp::Scatter(_) | UnitOp::Warp(_) | UnitOp::EraseBy(_)
@@ -407,25 +388,63 @@ impl FrameDag {
                         mat[j] = true;
                     }
                 }
+                let start = match m.op {
+                    UnitOp::EraseBy(_) => m.inputs.get(1),
+                    UnitOp::ClipToSource(_) => m.inputs.first(),
+                    _ if m.op.is_gather() => m.inputs.first(),
+                    _ => None,
+                };
+                let Some(&start) = start else { continue };
+                let mut cur = start;
+                loop {
+                    match self.nodes[cur].op {
+                        UnitOp::Rasterize(_) => {
+                            tex[cur] = true;
+                            break;
+                        }
+                        UnitOp::Reload => break,
+                        _ if self.nodes[cur].writes_accumulator() => break,
+                        _ => match self.nodes[cur].inputs.first() {
+                            Some(&k) => cur = k,
+                            None => break,
+                        },
+                    }
+                }
             }
             (mat, tex)
-        });
+        })
+    }
+
+    /// Whether node `j` is a FOLDED source: a rasterize whose geometry rides the main scene
+    /// behind a fence and lands in a side-2 lease, because some consumer binds its output as a
+    /// texture. Derived from op + edges alone: drawable geometry (a Coverage silhouette or an
+    /// effect-owned Body) that is texture-read. A Distance source is not drawable geometry (its
+    /// producer is the SDF baker); a plain stack body is read through the accumulator, not a
+    /// texture, and rides inline instead.
+    #[must_use]
+    pub fn folded_source(&self, j: usize) -> bool {
+        let (_, tex) = self.bind_idx();
+        tex[j]
+            && match self.nodes[j].op {
+                UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { .. }) => true,
+                UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. }) => {
+                    matches!(self.nodes[j].source, Source::Effect { .. })
+                }
+                _ => false,
+            }
+    }
+
+    #[must_use]
+    pub fn binding_shape(&self, i: usize) -> Option<BindingShape> {
+        let n = &self.nodes[i];
+        let (mat_set, _) = self.bind_idx();
         let mat = mat_set[i];
         // The chain's root decides what `base_in` holds — a rasterized source texture, or the (reloaded)
         // accumulator — and, for a draft input, which pool that draft physically lives in today.
-        // A FOLDED silhouette (texture-read analytic coverage) physically lives in the dedicated
-        // side-2 atlas, so reads of it class as `Slot::Draft(2)` — co-location then holds for any
-        // two folded readers sharing a round, and never pairs a folded reader with a JIT-source
-        // one (whose texture is a device-coordinate layer).
-        let folded = |j: usize| match self.nodes[j].op {
-            UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { analytic: true, .. }) => {
-                true
-            }
-            UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. }) => {
-                tex_read[j] && matches!(self.nodes[j].source, Source::Effect { .. })
-            }
-            _ => false,
-        };
+        // A FOLDED source ([`Self::folded_source`]) physically lives in the dedicated side-2
+        // atlas, so reads of it class as `Slot::Draft(2)` — co-location then holds for any two
+        // folded readers sharing a round.
+        let folded = |j: usize| self.folded_source(j);
         let root = |mut j: usize| loop {
             match self.nodes[j].op {
                 UnitOp::Rasterize(_) => break if folded(j) { Slot::Draft(2) } else { Slot::Source },
@@ -479,41 +498,26 @@ impl FrameDag {
                 shape(Slot::Backdrop, input, mat, false)
             }
             UnitOp::ClipToSource(_) => match root(n.inputs[0]) {
-                Slot::Source => shape(Slot::Backdrop, Slot::Source, mat, false),
+                r @ (Slot::Source | Slot::Draft(2)) => shape(Slot::Backdrop, r, mat, false),
                 _ => None,
             },
-            // A TEXTURE-READ analytic coverage silhouette OR body source rides fine: its round's
-            // window rasterizes the fenced draws into a packed lease — transparent init, no input
-            // bindings, OOB store default overridden by the mark's OUTPUT record. Texture-read
-            // means a Blur taps it or an EraseBy binds it as the punch; an erase's FLOOD input is
-            // read analytically (the marker's own area) and must NOT fold — its mark would share
-            // the punch window's tiles and hijack the store origin. A bare body mark (not
-            // tex-read) keeps its co-located composite; glyph (non-analytic) coverage and SDF
-            // sources keep their out-of-band producers.
-            UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { analytic: true, .. })
-                if tex_read[i] =>
-            {
+            // A FOLDED source ([`Self::folded_source`] — any texture-read drawable rasterize)
+            // rides fine: its round's window rasterizes the fenced draws into a packed lease —
+            // transparent init, no input bindings, OOB store default overridden by the mark's
+            // OUTPUT record. An erase's FLOOD input is read analytically (the marker's own area)
+            // and never folds — its mark would share the punch window's tiles and hijack the
+            // store origin.
+            UnitOp::Rasterize(_) if self.folded_source(i) => {
                 shape(Slot::None, Slot::None, true, false)
             }
-            UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. })
-                if tex_read[i] && matches!(n.source, Source::Effect { .. }) =>
-            {
-                shape(Slot::None, Slot::None, true, false)
-            }
-            // A body rasterize that carries its OWN mark. A REPLACED body (a unit-less replace
-            // chain, `Source::Effect`) composites its co-located JIT source over the accumulator.
-            // A plain STACK body (`Source::Body`) has no texture any more — its mark is a
-            // boundary marker followed by the body's inline draws, and its shape is the plain
-            // accumulator window (no input): the class keeps its round off every materialize
-            // round in the scheduler while letting bodies share rounds with each other.
+            // A body rasterize that carries its OWN mark has no texture: the mark is a boundary
+            // marker followed by the body's inline draws, and its shape is the plain accumulator
+            // window (no input) — the class keeps its round off every materialize round in the
+            // scheduler while letting bodies share rounds with each other.
             UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. })
                 if !mat && n.inputs.iter().all(|&j| self.nodes[j].writes_accumulator()) =>
             {
-                if matches!(n.source, Source::Effect { .. }) {
-                    shape(Slot::Backdrop, Slot::Source, false, false)
-                } else {
-                    shape(Slot::Backdrop, Slot::None, false, false)
-                }
+                shape(Slot::Backdrop, Slot::None, false, false)
             }
             // A scatter always materializes: its consumer is a Shade head that reads it as a draft.
             UnitOp::Scatter(_) => shape(Slot::Backdrop, Slot::Draft(1), true, false),

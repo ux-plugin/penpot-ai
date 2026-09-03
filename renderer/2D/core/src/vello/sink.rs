@@ -1196,15 +1196,13 @@ impl Sink {
                                 )
                             )
                         {
-                            let mut desc = [0.0f32; 26];
-                            desc[0] = bits::VALUE_OVER as f32;
-                            let mut rec = [[0.0f32; 4]; 5];
-                            rec[0][0] = 2.0;
+                            // A body replaced by pure geometry rides inline: a zero-desc body
+                            // mark — boundary marker + the body's draws at its round, no texture.
                             out.push(UnitMark {
                                 node: root,
                                 round: sched.round[root],
-                                desc,
-                                rec,
+                                desc: [0.0f32; 26],
+                                rec: [[0.0f32; 4]; 5],
                                 ctl: 0,
                                 masked: false,
                                 band: false,
@@ -1293,17 +1291,7 @@ impl Sink {
                     // rounds stay per-tile monotone.
                     if sil_fold {
                         for &sn in nodes {
-                            if matches!(
-                                *op(sn),
-                                UnitOp::Rasterize(
-                                    crate::vello::units::RasterSource::Coverage { .. }
-                                        | crate::vello::units::RasterSource::Body { .. }
-                                )
-                            ) && dag.binding_shape(sn).is_some_and(|sh| {
-                                sh.to_draft
-                                    && sh.base == crate::vello::frame_dag::Slot::None
-                                    && sh.input == crate::vello::frame_dag::Slot::None
-                            }) {
+                            if dag.folded_source(sn) {
                                 out.push(UnitMark {
                                     node: sn,
                                     round: sched.round[sn],
@@ -1471,7 +1459,17 @@ impl Sink {
                     continue;
                 }
                 if marks.get(&gid).is_some_and(|ms| {
-                    ms.iter().any(|m| (m.desc[0] as u32) & bits::VALUE_OVER != 0)
+                    ms.iter().any(|m| {
+                        (m.desc[0] as u32) & bits::VALUE_OVER != 0
+                            || (m.desc[0] == 0.0
+                                && !dag.folded_source(m.node)
+                                && matches!(
+                                    dag.nodes[m.node].op,
+                                    crate::vello::units::UnitOp::Rasterize(
+                                        crate::vello::units::RasterSource::Body { .. }
+                                    )
+                                ))
+                    })
                 }) {
                     continue;
                 }
@@ -1525,17 +1523,7 @@ impl Sink {
         // them into executor round 1 — one rasterize window, one dispatch — with the fence-flush in
         // fine multiplexing overlapping tiles across leases. Round 2 is reserved for the restore
         // marker that returns every tile to the base segment; all other rounds shift past it.
-        let is_fence = |m: &UnitMark| {
-            m.desc[0] == 0.0
-                && matches!(
-                    dag.nodes[m.node].op,
-                    crate::vello::units::UnitOp::Rasterize(
-                        crate::vello::units::RasterSource::Coverage { analytic: true, .. }
-                            | crate::vello::units::RasterSource::Body { .. }
-                    )
-                )
-                && !matches!(dag.nodes[m.node].source, crate::vello::frame_dag::Source::Body(_))
-        };
+        let is_fence = |m: &UnitMark| m.desc[0] == 0.0 && dag.folded_source(m.node);
         #[cfg(not(target_arch = "wasm32"))]
         let hoist_on = sil_fold
             && std::env::var("WV_SIL_HOIST").map_or(true, |v| v != "0")
@@ -2015,6 +2003,17 @@ impl Sink {
                                 m.rec[1][2] = oy;
                             }
                         }
+                        // The flood fold samples `base_in` at px + offset (fx_flood_value) with no
+                        // record window of its own; when the base silhouette is a packed lease,
+                        // fold its origin into the offset so the sample lands in the lease frame.
+                        if (m.desc[0] as u32) & crate::vello::bake::bits::FLOOD_ERASE != 0 {
+                            if let Some(&(ox, oy)) =
+                                dag_base_rasterize(&dag, m.node).and_then(|rz| origin.get(&rz))
+                            {
+                                m.desc[10] -= ox;
+                                m.desc[11] -= oy;
+                            }
+                        }
                     }
                 }
             }
@@ -2036,45 +2035,57 @@ impl Sink {
         let _tplan = crate::vello::prof::now();
         let sil_emit_ms = std::cell::Cell::new(0.0f64);
         let gi_of: HashMap<u128, usize> = gathers.iter().map(|&(gi, gid, _)| (gid, gi)).collect();
-        let emit_sil_draws = |backend: &mut B, scene: &mut B::Scene, s: usize| {
+        // THE one emitter: given a folded Rasterize node, emit its draws — the geometry is the
+        // op's own definition (a shadow silhouette, or a body's scene range at its offset). The
+        // draws are CLIPPED to the fence marker's rect: a fence exists only on the tiles that
+        // rect covers, and an escaped draw would land at the surrounding segment and composite
+        // into the picture (glyph punch silhouettes overhang their gather's reach).
+        let emit_sil_draws = |backend: &mut B, scene: &mut B::Scene, s: usize, clip: [f32; 4]| {
             let _ts = crate::vello::prof::now();
             use crate::vello::frame_dag::Source as DagSource;
-            // A folded BODY source is the shape's own paint, not a shadow silhouette: draw its
-            // scene range (offset for a displaced body), same as the JIT layer builder did.
+            scene.set_transform(Affine::IDENTITY);
+            scene.push_clip_layer(
+                &Rect::new(
+                    f64::from(clip[0]),
+                    f64::from(clip[1]),
+                    f64::from(clip[2]),
+                    f64::from(clip[3]),
+                )
+                .to_path(0.1),
+            );
             if let crate::vello::units::UnitOp::Rasterize(
                 crate::vello::units::RasterSource::Body { offset },
             ) = dag.nodes[s].op
             {
                 let shape = match dag.nodes[s].source {
-                    DagSource::Effect { shape, .. } | DagSource::Body(shape) => shape,
-                    _ => return,
+                    DagSource::Effect { shape, .. } | DagSource::Body(shape) => Some(shape),
+                    _ => None,
                 };
-                if let Some(&gi) = gi_of.get(&shape) {
+                if let Some(&gi) = shape.and_then(|sh| gi_of.get(&sh)) {
                     let t = root * Affine::translate((f64::from(offset[0]), f64::from(offset[1])));
                     backend.draw_scene_range(scene, t, gi, gi + 1);
                 }
-                sil_emit_ms.set(sil_emit_ms.get() + (crate::vello::prof::now() - _ts));
-                return;
-            }
-            let DagSource::Effect { shape, slot } = dag.nodes[s].source else { return };
-            let inset = dag.nodes.iter().any(|m| {
-                matches!(m.op, crate::vello::units::UnitOp::EraseBy(_))
-                    && matches!(m.source, DagSource::Effect { shape: s2, slot: sl2 } if s2 == shape && sl2 == slot)
-            });
-            let class_idx = crate::vello::abi::with_scene(|live, _, _| {
-                live.get(shape).map(|n| {
-                    crate::effect::effect_stack(n)
-                        .iter()
-                        .take(slot)
-                        .filter(|e| {
-                            matches!(e.source, crate::effect::Source::Coverage { .. })
-                                && (e.compose == crate::effect::Compose::Over) == inset
-                        })
-                        .count()
+            } else if let DagSource::Effect { shape, slot } = dag.nodes[s].source {
+                let inset = dag.nodes.iter().any(|m| {
+                    matches!(m.op, crate::vello::units::UnitOp::EraseBy(_))
+                        && matches!(m.source, DagSource::Effect { shape: s2, slot: sl2 } if s2 == shape && sl2 == slot)
+                });
+                let class_idx = crate::vello::abi::with_scene(|live, _, _| {
+                    live.get(shape).map(|n| {
+                        crate::effect::effect_stack(n)
+                            .iter()
+                            .take(slot)
+                            .filter(|e| {
+                                matches!(e.source, crate::effect::Source::Coverage { .. })
+                                    && (e.compose == crate::effect::Compose::Over) == inset
+                            })
+                            .count()
+                    })
                 })
-            })
-            .unwrap_or(slot);
-            backend.build_shadow_silhouette(scene, root, shape, class_idx, inset, true, false);
+                .unwrap_or(slot);
+                backend.build_shadow_silhouette(scene, root, shape, class_idx, inset, true, false);
+            }
+            scene.pop_layer();
             sil_emit_ms.set(sil_emit_ms.get() + (crate::vello::prof::now() - _ts));
         };
         // Every marker's (round, reach quad), collected as they are drawn: a window's work on a tile
@@ -2114,7 +2125,7 @@ impl Sink {
                             m.ctl,
                         );
                         marker_rects.push((m.round, reaches[j]));
-                        emit_sil_draws(backend, &mut scene, m.node);
+                        emit_sil_draws(backend, &mut scene, m.node, reaches[j]);
                     }
                 }
                 z += 1;
@@ -2143,11 +2154,14 @@ impl Sink {
                             if is_hoisted(m) {
                                 continue;
                             }
-                            if matches!(dag.nodes[m.node].source, crate::vello::frame_dag::Source::Body(_)) {
+                            if let (true, crate::vello::units::UnitOp::Rasterize(crate::vello::units::RasterSource::Body { offset })) =
+                                (m.desc[0] == 0.0 && !is_fence(m), &dag.nodes[m.node].op)
+                            {
                                 z += 1;
                                 backend.draw_effect_marker(&mut scene, root, gid, 6u32, z, m.round, 0, reaches[j], 0);
                                 marker_rects.push((m.round, reaches[j]));
-                                backend.draw_scene_range(&mut scene, root, gi, gi + 1);
+                                let t = root * Affine::translate((f64::from(offset[0]), f64::from(offset[1])));
+                                backend.draw_scene_range(&mut scene, t, gi, gi + 1);
                                 continue;
                             }
                             z += 1;
@@ -2159,7 +2173,7 @@ impl Sink {
                             backend.draw_effect_marker(&mut scene, root, gid, eid, z, m.round, m.off, reaches[j], m.ctl);
                             marker_rects.push((m.round, reaches[j]));
                             if is_fence(m) {
-                                emit_sil_draws(backend, &mut scene, m.node);
+                                emit_sil_draws(backend, &mut scene, m.node, reaches[j]);
                             }
                         }
                     }
@@ -2167,6 +2181,16 @@ impl Sink {
                 } else if let Some(ms) = marks.get(&gid) {
                     for m in ms {
                         if is_hoisted(m) {
+                            continue;
+                        }
+                        if let (true, crate::vello::units::UnitOp::Rasterize(crate::vello::units::RasterSource::Body { offset })) =
+                            (m.desc[0] == 0.0 && !is_fence(m), &dag.nodes[m.node].op)
+                        {
+                            z += 1;
+                            backend.draw_effect_marker(&mut scene, root, gid, 6u32, z, m.round, 0, reaches[j], 0);
+                            marker_rects.push((m.round, reaches[j]));
+                            let t = root * Affine::translate((f64::from(offset[0]), f64::from(offset[1])));
+                            backend.draw_scene_range(&mut scene, t, gi, gi + 1);
                             continue;
                         }
                         z += 1;
@@ -2178,7 +2202,7 @@ impl Sink {
                         backend.draw_effect_marker(&mut scene, root, gid, eid, z, m.round, m.off, reaches[j], m.ctl);
                         marker_rects.push((m.round, reaches[j]));
                         if is_fence(m) {
-                            emit_sil_draws(backend, &mut scene, m.node);
+                            emit_sil_draws(backend, &mut scene, m.node, reaches[j]);
                         }
                     }
                 } else {
@@ -2245,10 +2269,6 @@ impl Sink {
         // reader binds it by following its `inputs` edge. Same-round peers alias one physical texture —
         // the round's single dispatch wrote all their regions.
         let mut node_scratch: std::collections::HashMap<usize, wgpu::TextureView> = std::collections::HashMap::new();
-        let mut sil_pending: Vec<(u32, B::Scene, Vec<usize>, u32)> = Vec::new();
-        let mut sil_next = 0usize;
-        let mut sil_live: Vec<(wgpu::Texture, u32)> = Vec::new();
-        let mut sil_peak = 0usize;
         let mut draft_texs: Vec<wgpu::Texture> = Vec::new();
         // The two packed draft atlases every materialize writes its lease into (alternating along
         // draft→draft chains so a dispatch never reads and writes one texture), reused across rounds.
@@ -2454,251 +2474,32 @@ impl Sink {
             map
         };
         let fx_bytes: Vec<u8> = fx_params.iter().flat_map(|f| f.to_le_bytes()).collect();
-        // Rasterized sources (silhouettes / SDFs), co-located per consuming round: the round's single
-        // dispatch binds ONE source texture, and reach-disjointness (the very thing that let the
-        // scheduler share the round) keeps their device regions disjoint inside it.
+        // Every rasterized source is FOLDED — a fence in the scene, a lease in the atlas;
+        // there is no JIT layer path. The one out-of-band producer left is the SDF baker: a
+        // Distance source is a FIELD generated by its own shader, never drawable geometry, so
+        // neither fold rule can apply to it.
         {
             use crate::vello::frame_dag::Source as DagSource;
             use crate::vello::units::UnitOp;
-            let mut sil_groups: std::collections::BTreeMap<u32, Vec<usize>> = std::collections::BTreeMap::new();
             let mut sdf_jobs: Vec<(usize, u128, f32)> = Vec::new();
-            // A FOLDED source (it owns a mark and its window rasterizes into a lease) never joins
-            // the JIT groups — its texture is the atlas the round loop already writes. Only the
-            // fold shape counts: bare-body composite marks are Rasterize marks too, and their
-            // textures still come from the JIT path.
-            let mut seen: std::collections::HashSet<usize> = marks
-                .values()
-                .flatten()
-                .map(|m| m.node)
-                .filter(|&n| {
-                    matches!(dag.nodes[n].op, UnitOp::Rasterize(_))
-                        && dag.binding_shape(n).is_some_and(|sh| {
-                            sh.to_draft
-                                && sh.base == crate::vello::frame_dag::Slot::None
-                                && sh.input == crate::vello::frame_dag::Slot::None
-                        })
-                })
-                .collect();
-            for (&round, nodes) in &round_nodes {
+            let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            for nodes in round_nodes.values() {
                 for &nd in nodes {
                     let n = &dag.nodes[nd];
-                    match &n.op {
-                        UnitOp::Blur { .. } => {
-                            if let Some(&s) = n.inputs.first() {
-                                if matches!(
-                                    dag.nodes[s].op,
-                                    UnitOp::Rasterize(
-                                        crate::vello::units::RasterSource::Coverage { .. }
-                                            | crate::vello::units::RasterSource::Body { .. }
-                                    )
-                                ) && seen.insert(s)
-                                {
-                                    sil_groups.entry(round).or_default().push(s);
-                                }
-                            }
-                        }
-                        UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. }) => {
-                            if matches!(n.source, DagSource::Effect { .. }) && seen.insert(nd) {
-                                sil_groups.entry(round).or_default().push(nd);
-                            }
-                        }
-                        UnitOp::EraseBy(_) => {
-                            if let Some(&s) = n.inputs.get(1) {
-                                if matches!(dag.nodes[s].op, UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { .. })) && seen.insert(s) {
-                                    sil_groups.entry(round).or_default().push(s);
-                                }
-                            }
-                        }
-                        UnitOp::Warp(_) => {
-                            if let Some(&s) = n.inputs.get(1) {
-                                if let UnitOp::Rasterize(crate::vello::units::RasterSource::Distance { decode }) = dag.nodes[s].op {
-                                    if seen.insert(s) {
-                                        if let DagSource::Effect { shape, .. } = dag.nodes[s].source {
-                                            sdf_jobs.push((s, shape, decode));
-                                        }
+                    if matches!(n.op, UnitOp::Warp(_)) {
+                        if let Some(&sd) = n.inputs.get(1) {
+                            if let UnitOp::Rasterize(crate::vello::units::RasterSource::Distance { decode }) = dag.nodes[sd].op {
+                                if seen.insert(sd) {
+                                    if let DagSource::Effect { shape, .. } = dag.nodes[sd].source {
+                                        sdf_jobs.push((sd, shape, decode));
                                     }
                                 }
                             }
                         }
-                        UnitOp::ClipToSource(_) => {
-                            let mut r = n.inputs[0];
-                            loop {
-                                match dag.nodes[r].op {
-                                    UnitOp::Rasterize(_) | UnitOp::Reload => break,
-                                    _ => match dag.nodes[r].inputs.first() {
-                                        Some(&k) => r = k,
-                                        None => break,
-                                    },
-                                }
-                            }
-                            if matches!(dag.nodes[r].op, UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. }))
-                                && seen.insert(r)
-                            {
-                                sil_groups.entry(round).or_default().push(r);
-                            }
-                        }
-                        _ => {}
                     }
                 }
             }
-            let root_index: HashMap<u128, usize> =
-                gathers.iter().map(|&(gi, gid, _)| (gid, gi)).collect();
-            // A silhouette is read only during its consumers' windows, so its texture must not
-            // live for the whole frame: each group's LAST-use round comes from the same walks the
-            // executor binds by (the mark's rasterized root, and its base rasterize), and the loop
-            // below rasterizes each group just in time and releases its texture to the pool right
-            // after its last reader — live silhouettes are bounded by actual overlap, never by the
-            // frame's group count.
-            let walk_rz = |node: usize| -> Option<usize> {
-                let mut cur = if matches!(dag.nodes[node].op, UnitOp::EraseBy(_)) {
-                    dag.nodes[node].inputs.get(1).copied()?
-                } else {
-                    dag.nodes[node].inputs.first().copied()?
-                };
-                loop {
-                    match dag.nodes[cur].op {
-                        UnitOp::Rasterize(_) => return Some(cur),
-                        UnitOp::Reload => return None,
-                        _ => cur = dag.nodes[cur].inputs.first().copied()?,
-                    }
-                }
-            };
-            let mut sil_last: HashMap<usize, u32> = HashMap::new();
-            for ms in marks.values() {
-                for m in ms {
-                    for src in [walk_rz(m.node), dag_base_rasterize(&dag, m.node)].into_iter().flatten() {
-                        let e = sil_last.entry(src).or_insert(0);
-                        *e = (*e).max(m.round);
-                    }
-                }
-            }
-            // Layer merge: one full-pipeline render per SILHOUETTE was the dominant frame cost at
-            // effect density (460 front-ends/frame at 500 effects) — but silhouettes whose reach
-            // quads are device-DISJOINT can share one texture at device coordinates with zero
-            // change to any consumer (every read stays inside its own quad — the scheduler's own
-            // round-sharing invariant). Greedily pack the groups (in round order) into layers; a
-            // node with no known quad, or with WV_SIL_MERGE=0, keeps a private layer. The JIT
-            // rasterize/release loop below is unchanged — it just sees fewer, fatter entries.
-            #[cfg(not(target_arch = "wasm32"))]
-            let sil_merge = std::env::var("WV_SIL_MERGE").map_or(true, |v| v != "0");
-            #[cfg(target_arch = "wasm32")]
-            let sil_merge = true;
-            let sil_dev: HashMap<u128, [f32; 4]> =
-                gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
-            let node_quad = |s: usize| -> Option<[f32; 4]> {
-                match dag.nodes[s].source {
-                    DagSource::Effect { shape, .. } | DagSource::Body(shape) => {
-                        sil_dev.get(&shape).copied()
-                    }
-                    _ => None,
-                }
-            };
-            let quads_overlap = |a: &[f32; 4], b: &[f32; 4]| {
-                a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
-            };
-            struct SilLayer {
-                round: u32,
-                nodes: Vec<usize>,
-                rects: Vec<[f32; 4]>,
-                sealed: bool,
-            }
-            let mut sil_layers: Vec<SilLayer> = Vec::new();
-            for (&round, group) in &sil_groups {
-                // A round's group is ATOMIC: the round's single dispatch binds ONE source texture
-                // for all its nodes, so the whole group joins a layer together or not at all.
-                let quads: Option<Vec<[f32; 4]>> = group.iter().map(|&s| node_quad(s)).collect();
-                let joined = sil_merge
-                    && quads.as_ref().is_some_and(|qs| {
-                        for l in &mut sil_layers {
-                            if !l.sealed
-                                && qs.iter().all(|q| l.rects.iter().all(|r| !quads_overlap(r, q)))
-                            {
-                                l.nodes.extend_from_slice(group);
-                                l.rects.extend_from_slice(qs);
-                                return true;
-                            }
-                        }
-                        false
-                    });
-                if !joined {
-                    sil_layers.push(SilLayer {
-                        round,
-                        nodes: group.clone(),
-                        rects: quads.clone().unwrap_or_default(),
-                        sealed: quads.is_none(),
-                    });
-                }
-            }
-            for layer in &sil_layers {
-                let group = &layer.nodes;
-                let round = layer.round;
-                let mut sscene = backend.new_scene(width as u16, acc_h as u16);
-                for &s in group {
-                    // A plain stack body (its own bare mark): render the shape at its device place.
-                    if let DagSource::Body(shape) = dag.nodes[s].source {
-                        if let Some(&gi) = root_index.get(&shape) {
-                            backend.draw_scene_range(&mut sscene, root, gi, gi + 1);
-                        }
-                        continue;
-                    }
-                    let DagSource::Effect { shape, slot } = dag.nodes[s].source else { continue };
-                    if let UnitOp::Rasterize(crate::vello::units::RasterSource::Body { offset }) =
-                        dag.nodes[s].op
-                    {
-                        if let Some(&gi) = root_index.get(&shape) {
-                            let t = root
-                                * Affine::translate((f64::from(offset[0]), f64::from(offset[1])));
-                            backend.draw_scene_range(&mut sscene, t, gi, gi + 1);
-                        }
-                        continue;
-                    }
-                    // The punch silhouette (an inner's erase input, inset) vs a drop's offset one: the
-                    // slot carries an EraseBy exactly when this source is the punch.
-                    let inset = dag.nodes.iter().any(|m| {
-                        matches!(m.op, UnitOp::EraseBy(_))
-                            && matches!(m.source, DagSource::Effect { shape: s2, slot: sl2 } if s2 == shape && sl2 == slot)
-                    });
-                    // The silhouette builder indexes shadows WITHIN their inset class, not by the
-                    // effect-stack slot — count the earlier same-class coverage slots.
-                    let class_idx = crate::vello::abi::with_scene(|live, _, _| {
-                        live.get(shape).map(|n| {
-                            crate::effect::effect_stack(n)
-                                .iter()
-                                .take(slot)
-                                .filter(|e| {
-                                    matches!(e.source, crate::effect::Source::Coverage { .. })
-                                        && (e.compose == crate::effect::Compose::Over) == inset
-                                })
-                                .count()
-                        })
-                    })
-                    .unwrap_or(slot);
-                    backend.build_shadow_silhouette(&mut sscene, root, shape, class_idx, inset, true, false);
-                }
-                let last_use = group.iter().filter_map(|s| sil_last.get(s)).copied().max().unwrap_or(round);
-                sil_pending.push((round, sscene, group.clone(), last_use));
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            if std::env::var("WV_DBG_ROUNDS").is_ok() {
-                use crate::vello::units::RasterSource;
-                let members: usize = sil_layers.iter().map(|l| l.nodes.len()).sum();
-                let (mut glyph, mut analytic, mut body_fx, mut body_stack, mut other) = (0, 0, 0, 0, 0);
-                for l in &sil_layers {
-                    for &s in &l.nodes {
-                        match (&dag.nodes[s].op, &dag.nodes[s].source) {
-                            (UnitOp::Rasterize(RasterSource::Coverage { analytic: false, .. }), _) => glyph += 1,
-                            (UnitOp::Rasterize(RasterSource::Coverage { analytic: true, .. }), _) => analytic += 1,
-                            (UnitOp::Rasterize(RasterSource::Body { .. }), DagSource::Effect { .. }) => body_fx += 1,
-                            (UnitOp::Rasterize(RasterSource::Body { .. }), _) => body_stack += 1,
-                            _ => other += 1,
-                        }
-                    }
-                }
-                eprintln!(
-                    "WV_DBG_SIL: layers={} silhouettes={members} (glyph={glyph} analytic={analytic} body_fx={body_fx} body_stack={body_stack} other={other})",
-                    sil_layers.len(),
-                );
-            }
+            sdf_jobs.sort_unstable_by_key(|&(sd, _, _)| sd);
             if !sdf_jobs.is_empty() {
                 if self.sdf_baker.is_none() {
                     self.sdf_baker = Some(crate::vello::sdf::SdfBaker::new(device));
@@ -2748,19 +2549,6 @@ impl Sink {
             // The extra iteration is the FINAL window ([last, SEG_ALL)) — same dispatch, open end.
             let hi = if r > max_round { crate::vello::rasterize::SEG_ALL } else { r };
             if window_has_draws(window_lo, hi) {
-                while sil_next < sil_pending.len() && sil_pending[sil_next].0 < hi {
-                    let (_, ref sscene, ref group, last_use) = sil_pending[sil_next];
-                    let sil = self.pool.acquire_target(device, width, acc_h, format, self.raster_usage, "wv unit silhouette");
-                    let sv = sil.create_view(&wgpu::TextureViewDescriptor::default());
-                    backend.rasterize(sscene, device, queue, &mut enc, &sv, width, acc_h, TRANSPARENT);
-                    for &s in group {
-                        node_scratch.insert(s, sv.clone());
-                    }
-                    self.frame_transient_views.push(sv);
-                    sil_live.push((sil, last_use));
-                    sil_peak = sil_peak.max(sil_live.len());
-                    sil_next += 1;
-                }
                 note_passes(2);
                 #[cfg(not(target_arch = "wasm32"))]
                 if std::env::var("WV_DBG_WIN").is_ok() { eprintln!("WV_DBG_WIN: [{window_lo},{hi}) nodes={:?} seeded={seeded}", round_nodes.get(&window_lo)); }
@@ -2794,17 +2582,7 @@ impl Sink {
                         if matches!(dag.nodes[n].op, UnitOp::Rasterize(_)) {
                             return Some(n);
                         }
-                        let folded_rz = |j: usize| {
-                            matches!(
-                                dag.nodes[j].op,
-                                UnitOp::Rasterize(
-                                    crate::vello::units::RasterSource::Coverage {
-                                        analytic: true,
-                                        ..
-                                    } | crate::vello::units::RasterSource::Body { .. }
-                                )
-                            )
-                        };
+                        let folded_rz = |j: usize| dag.folded_source(j);
                         let direct = dag.nodes[n].inputs.iter().copied().find(|&j| match shp.input {
                             Slot::Source => matches!(dag.nodes[j].op, UnitOp::Rasterize(_)),
                             Slot::Draft(2) => folded_rz(j),
@@ -2818,7 +2596,7 @@ impl Sink {
                         }
                         // A fused arm's source sits below its folded in-register units (a clip over a
                         // warp over the body): walk the input spine down to the rasterized root.
-                        if matches!(shp.input, Slot::Source) {
+                        if matches!(shp.input, Slot::Source | Slot::Draft(2)) {
                             let mut r = *dag.nodes[n].inputs.first()?;
                             loop {
                                 match dag.nodes[r].op {
@@ -3012,22 +2790,10 @@ impl Sink {
                 seed_clear(&mut enc, &acc);
                 seeded = true;
             }
-            let mut i = 0;
-            while i < sil_live.len() {
-                if sil_live[i].1 < r {
-                    let (t, _) = sil_live.swap_remove(i);
-                    self.pool.release(t);
-                } else {
-                    i += 1;
-                }
-            }
             if passes_recorded().wrapping_sub(flush_mark) >= wv_pass_flush_budget() {
                 Self::submit_batch(&mut enc, device, queue, backend);
                 flush_mark = passes_recorded();
             }
-        }
-        for (t, _) in sil_live.drain(..) {
-            self.pool.release(t);
         }
         if !seeded {
             seed_clear(&mut enc, &acc);
@@ -3048,7 +2814,7 @@ impl Sink {
             let draft_bytes: u64 =
                 draft_texs.iter().map(|t| u64::from(t.width()) * u64::from(t.height()) * 4).sum();
             eprintln!(
-                "WV_DBG_ALLOC: planned lives={} peak={:.1}MB@r{} | executor: acc+snap {}x{} ({:.1}MB) loop-drafts={} ({:.1}MB, atlas={:?}) sil-groups={} sil-peak={sil_peak}",
+                "WV_DBG_ALLOC: planned lives={} peak={:.1}MB@r{} | executor: acc+snap {}x{} ({:.1}MB) loop-drafts={} ({:.1}MB, atlas={:?})",
                 lives.len(),
                 mb(peak),
                 peak_round,
@@ -3058,7 +2824,6 @@ impl Sink {
                 draft_texs.len(),
                 mb(draft_bytes),
                 scratch_atlas_dims,
-                sil_pending.len(),
             );
             for l in &lives {
                 eprintln!(
