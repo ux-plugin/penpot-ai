@@ -727,10 +727,20 @@ impl FrameDag {
             let c = corder[idx];
             let mut b = 0u32;
             for &d in &corder[..idx] {
+                // Plain paint never pushes an EFFECT: a plain draw carries no marker, so its
+                // executed segment on any tile is set by the last marker before it in the stream —
+                // per-tile z order holds wherever the effect lands, and its backdrop reads see the
+                // draw through the running register (same window) or the accumulator (an earlier
+                // one). Without this, the plain grid's transitive overlap chain relayed every
+                // effect's base to every later effect — disjoint effects that pack into a handful
+                // of rounds alone were smeared across hundreds when interleaved with plain shapes.
+                // Effects still push plain (a draw above an effect must land in or after the
+                // composite's round) and effects push effects (two markers sharing a tile need a
+                // fresh round between them; plain co-exists in a round, ordered by PTCL position).
+                if is_effect[c] && !is_effect[d] {
+                    continue;
+                }
                 if reach_overlap(reach[c], reach[d], tile) {
-                    // Strictly-increasing rounds bind only between two MARKERS: two effects that share a
-                    // tile need a fresh round between them. If either side is plain paint (no marker), they
-                    // co-exist in one round, ordered by PTCL position — no gap.
                     let gap = u32::from(is_effect[c] && is_effect[d]);
                     b = b.max(base[d] + span[d] + gap);
                 }
@@ -776,6 +786,12 @@ impl FrameDag {
         for i in 0..n {
             round[i] = base[comp[i]] + off[i];
         }
+        debug_assert!(
+            self.nodes.iter().enumerate().all(|(i, node)| {
+                node.inputs.iter().all(|&j| comp[j] == comp[i] || round[j] <= round[i])
+            }),
+            "cross-component data edge scheduled out of order — the spine push no longer covers it"
+        );
 
         // Per-node barrier tag (display + executor): the strongest incoming edge barrier.
         let mut barrier = vec![None; n];
