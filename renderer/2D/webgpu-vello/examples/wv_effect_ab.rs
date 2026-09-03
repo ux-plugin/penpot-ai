@@ -24,6 +24,13 @@ const PROOFS: &str = "/Users/dhiat/coding/penpot-ai/.claude/worktrees/ai-chat-fe
 
 fn install(scene: &str) -> u32 {
     match scene {
+        "scale" => render_core::vello::abi::load_scale_scene_sized(
+            std::env::var("SHAPES").ok().and_then(|v| v.parse().ok()).unwrap_or(90),
+            std::env::var("EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(40),
+            std::env::var("STEP").ok().and_then(|v| v.parse().ok()).unwrap_or(26.0),
+            std::env::var("SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.9),
+            std::env::var("OPEVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(7),
+        ),
         "path-shadow" => render_core::vello::abi::load_path_shadow_scene(),
         "inner-shadow" => render_core::vello::abi::load_inner_shadow_scene(),
         "sharp-drop" => render_core::vello::abi::load_sharp_drop_scene(),

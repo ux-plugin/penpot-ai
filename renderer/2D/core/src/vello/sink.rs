@@ -1519,10 +1519,7 @@ impl Sink {
             matches!(dag.nodes[m.node].source, crate::vello::frame_dag::Source::Body(_))
         };
         // A FENCE mark: the zero-desc mark a folded silhouette source owns (the only Rasterize
-        // Coverage mark ever pushed). Independent producers, so the HOIST collapses every one of
-        // them into executor round 1 — one rasterize window, one dispatch — with the fence-flush in
-        // fine multiplexing overlapping tiles across leases. Round 2 is reserved for the restore
-        // marker that returns every tile to the base segment; all other rounds shift past it.
+        // Coverage mark ever pushed).
         let is_fence = |m: &UnitMark| m.desc[0] == 0.0 && dag.folded_source(m.node);
         #[cfg(not(target_arch = "wasm32"))]
         let hoist_on = sil_fold
@@ -1530,13 +1527,94 @@ impl Sink {
             && std::env::var("WV_SCRATCH_CROP").map_or(true, |v| v != "0");
         #[cfg(target_arch = "wasm32")]
         let hoist_on = sil_fold;
-        // The hoist SPENDS memory the scheduler never modelled: schedule() approved the scratch
-        // budget against scattered sil lifetimes, and moving every birth to round 1 makes all fold
-        // leases co-live until their last reader. So the hoist is budget-capped HERE: fences join
-        // the round-1 window greedily (deterministic gid order) while their tile-aligned lease
-        // areas fit min(scratch budget, half the 8192² side texture — rowing waste headroom); the
-        // overflow keeps its scheduled round and costs windows, never a dropped silhouette.
-        let hoist_set: std::collections::HashSet<usize> = if hoist_on {
+        #[cfg(not(target_arch = "wasm32"))]
+        let front_on = hoist_on && std::env::var("WV_FRONT").map_or(true, |v| v != "0");
+        #[cfg(target_arch = "wasm32")]
+        let front_on = hoist_on;
+        // The FRONT REGION — the fence hoist generalized to every backdrop-free materialize. A mark
+        // whose window binds no accumulator state (`to_draft`, base/input never `Backdrop`) and
+        // whose whole read spine is itself front-loaded depends only on leases, so it runs before
+        // the accumulator spine: every silhouette in one rasterize round, every chain's first blur
+        // in the next, and so on — one round per (spine depth, binding class), so each front round
+        // keeps ONE dispatch shape and producers land strictly before consumers. The front SPENDS
+        // memory the scheduler never modelled (front drafts co-live until their last spine reader),
+        // so admission is budget-capped per chain in deterministic gid order — a chain that misses
+        // the cap keeps its scheduled rounds (falling back to its fences alone) and costs windows,
+        // never pixels. The round after the last front round is reserved for the restore marker
+        // returning every tile to the base segment; spine rounds shift past it.
+        let front: HashMap<usize, u32> = if hoist_on {
+            use crate::vello::frame_dag::Slot;
+            let shape_front = |n: usize| {
+                dag.binding_shape(n).is_some_and(|s| {
+                    s.to_draft && s.base != Slot::Backdrop && s.input != Slot::Backdrop
+                })
+            };
+            let mut depth_of: HashMap<usize, u8> = HashMap::new();
+            for ms in marks.values() {
+                for m in ms {
+                    if is_fence(m) {
+                        depth_of.insert(m.node, 0);
+                    }
+                }
+            }
+            if front_on {
+                for ms in marks.values() {
+                    let mark_at: HashMap<usize, usize> =
+                        ms.iter().enumerate().map(|(k, m)| (m.node, k)).collect();
+                    loop {
+                        let mut changed = false;
+                        for m in ms {
+                            if depth_of.contains_key(&m.node)
+                                || is_fence(m)
+                                || !shape_front(m.node)
+                            {
+                                continue;
+                            }
+                            let shp = dag.binding_shape(m.node).expect("shape_front implies a shape");
+                            if matches!(shp.base, Slot::Source | Slot::Draft(2))
+                                && !dag_base_rasterize(&dag, m.node)
+                                    .is_some_and(|rz| depth_of.contains_key(&rz))
+                            {
+                                continue;
+                            }
+                            let mut cur = if matches!(
+                                dag.nodes[m.node].op,
+                                crate::vello::units::UnitOp::EraseBy(_)
+                            ) {
+                                dag.nodes[m.node].inputs.get(1).copied()
+                            } else {
+                                dag.nodes[m.node].inputs.first().copied()
+                            };
+                            let dep = loop {
+                                let Some(c) = cur else { break None };
+                                if let Some(&k) = mark_at.get(&c) {
+                                    if !is_fence(&ms[k])
+                                        && dag.binding_shape(c).is_some_and(|s| s.to_draft)
+                                    {
+                                        break depth_of.get(&c).copied();
+                                    }
+                                }
+                                if matches!(dag.nodes[c].op, crate::vello::units::UnitOp::Rasterize(_)) {
+                                    break if depth_of.contains_key(&c) { Some(0) } else { None };
+                                }
+                                if matches!(dag.nodes[c].op, crate::vello::units::UnitOp::Reload)
+                                    || dag.nodes[c].writes_accumulator()
+                                {
+                                    break None;
+                                }
+                                cur = dag.nodes[c].inputs.first().copied();
+                            };
+                            if let Some(d) = dep {
+                                depth_of.insert(m.node, d.saturating_add(1));
+                                changed = true;
+                            }
+                        }
+                        if !changed {
+                            break;
+                        }
+                    }
+                }
+            }
             let reach_by_gid: HashMap<u128, [f32; 4]> =
                 gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
             #[cfg(not(target_arch = "wasm32"))]
@@ -1547,47 +1625,89 @@ impl Sink {
             #[cfg(target_arch = "wasm32")]
             let hoist_budget = scratch_budget;
             let cap_px = (hoist_budget / 4).min(scratch_budget / 4).min(8192 * 8192 / 2);
-            let mut fences: Vec<(u128, usize, u64)> = marks
-                .iter()
-                .flat_map(|(&gid, ms)| {
-                    ms.iter().filter(|m| is_fence(m)).map(move |m| (gid, m.node))
-                })
-                .map(|(gid, node)| {
-                    let r = reach_by_gid[&gid];
-                    let x0 = (r[0].max(0.0) as u32 / TILE_PX) * TILE_PX;
-                    let y0 = (r[1].max(0.0) as u32 / TILE_PX) * TILE_PX;
-                    let x1 = ((r[2].max(0.0).ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(width);
-                    let y1 = ((r[3].max(0.0).ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(acc_h);
-                    (gid, node, u64::from(x1.saturating_sub(x0)) * u64::from(y1.saturating_sub(y0)))
-                })
-                .collect();
-            fences.sort_unstable_by_key(|&(gid, node, _)| (gid, node));
+            let area_of = |gid: u128| -> u64 {
+                let r = reach_by_gid[&gid];
+                let x0 = (r[0].max(0.0) as u32 / TILE_PX) * TILE_PX;
+                let y0 = (r[1].max(0.0) as u32 / TILE_PX) * TILE_PX;
+                let x1 = ((r[2].max(0.0).ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(width);
+                let y1 = ((r[3].max(0.0).ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(acc_h);
+                u64::from(x1.saturating_sub(x0)) * u64::from(y1.saturating_sub(y0))
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let depth_cap: u8 = std::env::var("WV_FRONT_DEPTH")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(u8::MAX);
+            #[cfg(target_arch = "wasm32")]
+            let depth_cap = u8::MAX;
+            let mut order: Vec<u128> = marks.keys().copied().collect();
+            order.sort_unstable();
             let mut px = 0u64;
-            fences
-                .into_iter()
-                .filter(|&(_, _, a)| {
-                    if px + a <= cap_px {
-                        px += a;
-                        true
-                    } else {
-                        false
+            let mut admitted: Vec<(usize, u8)> = Vec::new();
+            for gid in order {
+                let ms = &marks[&gid];
+                let mut elig: Vec<(usize, u8)> = ms
+                    .iter()
+                    .filter_map(|m| depth_of.get(&m.node).map(|&d| (m.node, d)))
+                    .filter(|&(_, d)| d <= depth_cap)
+                    .collect();
+                if elig.is_empty() {
+                    continue;
+                }
+                elig.sort_unstable();
+                let area = area_of(gid);
+                let full = area.saturating_mul(elig.len() as u64);
+                if px + full <= cap_px {
+                    px += full;
+                    admitted.extend(elig);
+                } else {
+                    for &(node, d) in elig.iter().filter(|&&(_, d)| d == 0) {
+                        if px + area <= cap_px {
+                            px += area;
+                            admitted.push((node, d));
+                        }
                     }
-                })
-                .map(|(_, node, _)| node)
-                .collect()
+                }
+            }
+            let sk = |sl: Slot| match sl {
+                Slot::None => 0u8,
+                Slot::Source => 1,
+                Slot::Backdrop => 2,
+                Slot::Draft(p) => 3 + p,
+            };
+            let class_of = |n: usize| {
+                let s = dag.binding_shape(n).expect("admitted marks have a shape");
+                (sk(s.base), sk(s.input), u8::from(s.draft_taps))
+            };
+            let mut keys: Vec<(u8, (u8, u8, u8))> =
+                admitted.iter().map(|&(n, d)| (d, class_of(n))).collect();
+            keys.sort_unstable();
+            keys.dedup();
+            let rank: HashMap<(u8, (u8, u8, u8)), u32> =
+                keys.iter().enumerate().map(|(i, &k)| (k, i as u32)).collect();
+            admitted.into_iter().map(|(n, d)| (n, rank[&(d, class_of(n))])).collect()
         } else {
-            std::collections::HashSet::new()
+            HashMap::new()
         };
-        let hoist = !hoist_set.is_empty();
+        let hoist = !front.is_empty();
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_HOIST").is_ok() {
-            let total = marks.values().flatten().filter(|m| is_fence(m)).count();
-            eprintln!("WV_DBG_HOIST: hoisted={}/{total}", hoist_set.len());
+            let fences = marks.values().flatten().filter(|m| is_fence(m)).count();
+            let hf = marks
+                .values()
+                .flatten()
+                .filter(|m| is_fence(m) && front.contains_key(&m.node))
+                .count();
+            let rounds_used = front.values().collect::<std::collections::BTreeSet<_>>().len();
+            eprintln!(
+                "WV_DBG_HOIST: front={} marks ({hf}/{fences} fences) over {rounds_used} rounds",
+                front.len(),
+            );
         }
-        let is_hoisted = |m: &UnitMark| hoist_set.contains(&m.node) && is_fence(m);
+        let is_hoisted = |m: &UnitMark| front.contains_key(&m.node);
         let mark_key = |m: &UnitMark, ms: &[UnitMark]| -> (i64, u8) {
-            if is_hoisted(m) {
-                return (i64::MIN, 0);
+            if let Some(&r) = front.get(&m.node) {
+                return (i64::MIN + i64::from(r), 0);
             }
             if is_body(m) { body_key(m, ms) } else { (i64::from(m.round), 0) }
         };
@@ -1608,6 +1728,14 @@ impl Sink {
                 }
             }
         }
+        // The last front round; `front_end + 1` is the restore round every spine round shifted past.
+        let front_end: u32 = marks
+            .values()
+            .flatten()
+            .filter(|m| is_hoisted(m))
+            .map(|m| m.round)
+            .max()
+            .unwrap_or(0);
         let rounds: Vec<u32> = gathers
             .iter()
             .map(|&(_, gid, _)| {
@@ -1743,6 +1871,14 @@ impl Sink {
                             }
                         }
                         if let Some(e) = read_input(m2.node) {
+                            let d = death_of.entry(e).or_insert(0);
+                            *d = (*d).max(m2.round);
+                        }
+                        // The BASE binding (a Source/Draft(2) base resolves to the chain's rasterize
+                        // root) is a read too — invisible to `inputs`/`read_input`, so without this a
+                        // front-loaded root's lease dies at its first blur and a later window binds
+                        // a reclaimed slot.
+                        if let Some(e) = dag_base_rasterize(&dag, m2.node).filter(|e| leased.contains(e)) {
                             let d = death_of.entry(e).or_insert(0);
                             *d = (*d).max(m2.round);
                         }
@@ -1990,7 +2126,10 @@ impl Sink {
                 for ms in marks.values_mut() {
                     for m in ms.iter_mut() {
                         if let Some(&(ox, oy)) = origin.get(&m.node) {
-                            m.rec[4] = [1.0, ox, oy, 0.0];
+                            // rec[4].w = the FLUSH flag: set only on front-merged marks, where a
+                            // second producer on a tile must store-and-reseed the register. The
+                            // planner decides; un-merged windows keep their register flow verbatim.
+                            m.rec[4] = [1.0, ox, oy, f32::from(u8::from(front.contains_key(&m.node)))];
                         }
                         if let Some(e) = read_input(m.node).filter(|e| origin.contains_key(e)) {
                             let (ox, oy) = origin[&e];
@@ -2100,38 +2239,41 @@ impl Sink {
             let mut mb = Vec::with_capacity(gathers.len());
             let mut cursor = 0usize;
             let mut z = 0u32;
-            // The HOIST's front block: every fence + its silhouette draws first in the scene (all
-            // at round 1 — one rasterize window), then a full-viewport boundary marker at round 2
-            // returning every tile to the base segment. The seed window [0,1) breaks at the first
-            // front-block marker on every tile, so the base content it used to composite rides the
-            // round-2 window instead.
+            // The FRONT block: every front mark's marker draws first in the scene, sorted by round
+            // (per-tile rounds stay monotone), fences followed by their silhouette draws. Then a
+            // full-viewport boundary marker at `front_end + 1` returns every tile to the base
+            // segment. The seed window [0,1) breaks at the first front-block marker on every tile,
+            // so the base content it used to composite rides the restore round's window instead.
             if hoist {
+                let mut fronted: Vec<(u32, usize, usize)> = Vec::new();
                 for (j, &(_, gid, _)) in gathers.iter().enumerate() {
                     let Some(ms) = marks.get(&gid) else { continue };
-                    for m in ms {
-                        if !is_hoisted(m) {
-                            continue;
+                    for (k, m) in ms.iter().enumerate() {
+                        if is_hoisted(m) {
+                            fronted.push((m.round, j, k));
                         }
-                        z += 1;
-                        backend.draw_effect_marker(
-                            &mut scene,
-                            root,
-                            gid,
-                            crate::vello::bake::EID_MATERIALIZE,
-                            z,
-                            m.round,
-                            m.off,
-                            reaches[j],
-                            m.ctl,
-                        );
-                        marker_rects.push((m.round, reaches[j]));
+                    }
+                }
+                fronted.sort_unstable();
+                for (r, j, k) in fronted {
+                    let gid = gathers[j].1;
+                    let m = &marks[&gid][k];
+                    z += 1;
+                    let eid = if m.masked {
+                        crate::vello::bake::EID_MASKED
+                    } else {
+                        crate::vello::bake::EID_MATERIALIZE
+                    };
+                    backend.draw_effect_marker(&mut scene, root, gid, eid, z, r, m.off, reaches[j], m.ctl);
+                    marker_rects.push((r, reaches[j]));
+                    if is_fence(m) {
                         emit_sil_draws(backend, &mut scene, m.node, reaches[j]);
                     }
                 }
                 z += 1;
                 let full = [0.0, 0.0, width as f32, acc_h as f32];
-                backend.draw_effect_marker(&mut scene, root, 0, 6, z, 2, 0, full, 0);
-                marker_rects.push((2, full));
+                backend.draw_effect_marker(&mut scene, root, 0, 6, z, front_end + 1, 0, full, 0);
+                marker_rects.push((front_end + 1, full));
             }
             for (j, &(gi, gid, kind)) in gathers.iter().enumerate() {
                 if gi > cursor {
@@ -2336,10 +2478,10 @@ impl Sink {
                 // and starve every mark window behind the base-only special case.
                 return real_draws > 0 || !active_rounds.is_empty();
             }
-            // The hoist's restore marker parks every tile's base content at segment 2 — a round no
-            // mark owns, invisible to the clauses below — so its window opens whenever the scene
-            // has real draws at all.
-            if hoist && lo == 2 && real_draws > 0 {
+            // The front's restore marker parks every tile's base content at `front_end + 1` — a
+            // round no mark owns, invisible to the clauses below — so its window opens whenever
+            // the scene has real draws at all.
+            if hoist && lo == front_end + 1 && real_draws > 0 {
                 return true;
             }
             let hit = |r: u32| r >= lo && (hi == crate::vello::rasterize::SEG_ALL || r < hi);
@@ -2836,6 +2978,47 @@ impl Sink {
                     l.death,
                     mb(u64::from(l.w) * u64::from(l.h) * 4),
                 );
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Ok(dir) = std::env::var("WV_DBG_DUMP_DRAFTS") {
+            Self::submit_batch(&mut enc, device, queue, backend);
+            for (di, t) in draft_texs.iter().enumerate() {
+                let (w, h) = (t.width(), t.height());
+                let row = (w * 4).div_ceil(256) * 256;
+                let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("wv draft dump"),
+                    size: u64::from(row) * u64::from(h),
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                let mut e2 = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                e2.copy_texture_to_buffer(
+                    t.as_image_copy(),
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &buf,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(row),
+                            rows_per_image: None,
+                        },
+                    },
+                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                );
+                queue.submit([e2.finish()]);
+                let slice = buf.slice(..);
+                slice.map_async(wgpu::MapMode::Read, |_| {});
+                let _ = device.poll(wgpu::PollType::wait_indefinitely());
+                let data = slice.get_mapped_range();
+                let mut px = Vec::with_capacity((w * h * 4) as usize);
+                for y in 0..h {
+                    let o = (y * row) as usize;
+                    px.extend_from_slice(&data[o..o + (w * 4) as usize]);
+                }
+                drop(data);
+                let path = format!("{dir}/draft-{di}-{w}x{h}.rgba");
+                std::fs::write(&path, &px).expect("dump file");
+                eprintln!("WV_DBG_DUMP_DRAFTS: wrote {path}");
             }
         }
         // The blur drafts lived across the whole round loop (like the batch atlases); hand them to the

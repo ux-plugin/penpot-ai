@@ -93,6 +93,23 @@ fn main() {
         println!("wrote {path}");
         return;
     }
+    if std::env::var("TILED").is_ok() {
+        let root = Affine::IDENTITY;
+        let full_view = render_core::vello::abi::effective_view(root);
+        let (dirty_all, dirty_rects) = render_core::vello::abi::take_dirty();
+        let mut tsink = Sink::new(&device, FORMAT);
+        let dirty = tsink.plan_frame(full_view, w, h, dirty_all, &dirty_rects);
+        let dirty_set: std::collections::HashSet<render_core::tiling::TileKey> =
+            dirty.iter().copied().collect();
+        let schedule = render_core::vello::abi::build_schedule(root, &dirty_set, dirty_all);
+        tsink.execute(&schedule, &dirty, &mut backend, &device, &queue, &target, root, w, h);
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let rgba = read_back(&device, &queue, &target, w, h);
+        let path = format!("{PROOFS}/scale-probe-tiled-n{n}-e{every}.png");
+        write_png(&path, &rgba, w, h);
+        println!("wrote {path}");
+        return;
+    }
     let _ = render_core::vello::abi::take_dirty();
     let root = Affine::IDENTITY;
     if std::env::var("RAW").is_ok() {
