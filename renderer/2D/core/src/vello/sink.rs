@@ -1154,9 +1154,6 @@ impl Sink {
             off: u32,
         }
         let mut marks: HashMap<u128, Vec<UnitMark>> = HashMap::new();
-        #[cfg(not(target_arch = "wasm32"))]
-        let sil_fold = std::env::var("WV_SIL_FOLD").map_or(true, |v| v != "0");
-        #[cfg(target_arch = "wasm32")]
         let sil_fold = true;
         {
             use crate::vello::bake::{bake_unit, bits, spread_arm, Policy};
@@ -2547,6 +2544,36 @@ impl Sink {
             };
             let dev: HashMap<u128, [f32; 4]> =
                 gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
+            // A mark needs the snapshot refreshed only where its dispatch actually SAMPLES the
+            // snapshot, and only as far as its taps reach. Neighbourhood readers — warp
+            // displacement, scatter, floods, a blur whose taps ride the base binding (an rw window
+            // with no slot-10 input), and every mark of a materialize window whose base IS the
+            // snapshot — keep the full tap pad. An rw composite that reads only its OWN pixel's
+            // backdrop (a chained mark whose `orig` record points at the base) needs just its
+            // quad: fine reads `orig` at cov>0 pixels, all inside the reach. A mark that never
+            // samples the base at all — a plain-window fused mark whose `orig` is the running
+            // register, a blur whose taps ride a draft — contributes no rect, and a window of
+            // only such marks skips its refresh dispatch entirely.
+            let snap_pad = |mk: &UnitMark| -> Option<f32> {
+                use crate::vello::frame_dag::Slot;
+                let bits = mk.desc[0] as u32;
+                if bits
+                    & (crate::vello::bake::bits::WARP
+                        | crate::vello::bake::bits::SCATTER
+                        | crate::vello::bake::bits::FLOOD_ERASE)
+                    != 0
+                {
+                    return Some(tap_pad(mk.node));
+                }
+                let Some(shp) = dag.binding_shape(mk.node) else { return Some(tap_pad(mk.node)) };
+                if shp.to_draft {
+                    return (shp.base == Slot::Backdrop).then(|| tap_pad(mk.node));
+                }
+                if matches!(dag.nodes[mk.node].op, UnitOp::Blur { .. }) && shp.input == Slot::None {
+                    return Some(tap_pad(mk.node));
+                }
+                (shp.input != Slot::None && mk.rec[1][0] != 2.0).then_some(0.0)
+            };
             let mut m: HashMap<u32, Vec<[f32; 4]>> = HashMap::new();
             let mut mr: HashMap<u32, Vec<[f32; 4]>> = HashMap::new();
             for (gid, ms) in &marks {
@@ -2555,8 +2582,20 @@ impl Sink {
                     if mk.desc[0] as u32 == 0 {
                         continue;
                     }
-                    let pad = tap_pad(mk.node);
-                    m.entry(mk.round).or_default().push([q[0] - pad, q[1] - pad, q[2] + pad, q[3] + pad]);
+                    let pad = snap_pad(mk);
+                    if let Some(pad) = pad {
+                        m.entry(mk.round).or_default().push([q[0] - pad, q[1] - pad, q[2] + pad, q[3] + pad]);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if std::env::var("WV_DBG_SNAPDROP").is_ok() {
+                        eprintln!(
+                            "WV_DBG_SNAPDROP: pad={pad:?} round={} bits={:#x} op={:?} shp={:?} quad={q:?}",
+                            mk.round,
+                            mk.desc[0] as u32,
+                            dag.nodes[mk.node].op,
+                            dag.binding_shape(mk.node),
+                        );
+                    }
                     let mp = merge_pad(mk);
                     mr.entry(mk.round).or_default().push([q[0] - mp, q[1] - mp, q[2] + mp, q[3] + mp]);
                 }
