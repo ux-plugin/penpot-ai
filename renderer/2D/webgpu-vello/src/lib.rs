@@ -633,9 +633,6 @@ pub struct ClassicBackend {
     /// The in-progress persistent phased render, live between `phased_begin` and `phased_finish` so
     /// the sink can drive phases one at a time with a gather's effect recorded between them.
     phased_session: Option<vello::low_level::PhasedSession>,
-    /// Whether fine dispatches defer into shared compute passes (`WV_PASS_BATCH`). Snapshot
-    /// refreshes ride the batch as `snap_copy` dispatches only when on; off keeps encoder blits.
-    pass_batch: bool,
     /// DEBUG (native only): the phased session's bump-buffer resource id + a device/queue clone, so
     /// `after_submit` can dump vello's overflow counters when `WV_DEBUG_BUMP` is set.
     #[cfg(not(target_arch = "wasm32"))]
@@ -648,12 +645,7 @@ impl ClassicBackend {
     /// Build over a device (compiles the classic shader permutations once).
     #[must_use]
     pub fn new(device: &wgpu::Device) -> Self {
-        let mut renderer = ClassicRenderer::new(device);
-        #[cfg(not(target_arch = "wasm32"))]
-        let batch = std::env::var("WV_PASS_BATCH").map_or(true, |v| v != "0");
-        #[cfg(target_arch = "wasm32")]
-        let batch = true;
-        renderer.inner.set_dispatch_batching(batch);
+        let renderer = ClassicRenderer::new(device);
         Self {
             renderer,
             text: render_core::vello::text::TextState::new(),
@@ -662,7 +654,6 @@ impl ClassicBackend {
             inline_images: std::collections::HashMap::new(),
             next_inline: 0,
             phased_session: None,
-            pass_batch: batch,
             #[cfg(not(target_arch = "wasm32"))]
             debug_bump_id: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1091,11 +1082,8 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         rects: &[[u32; 4]],
         src: &wgpu::TextureView,
         dst: &wgpu::TextureView,
-    ) -> bool {
-        if !self.pass_batch {
-            return false;
-        }
-        let Some(session) = self.phased_session.as_mut() else { return false };
+    ) {
+        let session = self.phased_session.as_mut().expect("phase_snap_copy without phased_begin");
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_SNAPCOPY").is_ok() {
             eprintln!("WV_DBG_SNAPCOPY: {} rects", rects.len());
@@ -1104,7 +1092,6 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
             .inner
             .phased_snap_copy_into(session, device, queue, enc, rects, src, dst)
             .expect("phased_snap_copy_into");
-        true
     }
 
     fn rasterize_target_usage(&self) -> wgpu::TextureUsages {

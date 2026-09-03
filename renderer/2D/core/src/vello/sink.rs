@@ -439,12 +439,9 @@ pub(crate) fn passes_recorded() -> u32 {
 /// WALL TIME, not memory: Metal's GPU watchdog kills a command buffer that runs multi-second, and
 /// at 4K a heavy scene's passes are milliseconds each — 768 crossed the threshold near 6000 shapes
 /// (device lost, every later creation invalid). 128 keeps the heaviest measured buffers far under
-/// the watchdog at negligible submit overhead; WV_PASS_FLUSH_BUDGET overrides for experiments.
-fn wv_pass_flush_budget() -> u32 {
-    static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *V.get_or_init(|| {
-        std::env::var("WV_PASS_FLUSH_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(128)
-    })
+/// the watchdog at negligible submit overhead.
+const fn wv_pass_flush_budget() -> u32 {
+    128
 }
 
 /// The scheduler's GPU production sink. Owns the per-frame surface map and the SrcOver compositor.
@@ -1559,15 +1556,7 @@ impl Sink {
         // A FENCE mark: the zero-desc mark a folded silhouette source owns (the only Rasterize
         // Coverage mark ever pushed).
         let is_fence = |m: &UnitMark| m.desc[0] == 0.0 && dag.folded_source(m.node);
-        #[cfg(not(target_arch = "wasm32"))]
-        let hoist_on = sil_fold
-            && std::env::var("WV_SIL_HOIST").map_or(true, |v| v != "0")
-            && std::env::var("WV_SCRATCH_CROP").map_or(true, |v| v != "0");
-        #[cfg(target_arch = "wasm32")]
         let hoist_on = sil_fold;
-        #[cfg(not(target_arch = "wasm32"))]
-        let front_on = hoist_on && std::env::var("WV_FRONT").map_or(true, |v| v != "0");
-        #[cfg(target_arch = "wasm32")]
         let front_on = hoist_on;
         // The FRONT REGION — the fence hoist generalized to every backdrop-free materialize. A mark
         // whose window binds no accumulator state (`to_draft`, base/input never `Backdrop`) and
@@ -1671,13 +1660,6 @@ impl Sink {
                 let y1 = ((r[3].max(0.0).ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(acc_h);
                 u64::from(x1.saturating_sub(x0)) * u64::from(y1.saturating_sub(y0))
             };
-            #[cfg(not(target_arch = "wasm32"))]
-            let depth_cap: u8 = std::env::var("WV_FRONT_DEPTH")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(u8::MAX);
-            #[cfg(target_arch = "wasm32")]
-            let depth_cap = u8::MAX;
             let mut order: Vec<u128> = marks.keys().copied().collect();
             order.sort_unstable();
             let mut px = 0u64;
@@ -1687,7 +1669,7 @@ impl Sink {
                 let mut elig: Vec<(usize, u8)> = ms
                     .iter()
                     .filter_map(|m| depth_of.get(&m.node).map(|&d| (m.node, d)))
-                    .filter(|&(_, d)| d <= depth_cap)
+
                     .collect();
                 if elig.is_empty() {
                     continue;
@@ -1828,8 +1810,7 @@ impl Sink {
                 gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
             let mut lives: Vec<LiveRect> = Vec::new();
             let mut jobs: Vec<(usize, u32, u32)> = Vec::new();
-            let crop_on = std::env::var("WV_SCRATCH_CROP").map_or(true, |v| v != "0");
-            if crop_on {
+            {
                 // A consumer's blur taps ESCAPE the draft's reach (3σ past its outermost marked
                 // pixel). The lease is tight, so an escaped tap is answered by the blur's own
                 // out-of-bounds policy (page for a backdrop blur, transparent for a coverage one) —
@@ -2431,7 +2412,7 @@ impl Sink {
             width,
             acc_h,
             wgpu::TextureFormat::R32Uint,
-            wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
             "wv snap",
         );
         let snap = snap_tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -2538,14 +2519,7 @@ impl Sink {
         // (`base_in`) is served by the `snap` texture, refreshed per window by encoder blits of the
         // rects its marks can read: each mark's quad padded by its tap margin (3σ for a blur's
         // escaped taps; a flat allowance for warp displacement, chromatic shift and flood offsets).
-        #[cfg(not(target_arch = "wasm32"))]
-        let sparse_on = std::env::var("WV_SPARSE").map_or(true, |v| v != "0");
-        #[cfg(target_arch = "wasm32")]
-        let sparse_on = true;
-        #[cfg(not(target_arch = "wasm32"))]
-        let snap_full = std::env::var("WV_SNAP_FULL").is_ok();
-        #[cfg(target_arch = "wasm32")]
-        let snap_full = false;
+
         let (snap_round_rects, merge_read_rects): (
             HashMap<u32, Vec<[f32; 4]>>,
             HashMap<u32, Vec<[f32; 4]>>,
@@ -2612,10 +2586,7 @@ impl Sink {
             let wt = width.div_ceil(TILE_PX);
             let ht = acc_h.div_ceil(TILE_PX);
             let full = (wt as usize) * (ht as usize);
-            #[cfg(not(target_arch = "wasm32"))]
-            let merge_on = sparse_on && std::env::var("WV_MERGE").map_or(true, |v| v != "0");
-            #[cfg(target_arch = "wasm32")]
-            let merge_on = sparse_on;
+
             struct Win {
                 lo: u32,
                 hi: u32,
@@ -2664,7 +2635,7 @@ impl Sink {
                         }
                     }
                     if !rects.is_empty() {
-                        if snap_full || rect_area * 2 > u64::from(width) * u64::from(acc_h) {
+                        if rect_area * 2 > u64::from(width) * u64::from(acc_h) {
                             rects = vec![[0, 0, width, acc_h]];
                         }
                         snap_windows.insert(lo, rects);
@@ -2686,8 +2657,7 @@ impl Sink {
                         }
                     }
                 }
-                let eligible = sparse_on
-                    && lo != 0
+                let eligible = lo != 0
                     && round_nodes.get(&lo).is_none_or(|nodes| {
                         !dag.binding_shape(nodes[0]).is_some_and(|shp| shp.to_draft)
                             || atlas_of.contains_key(&nodes[0])
@@ -2714,7 +2684,7 @@ impl Sink {
                 // Grouping class: a composite window's slot-10 kind plus the physical texture it
                 // binds there (its input's atlas side; -1 = nothing bound). `None` = ungroupable —
                 // a materialize, a full-grid window, a private-texture source.
-                let cls: Option<(u8, i64)> = if !(merge_on && listed && lo > front_end + 1) {
+                let cls: Option<(u8, i64)> = if !(listed && lo > front_end + 1) {
                     None
                 } else {
                     match round_nodes.get(&lo) {
@@ -3034,35 +3004,8 @@ impl Sink {
                         .flatten()
                         .copied()
                         .collect();
-                    if !refresh.is_empty()
-                        && !backend.phase_snap_copy(device, queue, &mut enc, &refresh, &acc, &snap)
-                    {
-                        backend.phase_flush(&mut enc);
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if std::env::var("WV_DBG_SNAPCOPY").is_ok() {
-                            eprintln!("WV_DBG_SNAPCOPY: {} rects (blit)", refresh.len());
-                        }
-                        for r4 in &refresh {
-                            enc.copy_texture_to_texture(
-                                wgpu::TexelCopyTextureInfo {
-                                    texture: &acc_tex,
-                                    mip_level: 0,
-                                    origin: wgpu::Origin3d { x: r4[0], y: r4[1], z: 0 },
-                                    aspect: wgpu::TextureAspect::All,
-                                },
-                                wgpu::TexelCopyTextureInfo {
-                                    texture: &snap_tex,
-                                    mip_level: 0,
-                                    origin: wgpu::Origin3d { x: r4[0], y: r4[1], z: 0 },
-                                    aspect: wgpu::TextureAspect::All,
-                                },
-                                wgpu::Extent3d {
-                                    width: r4[2] - r4[0],
-                                    height: r4[3] - r4[1],
-                                    depth_or_array_layers: 1,
-                                },
-                            );
-                        }
+                    if !refresh.is_empty() {
+                        backend.phase_snap_copy(device, queue, &mut enc, &refresh, &acc, &snap);
                     }
                     if shp.to_draft {
                         let dv = match (shp.base, shp.input) {
@@ -3172,35 +3115,8 @@ impl Sink {
                         .flatten()
                         .copied()
                         .collect();
-                    if !refresh.is_empty()
-                        && !backend.phase_snap_copy(device, queue, &mut enc, &refresh, &acc, &snap)
-                    {
-                        backend.phase_flush(&mut enc);
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if std::env::var("WV_DBG_SNAPCOPY").is_ok() {
-                            eprintln!("WV_DBG_SNAPCOPY: {} rects (blit)", refresh.len());
-                        }
-                        for r4 in &refresh {
-                            enc.copy_texture_to_texture(
-                                wgpu::TexelCopyTextureInfo {
-                                    texture: &acc_tex,
-                                    mip_level: 0,
-                                    origin: wgpu::Origin3d { x: r4[0], y: r4[1], z: 0 },
-                                    aspect: wgpu::TextureAspect::All,
-                                },
-                                wgpu::TexelCopyTextureInfo {
-                                    texture: &snap_tex,
-                                    mip_level: 0,
-                                    origin: wgpu::Origin3d { x: r4[0], y: r4[1], z: 0 },
-                                    aspect: wgpu::TextureAspect::All,
-                                },
-                                wgpu::Extent3d {
-                                    width: r4[2] - r4[0],
-                                    height: r4[3] - r4[1],
-                                    depth_or_array_layers: 1,
-                                },
-                            );
-                        }
+                    if !refresh.is_empty() {
+                        backend.phase_snap_copy(device, queue, &mut enc, &refresh, &acc, &snap);
                     }
                     backend.phased_fine_segment_rwu(device, queue, &mut enc, window_lo, hi, &snap, None, &acc);
                 }

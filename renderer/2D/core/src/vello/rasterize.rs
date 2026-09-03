@@ -349,9 +349,9 @@ pub trait RasterBackend {
     /// touches the encoder directly (copies, clears, render passes) or finishes it.
     fn phase_flush(&mut self, _enc: &mut wgpu::CommandEncoder) {}
 
-    /// Refresh snapshot `rects` from the packed accumulator as compute dispatches (one per rect)
-    /// instead of encoder blits, so a batched compute pass need not close around the copy. Returns
-    /// false when unsupported — the caller falls back to `phase_flush` + encoder blits.
+    /// Refresh snapshot `rects` from the packed accumulator as ONE tile-table compute dispatch
+    /// inside the batched pass (the pass-batched form of the old encoder blits). Classic-only;
+    /// default panics.
     fn phase_snap_copy(
         &mut self,
         _device: &wgpu::Device,
@@ -360,8 +360,8 @@ pub trait RasterBackend {
         _rects: &[[u32; 4]],
         _src: &wgpu::TextureView,
         _dst: &wgpu::TextureView,
-    ) -> bool {
-        false
+    ) {
+        unimplemented!("phased session is classic-only")
     }
 
     /// The [`wgpu::TextureUsages`] a texture must carry for this backend to rasterize into it. Hybrid
