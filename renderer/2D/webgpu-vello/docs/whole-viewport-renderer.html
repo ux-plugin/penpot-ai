@@ -1,0 +1,289 @@
+<title>Whole-Viewport Renderer</title>
+<style>
+:root {
+  --bg: #f7f6f3;
+  --surface: #ffffff;
+  --ink: #1c1e21;
+  --muted: #5d6470;
+  --line: #e3e1da;
+  --accent: #0f6e56;
+  --accent-soft: #e1f5ee;
+  --cpu: #185fa5;
+  --cpu-soft: #e6f1fb;
+  --gpu: #993c1d;
+  --gpu-soft: #faece7;
+  --code-bg: #eeede8;
+  --mono: "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #16181c; --surface: #1e2126; --ink: #e8e6e1; --muted: #9aa1ac;
+    --line: #30343b; --accent: #5dcaa5; --accent-soft: #10312a;
+    --cpu: #85b7eb; --cpu-soft: #122c44; --gpu: #f0997b; --gpu-soft: #3b2015;
+    --code-bg: #262a30;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #16181c; --surface: #1e2126; --ink: #e8e6e1; --muted: #9aa1ac;
+  --line: #30343b; --accent: #5dcaa5; --accent-soft: #10312a;
+  --cpu: #85b7eb; --cpu-soft: #122c44; --gpu: #f0997b; --gpu-soft: #3b2015;
+  --code-bg: #262a30;
+}
+body { background: var(--bg); color: var(--ink); font: 16px/1.65 -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; }
+.wrap { max-width: 880px; margin: 0 auto; padding: 3rem 1.5rem 5rem; }
+h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .4rem; letter-spacing: -0.01em; text-wrap: balance; }
+h2 { font-size: 1.35rem; margin: 3rem 0 .8rem; letter-spacing: -0.01em; }
+h3 { font-size: 1.05rem; margin: 2rem 0 .5rem; }
+p, li { max-width: 70ch; }
+p { margin: .7rem 0; }
+.sub { color: var(--muted); font-size: 1.05rem; margin-bottom: .3rem; }
+.meta { display: flex; gap: .6rem; flex-wrap: wrap; margin: 1rem 0 0; }
+.chip { font: 12px/1 var(--mono); letter-spacing: .03em; padding: .35rem .6rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--surface); }
+code { font-family: var(--mono); font-size: .85em; background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 1.1rem 1.3rem; margin: 1.2rem 0; overflow-x: auto; }
+.lane { font: 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; padding: .25rem .55rem; border-radius: 4px; display: inline-block; margin-bottom: .5rem; }
+.lane.cpu { color: var(--cpu); background: var(--cpu-soft); }
+.lane.gpu { color: var(--gpu); background: var(--gpu-soft); }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+th { text-align: left; font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--line); padding: .4rem .7rem .4rem 0; font-size: .82rem; }
+td { border-bottom: 1px solid var(--line); padding: .45rem .7rem .45rem 0; vertical-align: top; }
+td.n { font-family: var(--mono); font-size: .85rem; white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+.note { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; padding: .8rem 1.1rem; margin: 1.2rem 0; font-size: .92rem; }
+.note p { margin: .3rem 0; }
+.strip { display: flex; gap: 6px; align-items: stretch; flex-wrap: nowrap; overflow-x: auto; padding: .4rem 0; }
+.win { border-radius: 6px; padding: .5rem .7rem; font: 11px/1.45 var(--mono); white-space: nowrap; border: 1px solid transparent; flex-shrink: 0; }
+.win.f { background: var(--cpu-soft); color: var(--cpu); border-color: var(--cpu); }
+.win.s { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.win.c2 { background: var(--gpu-soft); color: var(--gpu); border-color: var(--gpu); }
+.win.p { background: var(--code-bg); color: var(--muted); border-color: var(--line); }
+.legend { display: flex; gap: 1.2rem; flex-wrap: wrap; font-size: .8rem; color: var(--muted); margin-top: .6rem; }
+.legend span { display: inline-flex; align-items: center; gap: .4rem; }
+.sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+pre.mermaid { background: transparent; margin: .5rem 0; overflow-x: auto; }
+pre.code { font: 12.5px/1.6 var(--mono); background: var(--code-bg); border-radius: 8px; padding: 1rem 1.2rem; overflow-x: auto; margin: 1rem 0; }
+.texmap { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .8rem; }
+.tex { border: 1px solid var(--line); border-radius: 8px; padding: .8rem .95rem; background: var(--bg); }
+.tex b { display: block; font-family: var(--mono); font-size: .82rem; font-weight: 500; margin-bottom: .3rem; }
+.tex small { color: var(--muted); font-size: .78rem; line-height: 1.5; display: block; }
+hr { border: none; border-top: 1px solid var(--line); margin: 2.5rem 0; }
+.toc { font-size: .9rem; columns: 2; gap: 2rem; }
+.toc a { color: var(--accent); text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+.toc li { margin: .2rem 0; }
+@media (max-width: 640px) { .toc { columns: 1; } }
+</style>
+
+<div class="wrap">
+<h1>Whole-Viewport Renderer</h1>
+<p class="sub">The algorithm of the classic Vello backend, end to end: how a document becomes an effect DAG, how the DAG becomes a schedule, and how the GPU executes it as windows over one command stream.</p>
+<div class="meta">
+  <span class="chip">webgpu · compute-only</span>
+  <span class="chip">one Scene per frame</span>
+  <span class="chip">planner / executor split</span>
+</div>
+
+<div class="card" style="margin-top:1.6rem">
+<ul class="toc" style="margin:.2rem 0; padding-left:1.2rem">
+<li><a href="#idea">1 · The one big idea</a></li>
+<li><a href="#dag">2 · From document to DAG</a></li>
+<li><a href="#schedule">3 · Scheduling: rounds and the front region</a></li>
+<li><a href="#stream">4 · The command stream the GPU reads</a></li>
+<li><a href="#gpu">5 · How the GPU runs it</a></li>
+<li><a href="#textures">6 · The texture cast</a></li>
+<li><a href="#worked">7 · A frame, walked end to end</a></li>
+<li><a href="#contract">8 · The contract that holds it together</a></li>
+</ul>
+</div>
+
+<h2 id="idea">1 · The one big idea</h2>
+<p>A tile renderer would cut the document into pieces and render each piece as its own little scene. The whole-viewport renderer does the opposite: the entire document is encoded as <em>one</em> Vello scene, and the expensive front half of the pipeline — turning curves into per-tile command lists — runs <em>once per frame</em>. Everything interesting after that, including every effect, is expressed as re-running the cheap back half (<code>fine</code>, the per-pixel rasterizer) over <em>slices</em> of that single command stream, against different texture bindings.</p>
+<p>This creates a clean division of labor:</p>
+<ul>
+<li>The <b>CPU is the planner</b>. It builds a dependency graph of all effect work, schedules it, and emits an exact plan: which slice of the stream runs when, over which tiles, reading and writing which textures.</li>
+<li>The <b>GPU is the executor</b>. It runs the plan verbatim. No shader ever makes a decision the planner could have made; the same <code>fine</code> program executes plain fills, shadow composites and glass alike, told apart only by what the plan bound to its slots.</li>
+</ul>
+
+<pre class="mermaid">
+flowchart LR
+  subgraph CPU["CPU · plan"]
+    direction TB
+    A[encode the document<br/>shapes → one tag stream] --> B[detect gathers<br/>shapes with effects]
+    B --> C[bake_effect<br/>chains → FrameDag nodes]
+    C --> D["schedule()<br/>nodes → rounds"]
+    D --> E[front region<br/>hoist backdrop-free work]
+    E --> F[replay rounds → windows<br/>tiles · bindings · refreshes]
+  end
+  subgraph GPU["GPU · execute"]
+    direction TB
+    G[front-end once<br/>curves → per-tile PTCL] --> H[fine, window by window<br/>same stream, different slices]
+    H --> I[present]
+  end
+  F -->|submit| G
+</pre>
+
+<h2 id="dag">2 · From document to DAG</h2>
+<span class="lane cpu">cpu</span>
+
+<h3>2.1 The scene stream</h3>
+<p>Each frame walks the live document in z-order and encodes every shape into Vello's tag stream: path tags, flattened path data, draw tags, transforms. Crucially, when the walk crosses an effect boundary it emits a <code>CMD_EFFECT</code> marker into the stream — a numbered bookmark saying "everything before this point is the backdrop of effect <em>n</em>". The stream is the frame's single source of truth for <em>what</em> to draw; the DAG will describe <em>how</em> and <em>when</em>.</p>
+
+<h3>2.2 Gathers and the unit alphabet</h3>
+<p>A shape carrying effects — a drop shadow, a layer blur, an inner shadow, glass — is a <em>gather</em>. Its effect chain is baked by <code>bake_effect</code> into nodes of the <code>FrameDag</code>, and every node's operation comes from one small shared alphabet, the <code>UnitOp</code>s:</p>
+<table>
+<tr><th style="width:130px">unit</th><th>what it does</th></tr>
+<tr><td class="n">Rasterize</td><td>Run fine over a slice of the stream into a texture — a shape's silhouette, a shadow source, an inner-shadow flood. There is no special "flood" op; a flood <em>is</em> a rasterize.</td></tr>
+<tr><td class="n">Blur</td><td>One separable Gaussian pass. The node carries its axis (H or V) and its edge policy (what an escaped tap reads: transparent for coverage, the page for backdrop), stamped at DAG build.</td></tr>
+<tr><td class="n">Warp / Scatter / Shade / MaskMix</td><td>The glass decomposition: refract the backdrop through the shape's field, scatter for frost, shade, and mix through the mask. Sharp glass fuses to a single op.</td></tr>
+<tr><td class="n">Reload</td><td>Re-read a previously materialized result.</td></tr>
+<tr><td class="n">Compose</td><td>Blend a finished chain result into the running image, at the right point in z-order.</td></tr>
+</table>
+<p>Edges between nodes are real data dependencies — "this blur reads that rasterize's output" — and each node knows its <em>reach</em>: the device-space rectangle its output can possibly touch (a blur's reach is its source padded by 3σ). There are no kind tags, no flags, no special-cased effect types anywhere downstream: everything an executor needs is derivable from the units and their edges.</p>
+
+<h3>2.3 Two chains, drawn out</h3>
+<pre class="mermaid">
+flowchart LR
+  subgraph drop["drop shadow of shape B"]
+    R1["Rasterize<br/>B silhouette, offset, tinted"] --> H1["Blur H"] --> V1["Blur V"] --> C1["Compose<br/>behind B's body"]
+  end
+</pre>
+<pre class="mermaid">
+flowchart LR
+  subgraph glass["frosted glass shape C"]
+    R2["Rasterize<br/>C field / SDF"] --> W["Warp<br/>refract the backdrop"] --> H2["Blur H"] --> V2["Blur V"] --> S2["Shade + MaskMix"] --> C2["Compose"]
+    BD["backdrop under C"] -.->|read| W
+  end
+</pre>
+<p>Note the one structural difference that will matter for scheduling: the shadow chain's first node reads only shape geometry, but the glass chain's <code>Warp</code> reads <em>the backdrop</em> — the pixels already composited beneath C. That read is an edge into the frame's running image, and it pins the chain into the frame's z-order.</p>
+
+<h3>2.4 Binding slots</h3>
+<p>Every node also records a <em>binding shape</em>: which of fine's three texture slots its dispatch fills — <code>base</code> (what's behind me: the backdrop snapshot, a co-located source, or nothing), <code>input</code> (a chained intermediate: a draft, or slot 10 for a blur result), and <code>output</code> (a private draft lease, or the accumulator). The binding shape is not a tag — it is <em>derived</em> from the units, and it alone selects which fine permutation the executor dispatches. Nodes whose rounds coincide must share a binding shape; that is what lets many nodes ride one dispatch.</p>
+
+<h2 id="schedule">3 · Scheduling: rounds and the front region</h2>
+<span class="lane cpu">cpu</span>
+
+<h3>3.1 Rounds</h3>
+<p><code>schedule()</code> walks the DAG in dependency order and assigns each node a <em>round</em> — an integer barrier ordinal. The rule is minimal: a node lands in a round strictly after all its inputs' rounds, and nodes with no path between them may share a round. Two shadow chains on opposite sides of the canvas don't order each other; both their H-blurs can land in the same round and later ride one dispatch. A round boundary exists <em>only</em> where data actually flows.</p>
+
+<h3>3.2 The front region</h3>
+<p>The schedule then gets one global transformation. Ask of every node: does its window bind any accumulator state? A silhouette rasterize doesn't — it writes a private draft from geometry alone. A shadow's blurs don't — they read the silhouette draft. But a glass warp does — it reads the backdrop.</p>
+<p>Every node whose whole read spine is backdrop-free is <em>hoisted to the front</em>: re-rounded into rounds 1..D, grouped by (chain depth × binding class). The result is that all 500 silhouettes rasterize in one giant round, all first blurs in the next, all second blurs after — before the frame's z-order spine even begins. A restore marker after the front block re-seeds fine's per-tile state, and the spine then runs with every chain's ingredients already sitting in their drafts.</p>
+
+<pre class="mermaid">
+flowchart LR
+  subgraph front["front region — rounds 1..D, no backdrop"]
+    direction TB
+    FA["round 1 · Rasterize ×all chains"] --> FB["round 2 · Blur H ×all"] --> FC["round 3 · Blur V ×all"]
+  end
+  subgraph spine["accumulator spine — z-order"]
+    direction TB
+    S0["seed: base color + first draws"] --> S1["compose shadow · draws · compose shadow …"] --> S2["warp glass · frost · compose …"]
+  end
+  front --> spine
+</pre>
+<p>Glass chains stay in the spine from the warp onward — their backdrop read <em>is</em> the dependency — but even their field rasterize hoists. Depth grouping matters because a chain's blur-V cannot share a round with its own blur-H; grouping by depth lines up the independent chains instead.</p>
+
+<h3>3.3 Marks</h3>
+<p>The schedule's output is a set of <code>UnitMark</code>s — per-node records stamped with the node's round, its op parameters, its reach, and its record coordinates (where in its lease the output lands). Marks are the entire interface between planning and execution: the executor reads marks, never the DAG.</p>
+
+<h2 id="stream">4 · The command stream the GPU reads</h2>
+<span class="lane gpu">gpu · built once per frame</span>
+<p>On submit, the classic Vello front-end runs over the uploaded tag stream:</p>
+<pre class="mermaid">
+flowchart LR
+  T[pathtag scan] --> FL[flatten<br/>curves → line segments] --> BN[binning<br/>segments → 16×16 bins] --> CO[coarse<br/>per-tile PTCL] --> PT[path count / tiling]
+</pre>
+<p>The product is the <b>PTCL</b>: for every 16×16 tile of the viewport, a compact command list of exactly the draws crossing that tile, in z-order, with the <code>CMD_EFFECT</code> markers embedded at the effect boundaries. A marker is binned only into the tiles inside its effect's reach, and it carries its segment index in its payload — a tile's thread <em>sets</em> its running segment counter from the marker rather than counting markers, so tiles a chain never touches pay nothing for it.</p>
+<p>This stream is immutable for the rest of the frame. Every effect pass that follows is fine re-reading a slice of it.</p>
+
+<h2 id="gpu">5 · How the GPU runs it</h2>
+<span class="lane gpu">gpu</span>
+
+<h3>5.1 Windows</h3>
+<p>The executor replays the rounds as <em>windows</em>: intervals <code>[lo, hi)</code> of rounds, each becoming one fine dispatch. For each window the plan carries:</p>
+<ul>
+<li><b>a sparse tile list</b> — the union of its marks' reach rectangles, as packed tile words. The dispatch is <code>(n, 1, 1)</code> workgroups; workgroup <em>i</em> reads its tile coordinate from entry <em>i</em>. A window whose effect touches 40 tiles costs 40 workgroups, not the viewport. A tile word can also carry a per-entry round range, which is how several independent same-class windows merge into one dispatch.</li>
+<li><b>a binding assignment</b> — the textures for base / input / output, chosen by the round's binding shape.</li>
+<li><b>snapshot refresh rects</b> — see 5.3.</li>
+</ul>
+
+<h3>5.2 Inside a fine workgroup</h3>
+<p>Each workgroup owns one 16×16 tile. Conceptually its thread runs:</p>
+<pre class="code">rgba  = load own pixels (accumulator window)  or  seed from base
+walk this tile's PTCL:
+    CMD_EFFECT marker  → set running segment index from payload
+    segment outside [lo, hi)  → skip
+    segment inside:
+        fill / stroke / clip commands  → shade into rgba
+        mark's OUTPUT record  → store into the mark's lease
+        (flush-flagged mark  → store, then reseed for the next producer)
+store rgba back (accumulator)  or  store draft</pre>
+<p>The same program serves every window; the plan varies only which texture sits in which slot. The binding shape selects one of a few compiled permutations:</p>
+<table>
+<tr><th>permutation</th><th>binds</th><th>role</th></tr>
+<tr><td class="n">fine_area_u</td><td class="n">acc</td><td>seed the frame: base color + round-0 draws</td></tr>
+<tr><td class="n">fine_area_draft</td><td class="n">draft</td><td>front rasterize: silhouettes into leases</td></tr>
+<tr><td class="n">fine_area_load_*</td><td class="n">snap / source + draft</td><td>materialize a chain stage into its draft</td></tr>
+<tr><td class="n">fine_area_rwu</td><td class="n">snap + acc</td><td>in-place composite over own pixels</td></tr>
+<tr><td class="n">fine_area_rwu_draft / _input</td><td class="n">snap + slot 10 + acc</td><td>composite reading a blur draft or chained input</td></tr>
+<tr><td class="n">snap_copy</td><td class="n">acc → snap</td><td>the backdrop refresh, as a tile-table copy</td></tr>
+</table>
+
+<h3>5.3 The backdrop rule</h3>
+<p>One invariant makes the whole spine sound: <b>the accumulator is never bound readable while it is being written</b>. Any mark that asks "what is behind me?" reads the <em>snapshot</em> instead — a second texture holding a copy of exactly the rects that window's marks can read, each padded by the mark's tap margin (3σ for a blur's escaped taps, a flat allowance for warp displacement). Just before a backdrop-reading window runs, a <code>snap_copy</code> dispatch refreshes those rects from the accumulator.</p>
+<p>This is why hundreds of composites can be recorded back to back inside one compute pass: WebGPU scopes memory visibility per dispatch, so dispatch <em>k</em> writes the accumulator, dispatch <em>k+1</em> copies the touched rects into the snapshot, and dispatch <em>k+2</em> samples the snapshot — sequenced, hazard-free, and never closing the pass. Windows that bind no snapshot skip the refresh entirely.</p>
+
+<h3>5.4 What the encoder ends up holding</h3>
+<div class="card">
+<div class="strip">
+  <div class="win p">seed</div>
+  <div class="win f">front · rasterize ×all</div>
+  <div class="win f">front · blur ×all</div>
+  <div class="win s">snap_copy</div>
+  <div class="win c2">compose w₅</div>
+  <div class="win c2">compose w₆</div>
+  <div class="win s">snap_copy</div>
+  <div class="win c2">warp w₇</div>
+  <div class="win c2">…</div>
+  <div class="win p">present</div>
+</div>
+<div class="legend">
+  <span><span class="sw" style="background:var(--cpu-soft); border:1px solid var(--cpu)"></span>front region</span>
+  <span><span class="sw" style="background:var(--accent-soft); border:1px solid var(--accent)"></span>snapshot refresh</span>
+  <span><span class="sw" style="background:var(--gpu-soft); border:1px solid var(--gpu)"></span>spine windows</span>
+</div>
+<p style="font-size:.85rem; color:var(--muted); margin-top:.8rem">Consecutive dispatches share one compute pass; only a genuine encoder event (frame clear, the periodic submit watchdog, present) closes it. Ordering between dispatches is guaranteed by WebGPU's per-dispatch synchronization scopes.</p>
+</div>
+
+<h2 id="textures">6 · The texture cast</h2>
+<div class="card">
+<div class="texmap">
+  <div class="tex"><b>accumulator · r32uint</b><small>The frame's packed running image. Composites read-modify-write their own pixels. Write-side only while the spine runs.</small></div>
+  <div class="tex"><b>snapshot · r32uint</b><small>The backdrop the effects read. Refreshed per window, rects only, by <code>snap_copy</code>.</small></div>
+  <div class="tex"><b>source strip · rgba8</b><small>In-scene materialized sources for gathers — the only source path. Copied out per shape on demand.</small></div>
+  <div class="tex"><b>atlas sides · rgba8</b><small>Leased scratch for chain drafts: silhouettes, blur ping-pong, SDF bakes, warp results. Demand-sized; leases live from a node's write round to its last read.</small></div>
+</div>
+</div>
+
+<h2 id="worked">7 · A frame, walked end to end</h2>
+<p>Three shapes: <b>A</b>, a plain rectangle at the back; <b>B</b>, a circle with a drop shadow; <b>C</b>, a frosted glass panel over both.</p>
+<p><b>Plan (CPU).</b> The walk encodes A, B and C into one stream, dropping a <code>CMD_EFFECT</code> marker before B's shadow composite point and before C's glass. Two gathers are baked: B's chain (Rasterize → BlurH → BlurV → Compose) and C's (Rasterize field → Warp → BlurH → BlurV → Shade → Compose). <code>schedule()</code> gives every node a round; the front pass then hoists everything backdrop-free — B's silhouette <em>and</em> C's field rasterize into round 1, B's two blurs into rounds 2 and 3. C's warp cannot hoist: it reads the backdrop, so it and everything after it stay in the spine.</p>
+<p><b>Execute (GPU).</b> The front-end builds the PTCL once. Then the windows run, all inside one compute pass:</p>
+<table>
+<tr><th style="width:170px">window</th><th>what happens</th></tr>
+<tr><td class="n">seed</td><td><code>fine_area_u</code>: every tile seeds from the page color and draws A.</td></tr>
+<tr><td class="n">front [1,4)</td><td>Three dispatches over the chains' reach tiles: B's silhouette and C's field rasterize into their leases; B's shadow blurs H then V, draft to draft.</td></tr>
+<tr><td class="n">spine · compose shadow</td><td><code>snap_copy</code> refreshes the snapshot rects under B's shadow reach, then <code>fine_area_rwu_draft</code> runs over those tiles: each walks its PTCL to B's marker, composites the blurred draft (slot 10) over the snapshot backdrop into the accumulator.</td></tr>
+<tr><td class="n">spine · B's body</td><td>The same z-order slice carries B's body draws; they shade into the accumulator in stream order — no separate machinery for plain content.</td></tr>
+<tr><td class="n">spine · glass</td><td><code>snap_copy</code> refreshes the rects under C. <code>fine_area_load_*</code> materializes the warp: sample the snapshot through C's field, write the refracted image to a draft. Frost blurs run draft to draft. A final <code>rwu</code> window shades and mask-mixes the result into the accumulator.</td></tr>
+<tr><td class="n">present</td><td>The packed accumulator is unpacked and blitted to the swapchain.</td></tr>
+</table>
+<p>Scale that picture up and nothing changes shape: with 500 effect shapes the front region is still three-ish dispatches (each covering all chains at that depth), the spine is one window per z-order composite point, and the whole frame is still one command stream read many times.</p>
+
+<h2 id="contract">8 · The contract that holds it together</h2>
+<div class="note">
+<p><b>The planner decides everything; the executor decides nothing.</b> The plan is a flat list the executor runs as a dumb VM. There are no kind tags, flags or effect enums in the execution path — every dispatch's behavior derives from its units and its binding shape. Adding an effect means adding a <code>UnitOp</code> and a bake rule, never a branch in the executor.</p>
+<p><b>Barriers only where data flows.</b> Rounds come from real edges; window boundaries come from rounds; everything without an edge shares dispatches. The dependency graph, not any fixed pipeline, is the frame's structure.</p>
+<p><b>Correctness is byte-exact.</b> Every structural change to this pipeline is gated by a 24-scene battery rendered against an independent tiled oracle and compared pixel for pixel.</p>
+</div>
+</div>
