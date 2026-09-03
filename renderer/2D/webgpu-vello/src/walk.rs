@@ -71,6 +71,122 @@ pub fn draw_scene_range<C: RenderingContext, E: DrawEnv>(
     }
 }
 
+/// Per-shape encoded body fragments: a leaf node's whole self-mark (box drop shadows, body, box
+/// inner shadows) encoded once at IDENTITY into its own scene, keyed by the model's content
+/// revision. The frame walk splices a hit with [`vello::Scene::append`] under the node's full
+/// matrix — the append re-bases every transform entry, and a fragment's entries are the same
+/// affines a direct draw would have produced composed with IDENTITY, so the spliced stream is the
+/// stream the walk would have encoded. Paint transforms are bounds-derived (never matrix-derived)
+/// and `push_layer(None)` clips to a space-independent huge rect, so a fragment is a pure function
+/// of node content. Only view/modifier motion never invalidates: pan, zoom and drags splice.
+#[derive(Default)]
+pub struct BodyCache {
+    map: std::collections::HashMap<u128, (u64, vello::Scene)>,
+    pub hits: u64,
+    pub misses: u64,
+}
+
+/// [`draw_scene_range`] with fragment splicing for leaf bodies — the whole-viewport walk's
+/// production path. Containers, masks and clips walk exactly as [`draw_node`] does.
+pub fn draw_scene_range_cached<E: DrawEnv>(
+    ctx: &mut crate::ClassicCtx,
+    env: &E,
+    text: &mut TextState,
+    scene: &Scene,
+    view: Affine,
+    start: usize,
+    end: usize,
+    modifiers: &Modifiers,
+    cache: &mut BodyCache,
+) {
+    let roots = scene.roots();
+    let end = end.min(roots.len());
+    for &root in &roots[start.min(end)..end] {
+        draw_node_cached(ctx, env, text, scene, root, view, modifiers, cache);
+    }
+}
+
+fn draw_node_cached<E: DrawEnv>(
+    ctx: &mut crate::ClassicCtx,
+    env: &E,
+    text: &mut TextState,
+    scene: &Scene,
+    id: u128,
+    view: Affine,
+    modifiers: &Modifiers,
+    cache: &mut BodyCache,
+) {
+    let Some(node) = scene.get(id) else { return };
+    if node.hidden || node.kind == ShapeKind::Unsupported {
+        return;
+    }
+    let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+    let matrix = view * modifier * node.effective_transform();
+    if node.children.is_empty() && !node.kind.is_container() {
+        let rev = scene.rev(id);
+        if cache.map.get(&id).is_none_or(|&(r, _)| r != rev) {
+            cache.misses += 1;
+            let mut fctx = crate::ClassicCtx::new(1, 1);
+            let mut resources = ();
+            draw_box_drop_shadows(&mut fctx, node, Affine::IDENTITY);
+            draw_node_kind_body(&mut fctx, &mut resources, env, text, node, Affine::IDENTITY, true);
+            draw_box_inner_shadows(&mut fctx, node, Affine::IDENTITY);
+            cache.map.insert(id, (rev, fctx.into_fragment()));
+        } else {
+            cache.hits += 1;
+        }
+        let (_, frag) = &cache.map[&id];
+        ctx.append_fragment(frag, matrix);
+        return;
+    }
+    let mut resources = ();
+    let isolates = node.kind.is_container() && (node.opacity < 1.0 || node.blend != DEFAULT_BLEND);
+    draw_box_drop_shadows(ctx, node, matrix);
+    if isolates {
+        let blend = (node.blend != DEFAULT_BLEND).then_some(node.blend);
+        let alpha = (node.opacity < 1.0).then_some(node.opacity);
+        ctx.push_layer(None, blend, alpha, None, None);
+    }
+    draw_node_kind_body(ctx, &mut resources, env, text, node, matrix, true);
+    draw_box_inner_shadows(ctx, node, matrix);
+    let mask_id = (node.kind == ShapeKind::Group && node.masked && node.children.len() >= 2)
+        .then(|| node.children[0]);
+    let mask_layer = mask_id.is_some() && !isolates;
+    if mask_layer {
+        ctx.push_layer(None, None, None, None, None);
+    }
+    let clip = (node.clip && !node.children.is_empty()).then(|| outline(node));
+    if let Some(path) = &clip {
+        ctx.set_transform(matrix);
+        ctx.push_layer(Some(path), None, None, None, None);
+    }
+    for (i, &child) in node.children.iter().enumerate() {
+        if mask_id.is_some() && i == 0 {
+            continue;
+        }
+        draw_node_cached(ctx, env, text, scene, child, view, modifiers, cache);
+    }
+    if let Some(mid) = mask_id {
+        if let Some(mask) = scene.get(mid) {
+            let mask_modifier = modifiers.get(&mid).copied().unwrap_or(Affine::IDENTITY);
+            let mask_matrix = view * mask_modifier * mask.effective_transform();
+            let dst_in = BlendMode::new(Mix::Normal, Compose::DestIn);
+            ctx.push_layer(None, Some(dst_in), None, None, None);
+            draw_node_body(ctx, &mut resources, env, text, mask, mask_matrix);
+            ctx.pop_layer();
+        }
+    }
+    if clip.is_some() {
+        ctx.pop_layer();
+    }
+    if mask_layer {
+        ctx.pop_layer();
+    }
+    if isolates {
+        ctx.pop_layer();
+    }
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 fn draw_node<C: RenderingContext, E: DrawEnv>(
     ctx: &mut C,

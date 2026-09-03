@@ -38,7 +38,9 @@ fn main() {
     }))
     .expect("device");
 
-    let cells = render_core::vello::abi::load_scale_scene(n, every);
+    let step: f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(26.0);
+    let size: f32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1.9);
+    let cells = render_core::vello::abi::load_scale_scene_sized(n, every, step, size, 7);
     render_core::vello::abi::set_render_options(0, 1.0);
     render_core::vello::abi::set_view(1.0, 0.0, 0.0);
     render_core::vello::abi::set_canvas_background(0xffff_ffff);
@@ -78,11 +80,20 @@ fn main() {
     let read = |which: u32| render_core::vello::abi::prof_read(which);
     let base: Vec<f64> = [0u32, 1, 2, 3, 126, 127, 18, 19].iter().map(|&b| read(b)).collect();
     let (p0, d0) = vello::low_level::dispatch_stats();
+    let mut cpu_ms = 0.0f64;
+    let mut poll_ms = 0.0f64;
     let t0 = Instant::now();
     for _ in 0..TIMED {
-        frame(&mut sink, &mut backend);
+        render_core::vello::abi::set_view(1.0, 0.0, 0.0);
+        let tc = Instant::now();
+        sink.render_whole_viewport(&mut backend, &device, &queue, &target, Affine::IDENTITY, W, H, true);
+        cpu_ms += tc.elapsed().as_secs_f64() * 1000.0;
+        let tp = Instant::now();
+        device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).expect("poll");
+        poll_ms += tp.elapsed().as_secs_f64() * 1000.0;
     }
     let wall = t0.elapsed().as_secs_f64() * 1000.0 / TIMED as f64;
+    println!("render call (all CPU)  {:8.3} ms   poll wait (GPU drain) {:8.3} ms", cpu_ms / TIMED as f64, poll_ms / TIMED as f64);
     let (p1, d1) = vello::low_level::dispatch_stats();
     let delta = |i: usize, b: u32| (read(b) - base[i]) / TIMED as f64;
 

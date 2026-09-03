@@ -95,6 +95,16 @@ impl Default for ClassicPaint {
 }
 
 impl ClassicCtx {
+    /// Splice an encoded body fragment under `matrix` — the cached-walk fast path.
+    pub(crate) fn append_fragment(&mut self, frag: &vello::Scene, matrix: Affine) {
+        self.scene.append(frag, Some(matrix));
+    }
+
+    /// Surrender the encoded scene — a finished fragment for [`crate::walk::BodyCache`].
+    pub(crate) fn into_fragment(self) -> vello::Scene {
+        self.scene
+    }
+
     /// A fresh context over a new `width × height` scene.
     #[must_use]
     pub fn new(width: u16, height: u16) -> Self {
@@ -633,6 +643,8 @@ pub struct ClassicBackend {
     /// The in-progress persistent phased render, live between `phased_begin` and `phased_finish` so
     /// the sink can drive phases one at a time with a gather's effect recorded between them.
     phased_session: Option<vello::low_level::PhasedSession>,
+    /// Encoded leaf-body fragments spliced by the whole-viewport walk — see [`walk::BodyCache`].
+    body_cache: crate::walk::BodyCache,
     /// DEBUG (native only): the phased session's bump-buffer resource id + a device/queue clone, so
     /// `after_submit` can dump vello's overflow counters when `WV_DEBUG_BUMP` is set.
     #[cfg(not(target_arch = "wasm32"))]
@@ -654,6 +666,7 @@ impl ClassicBackend {
             inline_images: std::collections::HashMap::new(),
             next_inline: 0,
             phased_session: None,
+            body_cache: crate::walk::BodyCache::default(),
             #[cfg(not(target_arch = "wasm32"))]
             debug_bump_id: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -753,11 +766,15 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
 
     fn draw_scene_range(&mut self, scene: &mut ClassicCtx, root: Affine, start: usize, end: usize) {
         let _tsc = render_core::vello::prof::now();
-        let mut resources = ();
         let text = &mut self.text;
+        let cache = &mut self.body_cache;
         render_core::vello::abi::with_scene(|model, viewport, modifiers| {
-            crate::walk::draw_scene_range(scene, &mut resources, &ClassicEnv, text, model, root * viewport, start, end, modifiers);
+            crate::walk::draw_scene_range_cached(scene, &ClassicEnv, text, model, root * viewport, start, end, modifiers, cache);
         });
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("WV_DBG_BODYCACHE").is_ok() {
+            eprintln!("WV_DBG_BODYCACHE: hits={} misses={}", self.body_cache.hits, self.body_cache.misses);
+        }
         render_core::vello::prof::add_scene(render_core::vello::prof::now() - _tsc);
     }
 

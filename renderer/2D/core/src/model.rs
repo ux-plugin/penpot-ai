@@ -538,6 +538,11 @@ pub const ROOT_ID: u128 = 0;
 #[derive(Clone, Debug, Default)]
 pub struct Scene {
     nodes: std::collections::HashMap<u128, Node>,
+    /// Per-node content revision, bumped on every [`Self::insert`] and [`Self::get_mut`] — the
+    /// invalidation signal for anything caching derived per-shape data (the classic backend's
+    /// encoded body fragments). Monotonic across [`Self::clear`] so a cache can never confuse two
+    /// epochs of the same id.
+    revs: std::collections::HashMap<u128, u64>,
 }
 
 impl Scene {
@@ -549,6 +554,7 @@ impl Scene {
     /// Insert or replace a node.
     #[inline]
     pub fn insert(&mut self, node: Node) {
+        *self.revs.entry(node.id).or_insert(0) += 1;
         self.nodes.insert(node.id, node);
     }
 
@@ -559,7 +565,14 @@ impl Scene {
 
     #[inline]
     pub fn get_mut(&mut self, id: u128) -> Option<&mut Node> {
+        *self.revs.entry(id).or_insert(0) += 1;
         self.nodes.get_mut(&id)
+    }
+
+    /// The node's content revision (0 if never touched) — see the `revs` field.
+    #[inline]
+    pub fn rev(&self, id: u128) -> u64 {
+        self.revs.get(&id).copied().unwrap_or(0)
     }
 
     /// Iterate every node in the scene (unordered). Used by frame-wide passes that must inspect all
