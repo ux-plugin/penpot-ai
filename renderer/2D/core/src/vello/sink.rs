@@ -111,6 +111,44 @@ fn dag_base_rasterize(dag: &crate::vello::frame_dag::FrameDag, mut node: usize) 
     }
 }
 
+/// The node whose output a dispatch binds in slot 10 for node `n` under binding shape `shp`: an
+/// erase's punch (`inputs[1]`), a bare source itself, the first input matching the slot's kind, or
+/// — for a fused arm — the rasterized root below its in-register units.
+fn read_edge_of(
+    dag: &crate::vello::frame_dag::FrameDag,
+    shp: crate::vello::frame_dag::BindingShape,
+    n: usize,
+) -> Option<usize> {
+    use crate::vello::frame_dag::Slot;
+    use crate::vello::units::UnitOp;
+    if matches!(dag.nodes[n].op, UnitOp::EraseBy(_)) {
+        return dag.nodes[n].inputs.get(1).copied();
+    }
+    if matches!(dag.nodes[n].op, UnitOp::Rasterize(_)) {
+        return Some(n);
+    }
+    let direct = dag.nodes[n].inputs.iter().copied().find(|&j| match shp.input {
+        Slot::Source => matches!(dag.nodes[j].op, UnitOp::Rasterize(_)),
+        Slot::Draft(2) => dag.folded_source(j),
+        Slot::Draft(_) => !matches!(dag.nodes[j].op, UnitOp::Rasterize(_) | UnitOp::Reload),
+        _ => false,
+    });
+    if direct.is_some() {
+        return direct;
+    }
+    if matches!(shp.input, Slot::Source | Slot::Draft(2)) {
+        let mut r = *dag.nodes[n].inputs.first()?;
+        loop {
+            match dag.nodes[r].op {
+                UnitOp::Rasterize(_) => return Some(r),
+                UnitOp::Reload => return None,
+                _ => r = *dag.nodes[r].inputs.first()?,
+            }
+        }
+    }
+    None
+}
+
 /// Whether a `Units` pass leads with a sampling head, which is what sends a chain to the lens
 /// stages rather than the stamp stages.
 fn units_head(p: &Pass) -> Option<&crate::vello::units::UnitOp> {
@@ -2508,7 +2546,10 @@ impl Sink {
         let snap_full = std::env::var("WV_SNAP_FULL").is_ok();
         #[cfg(target_arch = "wasm32")]
         let snap_full = false;
-        let snap_round_rects: HashMap<u32, Vec<[f32; 4]>> = {
+        let (snap_round_rects, merge_read_rects): (
+            HashMap<u32, Vec<[f32; 4]>>,
+            HashMap<u32, Vec<[f32; 4]>>,
+        ) = {
             use crate::vello::units::UnitOp;
             let tap_pad = |node: usize| -> f32 {
                 match dag.nodes[node].op {
@@ -2516,9 +2557,24 @@ impl Sink {
                     _ => 64.0,
                 }
             };
+            // The MERGE read set uses honest per-mark pads, not the blit allowance: a pointwise
+            // snapshot read (a plain or blur composite — blur taps ride the DRAFT) reaches only
+            // its own quad; warp displacement, scatter and flood offsets keep the flat 64.
+            let merge_pad = |mk: &UnitMark| -> f32 {
+                let bits = mk.desc[0] as u32;
+                if bits & (crate::vello::bake::bits::WARP
+                    | crate::vello::bake::bits::SCATTER
+                    | crate::vello::bake::bits::FLOOD_ERASE) != 0
+                {
+                    64.0
+                } else {
+                    0.0
+                }
+            };
             let dev: HashMap<u128, [f32; 4]> =
                 gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
             let mut m: HashMap<u32, Vec<[f32; 4]>> = HashMap::new();
+            let mut mr: HashMap<u32, Vec<[f32; 4]>> = HashMap::new();
             for (gid, ms) in &marks {
                 let Some(&q) = dev.get(gid) else { continue };
                 for mk in ms {
@@ -2527,22 +2583,59 @@ impl Sink {
                     }
                     let pad = tap_pad(mk.node);
                     m.entry(mk.round).or_default().push([q[0] - pad, q[1] - pad, q[2] + pad, q[3] + pad]);
+                    let mp = merge_pad(mk);
+                    mr.entry(mk.round).or_default().push([q[0] - mp, q[1] - mp, q[2] + mp, q[3] + mp]);
                 }
             }
             for (j, &(_, _, kind)) in gathers.iter().enumerate() {
                 if kind == FX_STACK {
                     let q = reaches[j];
                     m.entry(rounds[j]).or_default().push([q[0] - 64.0, q[1] - 64.0, q[2] + 64.0, q[3] + 64.0]);
+                    mr.entry(rounds[j]).or_default().push(q);
                 }
             }
-            m
+            (m, mr)
         };
         let mut snap_windows: HashMap<u32, Vec<[u32; 4]>> = HashMap::new();
-        let sparse_windows: HashMap<u32, (u32, u32)> = {
+        // The MERGE pass: consecutive composite (rw) windows that share a binding class and whose
+        // tile sets and padded snapshot reads are pairwise disjoint fold into ONE dispatch — the
+        // segment range moves from the dispatch uniform into each sparse entry (a parallel range
+        // block, flagged by bit 29 of the tile word), so each workgroup walks its own window. A
+        // window that conflicts — overlap, a different class, a materialize, a full-grid restore —
+        // breaks the run, so no member ever jumps a producer between it and its leader. Follower
+        // snapshot blits ride the leader (sound: members never read each other's writes).
+        let (sparse_windows, merged_windows, follower_windows): (
+            HashMap<u32, (u32, u32)>,
+            HashMap<u32, Vec<u32>>,
+            std::collections::HashSet<u32>,
+        ) = {
             let wt = width.div_ceil(TILE_PX);
             let ht = acc_h.div_ceil(TILE_PX);
             let full = (wt as usize) * (ht as usize);
-            let mut map = HashMap::new();
+            #[cfg(not(target_arch = "wasm32"))]
+            let merge_on = sparse_on && std::env::var("WV_MERGE").map_or(true, |v| v != "0");
+            #[cfg(target_arch = "wasm32")]
+            let merge_on = sparse_on;
+            struct Win {
+                lo: u32,
+                hi: u32,
+                tiles: std::collections::BTreeSet<u32>,
+                tbits: Vec<u64>,
+                rbits: Vec<u64>,
+                cls: Option<(u8, i64)>,
+            }
+            let words = full.div_ceil(64);
+            let setbit = |b: &mut [u64], ty: u32, tx: u32, wt: u32| {
+                let i = (ty * wt + tx) as usize;
+                b[i / 64] |= 1u64 << (i % 64);
+            };
+            let disjoint = |a: &[u64], b: &[u64]| a.iter().zip(b).all(|(x, y)| x & y == 0);
+            let or_in = |a: &mut [u64], b: &[u64]| {
+                for (x, y) in a.iter_mut().zip(b) {
+                    *x |= *y;
+                }
+            };
+            let mut wins: Vec<Win> = Vec::new();
             let mut lo = 0u32;
             for r in 1..=max_round + 1 {
                 let hi = if r > max_round { crate::vello::rasterize::SEG_ALL } else { r };
@@ -2551,6 +2644,7 @@ impl Sink {
                 }
                 let in_window =
                     |round: u32| round >= lo && (hi == crate::vello::rasterize::SEG_ALL || round < hi);
+                let mut rbits: Vec<u64> = vec![0; words];
                 if lo != 0 {
                     let mut rects: Vec<[u32; 4]> = Vec::new();
                     let mut rect_area = 0u64;
@@ -2575,6 +2669,22 @@ impl Sink {
                         }
                         snap_windows.insert(lo, rects);
                     }
+                    for (&round, rs) in &merge_read_rects {
+                        if !in_window(round) {
+                            continue;
+                        }
+                        for q in rs {
+                            let x0 = ((q[0].max(0.0) as u32) / TILE_PX).min(wt.saturating_sub(1));
+                            let y0 = ((q[1].max(0.0) as u32) / TILE_PX).min(ht.saturating_sub(1));
+                            let x1 = ((q[2].max(0.0).ceil() as u32).div_ceil(TILE_PX)).clamp(x0 + 1, wt);
+                            let y1 = ((q[3].max(0.0).ceil() as u32).div_ceil(TILE_PX)).clamp(y0 + 1, ht);
+                            for ty in y0..y1 {
+                                for tx in x0..x1 {
+                                    setbit(&mut rbits, ty, tx, wt);
+                                }
+                            }
+                        }
+                    }
                 }
                 let eligible = sparse_on
                     && lo != 0
@@ -2582,8 +2692,9 @@ impl Sink {
                         !dag.binding_shape(nodes[0]).is_some_and(|shp| shp.to_draft)
                             || atlas_of.contains_key(&nodes[0])
                     });
+                let mut tiles: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+                let mut tbits: Vec<u64> = vec![0; words];
                 if eligible {
-                    let mut tiles: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
                     for &(round, rect) in &marker_rects {
                         if in_window(round) {
                             let tx0 = ((rect[0].max(0.0) as u32) / TILE_PX).min(wt.saturating_sub(1));
@@ -2593,27 +2704,181 @@ impl Sink {
                             for ty in ty0..ty1 {
                                 for tx in tx0..tx1 {
                                     tiles.insert(0x4000_0000 | (ty << 16) | tx);
+                                    setbit(&mut tbits, ty, tx, wt);
                                 }
                             }
                         }
                     }
-                    if !tiles.is_empty() && tiles.len() < full {
-                        map.insert(lo, (fx_params.len() as u32, tiles.len() as u32));
-                        fx_params.extend(tiles.iter().map(|&p| f32::from_bits(p)));
+                }
+                let listed = !tiles.is_empty() && tiles.len() < full;
+                // Grouping class: a composite window's slot-10 kind plus the physical texture it
+                // binds there (its input's atlas side; -1 = nothing bound). `None` = ungroupable —
+                // a materialize, a full-grid window, a private-texture source.
+                let cls: Option<(u8, i64)> = if !(merge_on && listed && lo > front_end + 1) {
+                    None
+                } else {
+                    match round_nodes.get(&lo) {
+                        None => Some((0, -1)),
+                        Some(nodes) => {
+                            use crate::vello::frame_dag::Slot;
+                            let rep = nodes[0];
+                            match dag.binding_shape(rep) {
+                                Some(shp) if !shp.to_draft => match shp.input {
+                                    Slot::None => Some((0, -1)),
+                                    Slot::Draft(_) | Slot::Source => {
+                                        let kind = if shp.draft_taps { 2u8 } else { 1u8 };
+                                        read_edge_of(&dag, shp, rep)
+                                            .and_then(|e| atlas_of.get(&e).copied())
+                                            .map(|side| (kind, side as i64))
+                                    }
+                                    Slot::Backdrop => None,
+                                },
+                                _ => None,
+                            }
+                        }
+                    }
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                if std::env::var("WV_DBG_MERGE").is_ok() {
+                    eprintln!(
+                        "WV_DBG_MERGE: win lo={lo} hi={hi} tiles={} reads={} cls={cls:?}",
+                        if listed { tiles.len() } else { 0 },
+                        rbits.iter().map(|w| w.count_ones()).sum::<u32>(),
+                    );
+                }
+                wins.push(Win {
+                    lo,
+                    hi: if hi == crate::vello::rasterize::SEG_ALL { u32::MAX } else { hi },
+                    tiles: if listed { tiles } else { std::collections::BTreeSet::new() },
+                    tbits: if listed { tbits } else { vec![0; words] },
+                    rbits,
+                    cls,
+                });
+                lo = r;
+            }
+            // Single-scan skip-over grouping, one OPEN group per class. A window JOINS its
+            // class's open group when it is independent — reads and writes, both directions — of
+            // every member AND of every window it would move past (the group's BLOCKED union:
+            // everything scanned since the leader that did not join it, members of other groups
+            // included, since they run at their own leader's earlier position). A member only ever
+            // moves EARLIER past windows it is fully independent of, so the observable write/read
+            // order is preserved. A window with unlisted tiles (a full-grid restore) has unknown
+            // extent and POISONS every open group. A member's own draft producers share its marker
+            // tiles, so the tile test keeps a composite behind its chain.
+            struct Group {
+                members: Vec<usize>,
+                m_tiles: Vec<u64>,
+                m_reads: Vec<u64>,
+                b_w: Vec<u64>,
+                b_r: Vec<u64>,
+                poisoned: bool,
+            }
+            let mut groups: Vec<Vec<usize>> = Vec::new();
+            {
+                let mut open: HashMap<(u8, i64), Group> = HashMap::new();
+                for (i, w) in wins.iter().enumerate() {
+                    let mut joined = false;
+                    if let Some(c) = w.cls {
+                        if let Some(g) = open.get_mut(&c) {
+                            let joins = !g.poisoned
+                                && disjoint(&w.tbits, &g.m_tiles)
+                                && disjoint(&w.rbits, &g.m_tiles)
+                                && disjoint(&g.m_reads, &w.tbits)
+                                && disjoint(&w.tbits, &g.b_w)
+                                && disjoint(&w.rbits, &g.b_w)
+                                && disjoint(&g.b_r, &w.tbits);
+                            if joins {
+                                g.members.push(i);
+                                or_in(&mut g.m_tiles, &w.tbits);
+                                or_in(&mut g.m_reads, &w.rbits);
+                                joined = true;
+                            }
+                        } else {
+                            open.insert(c, Group {
+                                members: vec![i],
+                                m_tiles: w.tbits.clone(),
+                                m_reads: w.rbits.clone(),
+                                b_w: vec![0; words],
+                                b_r: vec![0; words],
+                                poisoned: false,
+                            });
+                            joined = true;
+                        }
+                    }
+                    if !joined {
+                        let poison = w.tiles.is_empty() && w.lo != 0;
+                        for (&c, g) in open.iter_mut() {
+                            if Some(c) == w.cls && g.members.contains(&i) {
+                                continue;
+                            }
+                            if poison {
+                                g.poisoned = true;
+                            }
+                            or_in(&mut g.b_w, &w.tbits);
+                            or_in(&mut g.b_r, &w.rbits);
+                        }
+                    } else {
+                        // A window that joined group g still moves past every OTHER open group's
+                        // future members? No — it records at its own class-leader's position, which
+                        // is earlier than any window scanned later; later joiners of other groups
+                        // must therefore be independent of it: block it into every other group.
+                        for (&c, g) in open.iter_mut() {
+                            if Some(c) == w.cls {
+                                continue;
+                            }
+                            or_in(&mut g.b_w, &w.tbits);
+                            or_in(&mut g.b_r, &w.rbits);
+                        }
                     }
                 }
-                lo = r;
+                for (_, g) in open {
+                    if g.members.len() > 1 {
+                        groups.push(g.members);
+                    }
+                }
+                groups.sort();
+            }
+            let mut map = HashMap::new();
+            let mut merged: HashMap<u32, Vec<u32>> = HashMap::new();
+            let mut followers: std::collections::HashSet<u32> = std::collections::HashSet::new();
+            let mut grouped: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            for g in &groups {
+                let leader = wins[g[0]].lo;
+                let base = fx_params.len() as u32;
+                let total: usize = g.iter().map(|&i| wins[i].tiles.len()).sum();
+                for &i in g {
+                    fx_params.extend(wins[i].tiles.iter().map(|&p| f32::from_bits(p | 0x2000_0000)));
+                }
+                for &i in g {
+                    let w = &wins[i];
+                    debug_assert!(w.lo < 0xfff, "window rounds fit the 12-bit range word");
+                    let hi_enc = if w.hi == u32::MAX { 0xfffu32 } else { w.hi.min(0xffe) };
+                    let word = 0x4000_0000 | (w.lo & 0xfff) | (hi_enc << 12);
+                    fx_params.extend(std::iter::repeat_n(f32::from_bits(word), w.tiles.len()));
+                }
+                map.insert(leader, (base, total as u32));
+                merged.insert(leader, g[1..].iter().map(|&i| wins[i].lo).collect());
+                followers.extend(g[1..].iter().map(|&i| wins[i].lo));
+                grouped.extend(g.iter().copied());
+            }
+            for (i, w) in wins.iter().enumerate() {
+                if !grouped.contains(&i) && !w.tiles.is_empty() {
+                    map.insert(w.lo, (fx_params.len() as u32, w.tiles.len() as u32));
+                    fx_params.extend(w.tiles.iter().map(|&p| f32::from_bits(p)));
+                }
             }
             #[cfg(not(target_arch = "wasm32"))]
             if std::env::var("WV_DBG_ROUNDS").is_ok() {
                 let listed: usize = map.values().map(|&(_, n)| n as usize).sum();
                 eprintln!(
-                    "WV_DBG_SPARSE: windows={} listed_tiles={listed} full_grid={full} avg={:.1}",
+                    "WV_DBG_SPARSE: windows={} listed_tiles={listed} full_grid={full} avg={:.1} merged_groups={} followers={}",
                     map.len(),
                     if map.is_empty() { 0.0 } else { listed as f64 / map.len() as f64 },
+                    merged.len(),
+                    followers.len(),
                 );
             }
-            map
+            (map, merged, followers)
         };
         let fx_bytes: Vec<u8> = fx_params.iter().flat_map(|f| f.to_le_bytes()).collect();
         // Every rasterized source is FOLDED — a fence in the scene, a lease in the atlas;
@@ -2691,6 +2956,12 @@ impl Sink {
             // The extra iteration is the FINAL window ([last, SEG_ALL)) — same dispatch, open end.
             let hi = if r > max_round { crate::vello::rasterize::SEG_ALL } else { r };
             if window_has_draws(window_lo, hi) {
+                // A merge FOLLOWER's tiles ride its leader's dispatch (per-entry ranges); its
+                // snapshot blits rode the leader too. Nothing left to record here.
+                if follower_windows.contains(&window_lo) {
+                    window_lo = r;
+                    continue;
+                }
                 note_passes(2);
                 #[cfg(not(target_arch = "wasm32"))]
                 if std::env::var("WV_DBG_WIN").is_ok() { eprintln!("WV_DBG_WIN: [{window_lo},{hi}) nodes={:?} seeded={seeded}", round_nodes.get(&window_lo)); }
@@ -2713,43 +2984,7 @@ impl Sink {
                         unit_nodes.iter().all(|&n| dag.binding_shape(n) == Some(shp)),
                         "one binding shape per round",
                     );
-                    let read_edge = |n: usize| -> Option<usize> {
-                        // An erase's flood (inputs[0]) is `area[i]`, never a texture — its slot-10
-                        // edge is the punch (inputs[1]), whatever the punch's op.
-                        if matches!(dag.nodes[n].op, UnitOp::EraseBy(_)) {
-                            return dag.nodes[n].inputs.get(1).copied();
-                        }
-                        // A bare source mark IS its own edge: the node composites the very texture
-                        // it rasterized.
-                        if matches!(dag.nodes[n].op, UnitOp::Rasterize(_)) {
-                            return Some(n);
-                        }
-                        let folded_rz = |j: usize| dag.folded_source(j);
-                        let direct = dag.nodes[n].inputs.iter().copied().find(|&j| match shp.input {
-                            Slot::Source => matches!(dag.nodes[j].op, UnitOp::Rasterize(_)),
-                            Slot::Draft(2) => folded_rz(j),
-                            Slot::Draft(_) => {
-                                !matches!(dag.nodes[j].op, UnitOp::Rasterize(_) | UnitOp::Reload)
-                            }
-                            _ => false,
-                        });
-                        if direct.is_some() {
-                            return direct;
-                        }
-                        // A fused arm's source sits below its folded in-register units (a clip over a
-                        // warp over the body): walk the input spine down to the rasterized root.
-                        if matches!(shp.input, Slot::Source | Slot::Draft(2)) {
-                            let mut r = *dag.nodes[n].inputs.first()?;
-                            loop {
-                                match dag.nodes[r].op {
-                                    UnitOp::Rasterize(_) => return Some(r),
-                                    UnitOp::Reload => return None,
-                                    _ => r = *dag.nodes[r].inputs.first()?,
-                                }
-                            }
-                        }
-                        None
-                    };
+                    let read_edge = |n: usize| -> Option<usize> { read_edge_of(&dag, shp, n) };
                     let mut acquire = || {
                         let t = self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv unit scratch");
                         let v = t.create_view(&wgpu::TextureViewDescriptor::default());
@@ -2777,7 +3012,10 @@ impl Sink {
                     // Refresh the window's backdrop snapshot: encoder blits of exactly the rects
                     // this window's marks can read, accumulator -> snap at identical coordinates
                     // (no record shifts). Copy cost scales with effect reach, not the viewport.
-                    if let Some(rects) = snap_windows.get(&window_lo) {
+                    for wlo in std::iter::once(window_lo)
+                        .chain(merged_windows.get(&window_lo).into_iter().flatten().copied())
+                    {
+                        let Some(rects) = snap_windows.get(&wlo) else { continue };
                         for r4 in rects {
                             enc.copy_texture_to_texture(
                                 wgpu::TexelCopyTextureInfo {
@@ -2902,7 +3140,10 @@ impl Sink {
                     if let Some(&(sb, sn)) = sparse_windows.get(&window_lo) {
                         backend.phase_sparse_window(sb, sn);
                     }
-                    if let Some(rects) = snap_windows.get(&window_lo) {
+                    for wlo in std::iter::once(window_lo)
+                        .chain(merged_windows.get(&window_lo).into_iter().flatten().copied())
+                    {
+                        let Some(rects) = snap_windows.get(&wlo) else { continue };
                         for r4 in rects {
                             enc.copy_texture_to_texture(
                                 wgpu::TexelCopyTextureInfo {
