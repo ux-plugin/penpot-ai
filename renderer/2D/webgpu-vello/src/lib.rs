@@ -414,10 +414,18 @@ pub struct ClassicRenderer {
 }
 
 impl ClassicRenderer {
-    /// Build the renderer for a device (compiles the shader permutations).
+    /// Build the renderer for a device (compiles the shader permutations). Area AA only: the whole
+    /// classic path renders with `AaConfig::Area`, and the msaa variants are not just dead weight —
+    /// `fine` is the largest shader in the pipeline, compiling it twice more dominates startup, and
+    /// the fork's window-skip code trips Tint's uniformity analysis inside `fill_path_ms`'s
+    /// workgroup barriers, so the msaa modules fail CreateShaderModule on WebGPU anyway.
     #[must_use]
     pub fn new(device: &wgpu::Device) -> Self {
-        Self { inner: Renderer::new(device, RendererOptions::default()).expect("vello renderer") }
+        let options = RendererOptions {
+            antialiasing_support: vello::AaSupport::area_only(),
+            ..RendererOptions::default()
+        };
+        Self { inner: Renderer::new(device, options).expect("vello renderer") }
     }
 }
 

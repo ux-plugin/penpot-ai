@@ -84,11 +84,24 @@ export function isVelloModule(module: WasmModule | EmscriptenLikeModule): module
  * same directory.
  */
 export async function loadVelloModule(gluePath: string = VELLO_GLUE_PATH): Promise<VelloModule> {
-  const url = new URL(gluePath, window.location.origin).href
-  const glue = (await import(/* @vite-ignore */ url)) as {
-    default: () => Promise<VelloBindgenExports>
+  /*
+   * Dev builds bust the browser cache on both the glue and the wasm binary: `public/` assets
+   * ship without validators, so the browser heuristically caches the `.wasm` fetch and a
+   * rebuilt renderer can silently keep running week-old code — artifacts "survive" fixes until
+   * a hard reload. The query on the glue URL does not propagate to the wasm the glue derives
+   * from its own `import.meta.url`, so the wasm URL is busted explicitly and handed to init.
+   */
+  const bust = (path: string): URL => {
+    const u = new URL(path, window.location.origin)
+    if (import.meta.env.DEV) u.searchParams.set('v', String(Date.now()))
+    return u
   }
-  const exports = await glue.default()
+  const url = bust(gluePath).href
+  const glue = (await import(/* @vite-ignore */ url)) as {
+    default: (init?: { module_or_path: string }) => Promise<VelloBindgenExports>
+  }
+  const wasmUrl = bust(gluePath.replace(/\.js$/, '_bg.wasm')).href
+  const exports = await glue.default({ module_or_path: wasmUrl })
 
   const missing: string[] = []
   const base = createModuleFacade(exports, {
