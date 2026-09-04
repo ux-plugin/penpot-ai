@@ -73,13 +73,17 @@ fn main() {
 
     let step = std::env::var("WV_STEP").ok().and_then(|v| v.parse::<f32>().ok());
     let glass = std::env::var("WV_GLASS").ok().and_then(|v| v.parse::<u32>().ok());
-    let cells = match (glass, step) {
+    let cells = if std::env::var("WV_SHOWCASE").is_ok() {
+        render_core::vello::abi::load_showcase_scene()
+    } else {
+        match (glass, step) {
         (Some(frost), _) => render_core::vello::abi::load_glass_grid_scene(1, frost),
         (None, Some(st)) => {
             let size = std::env::var("WV_SIZE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.9);
             render_core::vello::abi::load_scale_scene_sized(n, every, st, size, 0)
         }
         (None, None) => render_core::vello::abi::load_scale_scene(n, every),
+        }
     };
     let env_f32 = |key: &str, default: f32| {
         std::env::var(key).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(default)
@@ -147,8 +151,14 @@ fn main() {
     let mut wall_ms = 0.0f64;
     let mut profiled_frames = 0u32;
 
+    let panx2 = env_f32("WV_PANX2", panx);
+    let pany2 = env_f32("WV_PANY2", pany);
     let mut frame = |sink: &mut Sink, backend: &mut ClassicBackend, timed: bool| {
-        render_core::vello::abi::set_view(zoom, panx, pany);
+        if timed {
+            render_core::vello::abi::set_view(zoom, panx2, pany2);
+        } else {
+            render_core::vello::abi::set_view(zoom, panx, pany);
+        }
         let t0 = Instant::now();
         sink.render_whole_viewport(backend, &device, &queue, &target, Affine::IDENTITY, w, h, true);
         let t1 = Instant::now();
