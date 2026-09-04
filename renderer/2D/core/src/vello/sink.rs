@@ -2466,6 +2466,10 @@ impl Sink {
                 if std::env::var("WV_DBG_SILATLAS").is_ok() && side == 2 {
                     self.dbg_atlas = Some((v.clone(), aw, ah));
                 }
+                #[cfg(not(target_arch = "wasm32"))]
+                if std::env::var("WV_DBG_LOOPATLAS").is_ok_and(|s| s.parse() == Ok(side)) {
+                    self.dbg_atlas = Some((v.clone(), aw, ah));
+                }
                 // Guard bands and slot padding are read by escaped taps and must hold transparent
                 // 0 — a pooled texture holds whatever the previous frame left in it.
                 Compositor::clear(&mut enc, &v, [0.0, 0.0, 0.0, 0.0], None);

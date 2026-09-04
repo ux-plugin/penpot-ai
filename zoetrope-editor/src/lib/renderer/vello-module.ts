@@ -17,6 +17,7 @@
  * `Renderer` interface both backends implement.
  */
 
+import { createRecorder } from './abi-recorder'
 import { createModuleFacade, type EmscriptenLikeModule, type RawWasmExports } from './vello-module-facade'
 import type { WasmModule } from './wasm-types'
 import { attachBackend, type RenderBackend, type SurfaceOptions } from './backend'
@@ -104,7 +105,7 @@ export async function loadVelloModule(gluePath: string = VELLO_GLUE_PATH): Promi
   const exports = await glue.default({ module_or_path: wasmUrl })
 
   const missing: string[] = []
-  const base = createModuleFacade(exports, {
+  let base = createModuleFacade(exports, {
     stubMissingExports: true,
     onMissing: (name) => {
       missing.push(name)
@@ -113,6 +114,17 @@ export async function loadVelloModule(gluePath: string = VELLO_GLUE_PATH): Promi
       }
     },
   })
+  /*
+   * Dev builds record the ABI call stream so a live document is one snippet away from becoming
+   * a native fixture: `window.__abiRecorder.recording()` is the replayable capture (see
+   * abi-recorder.ts and the wv_replay native harness). The wrap is transparent — api/*.ts talks
+   * to the same interface either way.
+   */
+  if (import.meta.env.DEV) {
+    const recorder = createRecorder(base)
+    base = recorder.module
+    ;(window as unknown as Record<string, unknown>).__abiRecorder = recorder
+  }
 
   let renderer: VelloFocusRenderer | null = null
   let canvasEl: HTMLCanvasElement | null = null
