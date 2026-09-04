@@ -181,12 +181,23 @@ pub fn arm_descriptor(run: &[UnitOp], policy: Policy, program: Option<f32>) -> [
     d
 }
 
+/// A blur whose device sigma stays at or below this samples every texel (stride 1) — the exact
+/// kernel, and the battery's regime. Above it the tap count would grow without bound (zoom scales
+/// sigma, taps are `2·ceil(3σ)+1`), so the kernel switches to strided quadrature.
+pub const BLUR_STRIDE_SIGMA: f32 = 32.0;
+/// Strided-kernel spacing divisor: `stride = ⌊σ / 12⌋`, keeping the tap count near `6·12 + 1` no
+/// matter how large sigma grows. The Gaussian is evaluated at the strided offsets and renormalized,
+/// which is the sampling-rate half of the render-scale `k` (a Riemann sum of the same kernel — the
+/// approximation a downscaled surface would make, with blur itself as the quality firewall).
+pub const BLUR_STRIDE_DIV: f32 = 12.0;
+
 /// Serialize ONE separable-blur axis pass to the 26-float descriptor `fine` reads — the single place
 /// a `Blur` unit becomes bytes, shared by every path that emits one (the fx_fine background blur, a
 /// soft shadow's H/V). `units_uniform` deliberately skips `Blur` (a barrier carries no fused uniform),
-/// so its `u[0]` is written here: `axis` in slots 2/3 (X pass = `(1,0)`, Y pass = `(0,1)`) and the
-/// device `sigma` in slot 4. `bits` is `BLUR` plus the compose mode; the gamma-space mix and the
-/// out-of-bounds edge policy ride the blur's own payload (slots 12/13).
+/// so its `u[0]` is written here: `axis` in slots 2/3 (X pass = `(1,0)`, Y pass = `(0,1)`), the
+/// device `sigma` in slot 4, and the planner-decided tap stride in slot 5 (1 = exact kernel; the
+/// executor never re-derives it). `bits` is `BLUR` plus the compose mode; the gamma-space mix and
+/// the out-of-bounds edge policy ride the blur's own payload (slots 12/13).
 /// `tint` rides `u[3]` (slots 14..18) for a `spread` arm that lays a straight colour — a shadow's V
 /// pass — and is `None` for a plain draft blur.
 #[must_use]
@@ -199,6 +210,7 @@ pub fn blur_arm(sigma: f32, linear: bool, axis_y: bool, policy: Policy, tint: Op
     d[2] = f32::from(!axis_y); // u[0].x
     d[3] = f32::from(axis_y); // u[0].y
     d[4] = sigma; // u[0].z = device sigma
+    d[5] = if sigma > BLUR_STRIDE_SIGMA { (sigma / BLUR_STRIDE_DIV).floor().max(1.0) } else { 1.0 };
     d[PAYLOAD_BLUR_SRGB_SLOT] = f32::from(!linear);
     d[PAYLOAD_BLUR_EDGE_SLOT] = f32::from(policy.edge_coverage);
     if let Some([r, g, b, a]) = tint {

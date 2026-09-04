@@ -1075,14 +1075,32 @@ impl Sink {
                 continue;
             }
             let mut r = i;
+            let mut warp_fed = false;
             loop {
                 match dag.nodes[r].op {
                     crate::vello::units::UnitOp::Rasterize(_) | crate::vello::units::UnitOp::Reload => break,
-                    _ => match dag.nodes[r].inputs.first() {
-                        Some(&j) => r = j,
-                        None => break,
-                    },
+                    _ => {
+                        if matches!(dag.nodes[r].op, crate::vello::units::UnitOp::Warp(_)) && r != i {
+                            warp_fed = true;
+                        }
+                        match dag.nodes[r].inputs.first() {
+                            Some(&j) => r = j,
+                            None => break,
+                        }
+                    }
                 }
+            }
+            // A frost blur (a backdrop-rooted chain fed by the lens Warp) carries the glass's PAGE
+            // sigma from the lowering — already a sigma, never a radius — and must scale to device
+            // pixels here like every other consumer of `total_blur_sigma` does, or the frost
+            // sharpens as the view zooms. Backdrop-rooted blurs without a warp (the fx_fine
+            // background blur) arrive device-ready from their own emitter and are left alone; a
+            // body-rooted warp-fed blur (texture + layer blur) is a RADIUS and takes the body arm.
+            if warp_fed && matches!(dag.nodes[r].op, crate::vello::units::UnitOp::Reload) {
+                if let crate::vello::units::UnitOp::Blur { ref mut sigma, .. } = dag.nodes[i].op {
+                    *sigma *= view_scale;
+                }
+                continue;
             }
             let crate::vello::units::UnitOp::Rasterize(crate::vello::units::RasterSource::Body {
                 offset: body_off,
