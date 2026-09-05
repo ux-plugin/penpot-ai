@@ -91,18 +91,45 @@ export async function loadVelloModule(gluePath: string = VELLO_GLUE_PATH): Promi
    * rebuilt renderer can silently keep running week-old code — artifacts "survive" fixes until
    * a hard reload. The query on the glue URL does not propagate to the wasm the glue derives
    * from its own `import.meta.url`, so the wasm URL is busted explicitly and handed to init.
+   *
+   * The version is the BUILD stamp (`version.txt`, written by the build script and fetched
+   * uncached — it is tiny), not the wall clock: a per-load timestamp gave the 6MB wasm a unique
+   * URL every page load, defeating both the HTTP cache and the browser's WebAssembly
+   * compilation cache and adding seconds to every startup. A build stamp busts exactly when the
+   * renderer was rebuilt and caches the fetch + compile between loads.
    */
+  const t0 = performance.now()
+  const stamp = (label: string) => {
+    if (import.meta.env.DEV) {
+      console.debug(`[vello] load ${label} at ${Math.round(performance.now())}ms (+${Math.round(performance.now() - t0)}ms)`)
+    }
+  }
+  stamp('start')
+  let version = ''
+  if (import.meta.env.DEV) {
+    const stampUrl = new URL(
+      gluePath.replace(/[^/]*$/, 'version.txt'),
+      window.location.origin,
+    )
+    version = await fetch(stampUrl, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.text() : ''))
+      .catch(() => '')
+    version = version.trim() || String(Date.now())
+  }
   const bust = (path: string): URL => {
     const u = new URL(path, window.location.origin)
-    if (import.meta.env.DEV) u.searchParams.set('v', String(Date.now()))
+    if (import.meta.env.DEV) u.searchParams.set('v', version)
     return u
   }
+  stamp('version stamp fetched')
   const url = bust(gluePath).href
   const glue = (await import(/* @vite-ignore */ url)) as {
     default: (init?: { module_or_path: string }) => Promise<VelloBindgenExports>
   }
+  stamp('glue imported')
   const wasmUrl = bust(gluePath.replace(/\.js$/, '_bg.wasm')).href
   const exports = await glue.default({ module_or_path: wasmUrl })
+  stamp('wasm instantiated')
 
   const missing: string[] = []
   let base = createModuleFacade(exports, {

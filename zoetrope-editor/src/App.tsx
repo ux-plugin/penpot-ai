@@ -94,10 +94,13 @@ function App() {
     if (!renderer || didLoadInitialDocument.current) return
     didLoadInitialDocument.current = true
     void (async () => {
+      if (import.meta.env.DEV) console.debug(`[boot] renderer up at ${Math.round(performance.now())}ms`)
       await loadInitialDocument()
+      if (import.meta.env.DEV) console.debug(`[boot] initial document loaded at ${Math.round(performance.now())}ms`)
       if (import.meta.env.DEV && readSeedFromUrl() === 'showcase') {
         const { seedShowcaseDocument } = await import('./lib/dev/seed-showcase')
         await seedShowcaseDocument()
+        console.debug(`[boot] showcase seeded at ${Math.round(performance.now())}ms`)
       }
       autosaveDisposeRef.current = startDocumentAutosave(getPersistenceProvider())
     })()

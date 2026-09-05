@@ -8,10 +8,17 @@ import { createWorker } from './worker-factory'
 import { useWorkspaceStore } from './renderer/store/workspace-store'
 
 export class WorkerClientManager {
-  private abortController: AbortController | null = null
-  private isInitializing = false
+  private pendingAbort = false
   private initPromise: Promise<WorkerClient> | null = null
 
+  /**
+   * Idempotent while in flight: a second `init()` before the first resolves ADOPTS the same
+   * promise — including one whose teardown was requested in between. That is the React
+   * StrictMode dev double-mount (mount → cleanup → mount): the expensive part of
+   * `createWorker` is the wasm fetch + compile, and abort-then-redo paid it twice serially on
+   * every page load. Re-claiming clears the pending abort, so the one in-flight init serves
+   * both mounts; a cleanup that nobody re-claims destroys the client at completion.
+   */
   async init(workerScriptUrl?: string): Promise<WorkerClient> {
     const { workerClient } = useWorkspaceStore.getState()
 
@@ -19,33 +26,24 @@ export class WorkerClientManager {
       return workerClient
     }
 
-    if (this.isInitializing && this.initPromise) {
+    this.pendingAbort = false
+    if (this.initPromise) {
       return this.initPromise
     }
 
-    this.abortController = new AbortController()
-    const signal = this.abortController.signal
-    this.isInitializing = true
-    this.initPromise = this.doInit(signal, workerScriptUrl)
-
+    this.initPromise = this.doInit(workerScriptUrl)
     try {
-      const client = await this.initPromise
+      return await this.initPromise
+    } finally {
       this.initPromise = null
-      this.isInitializing = false
-      this.abortController = null
-      return client
-    } catch (error) {
-      this.initPromise = null
-      this.isInitializing = false
-      this.abortController = null
-      throw error
     }
   }
 
-  private async doInit(signal: AbortSignal, workerScriptUrl?: string): Promise<WorkerClient> {
+  private async doInit(workerScriptUrl?: string): Promise<WorkerClient> {
     const { workerClient } = await createWorker(workerScriptUrl)
 
-    if (signal.aborted) {
+    if (this.pendingAbort) {
+      this.pendingAbort = false
       workerClient.destroy()
       throw new Error('Worker initialization aborted')
     }
@@ -55,20 +53,16 @@ export class WorkerClientManager {
   }
 
   cleanup(): void {
-    const { workerClient } = useWorkspaceStore.getState()
-
-    if (this.abortController) {
-      this.abortController.abort()
-      this.abortController = null
+    if (this.initPromise) {
+      this.pendingAbort = true
+      return
     }
 
+    const { workerClient } = useWorkspaceStore.getState()
     if (workerClient) {
       workerClient.destroy()
     }
-
     useWorkspaceStore.getState().setWorkerClient(null)
-    this.initPromise = null
-    this.isInitializing = false
   }
 }
 

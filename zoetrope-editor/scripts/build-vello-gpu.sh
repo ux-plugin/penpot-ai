@@ -18,5 +18,7 @@ mv "$DEST/vello_gpu_renderer_bg.wasm" "$DEST/render-vello-gpu_bg.wasm"
 sed -i '' "s/vello_gpu_renderer_bg\.wasm/render-vello-gpu_bg.wasm/g" "$DEST/render-vello-gpu.js" 2>/dev/null \
   || sed -i "s/vello_gpu_renderer_bg\.wasm/render-vello-gpu_bg.wasm/g" "$DEST/render-vello-gpu.js"
 
+date +%s > "$DEST/version.txt"
+
 echo "[build:vello-gpu] Done. Load the app with ?renderer=vello-gpu to use it."
 ls -lh "$DEST"
