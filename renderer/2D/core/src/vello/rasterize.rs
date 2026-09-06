@@ -125,10 +125,20 @@ pub trait RasterBackend {
     /// frame == target. Default no-op — only the phased (classic) backend distinguishes the two.
     fn set_frame_extent(&mut self, _width: u32, _height: u32) {}
 
-    /// Bind the region atlas (the interest-region leases) for subsequent backdrop-tapping fine
-    /// dispatches; `None` unbinds (a dummy rides the slot). Default no-op — only the phased
-    /// (classic) backend routes escaped taps.
-    fn phase_region_atlas(&mut self, _view: Option<&wgpu::TextureView>) {}
+    /// Bind the region atlases for subsequent backdrop-tapping fine dispatches: `values` holds
+    /// region grounds (L0), `chain` holds region-space intermediates (an H' blur's L1) — separate
+    /// textures so a chain dispatch can read values while writing chain. `None` unbinds (a dummy
+    /// rides the slot). Default no-op — only the phased (classic) backend routes escaped taps.
+    fn phase_region_atlas(&mut self, _values: Option<&wgpu::TextureView>, _chain: Option<&wgpu::TextureView>) {}
+
+    /// Mark the NEXT fine dispatch as the one writing the chain atlas: its chain READ slot gets
+    /// the dummy instead (a dispatch cannot bind one texture for storage write and sampling at
+    /// once). One-shot; cleared when consumed. Default no-op.
+    fn phase_region_chain_write(&mut self) {}
+
+    /// Mark the NEXT fine dispatch as the one writing the VALUES atlas: its values READ slot gets
+    /// the dummy instead. One-shot; cleared when consumed. Default no-op.
+    fn phase_region_values_write(&mut self) {}
 
     /// Fill `rect` (device px, identity transform) with a solid premul-straight `color` — the page
     /// ground an interest region's content composites over. Default no-op.

@@ -1800,6 +1800,44 @@ pub fn build_blur_grid_scene(n: usize, radius: f32) -> (Scene, Vec<(usize, &'sta
 /// first effect that runs INLINE in `fine` (effects-in-fine) rather than as a post-fine dispatch. The
 /// tint is opaque blue, so each shape shows a solid premultiplied blue where its silhouette covers the
 /// backdrop. Verified by sampling the rendered `-wv.png` against the hand-computed expectation.
+/// Two **stacked pure background blurs** over stripes — the region chain-clone gate: panel A
+/// (lower z) sits fully off the RIGHT frame edge inside panel B's demand region, while B straddles
+/// that edge. B's off-frame taps read a region whose content contains A — correct only when A's
+/// blur is CLONED into region space (A has no fills: a missing clone shows as un-smeared stripes
+/// in B's edge band). The RIGHT edge is deliberate: the horizontal pass's off-frame taps are
+/// backdrop taps by definition, isolating the clone from the bottom edge's separate
+/// raw-for-H-blurred escape approximation.
+pub fn build_bgblur_stack_scene(radius: f32) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    b.advance("bgblur stack");
+    let (w, h) = (1680.0_f64, 800.0_f64);
+    let stripe = 120.0_f64;
+    let cols = [col(200, 60, 40), col(40, 90, 200), col(240, 220, 90)];
+    let nx = (w / stripe).ceil() as usize;
+    for gx in 0..nx {
+        let mut node = Node::new(b.id(), ShapeKind::Rect);
+        let x = gx as f64 * stripe;
+        node.bounds = Rect::new(x, 0.0, x + stripe, h);
+        node.fills = vec![Paint::plain(Brush::Solid(cols[gx % 3]))];
+        b.root(node);
+    }
+    let mut band = Node::new(b.id(), ShapeKind::Rect);
+    band.bounds = Rect::new(0.0, 560.0, w, 610.0);
+    band.fills = vec![Paint::plain(Brush::Solid(col(20, 160, 60)))];
+    b.root(band);
+    let mut a = Node::new(b.id(), ShapeKind::Rect);
+    a.bounds = Rect::new(1290.0, 220.0, 1400.0, 400.0);
+    a.corners = Some(RoundedRectRadii::from_single_radius(12.0));
+    a.background_blur = Some(radius);
+    b.root(a);
+    let mut p = Node::new(b.id(), ShapeKind::Rect);
+    p.bounds = Rect::new(560.0, 200.0, 1400.0, 420.0);
+    p.corners = Some(RoundedRectRadii::from_single_radius(12.0));
+    p.background_blur = Some(radius);
+    b.root(p);
+    b.finish()
+}
+
 pub fn build_backdrop_tint_grid_scene(n: usize) -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
     let cols = (n as f64).sqrt().ceil() as usize;

@@ -2178,6 +2178,13 @@ pub extern "C" fn load_blur_grid_scene(n: u32, radius: u32) -> u32 {
     install_fixture(crate::parity::build_blur_grid_scene(n as usize, radius as f32))
 }
 
+/// Install the **bgblur stack** ([`crate::parity::build_bgblur_stack_scene`]) — two stacked pure
+/// background blurs straddling the right frame edge, the region chain-clone gate.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_bgblur_stack_scene(radius: u32) -> u32 {
+    install_fixture(crate::parity::build_bgblur_stack_scene(radius as f32))
+}
+
 /// Install the **drop grid** ([`crate::parity::build_drop_grid_scene`]) — `n` blobs each with one soft
 /// drop shadow, the shadow counterpart of the blur grid, for scheduler-driven round sharing.
 #[unsafe(no_mangle)]

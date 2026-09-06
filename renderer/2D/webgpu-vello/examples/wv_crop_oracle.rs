@@ -39,6 +39,7 @@ const EDITOR_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/show
 enum Doc {
     LensGrid,
     Editor,
+    BgblurStack,
 }
 
 /// Every zoom here divides `MARGIN` exactly in f32 — the padded render's device shift must be a
@@ -63,6 +64,7 @@ fn cases() -> Vec<Case> {
         c("ed-bgblur-bottom", Doc::Editor, 4.0, (-530.0, -278.5)),
         c("ed-layerblur-right", Doc::Editor, 4.0, (-145.0, -74.0)),
         c("ed-fit", Doc::Editor, 2.0, (0.0, 0.0)),
+        c("bgblur-stack-right", Doc::BgblurStack, 2.0, (0.0, 0.0)),
     ]
 }
 
@@ -176,6 +178,9 @@ fn main() {
                 Doc::Editor => {
                     let rep = replay_util::replay(EDITOR_FIXTURE);
                     println!("(editor fixture: {} calls replayed)", rep.applied);
+                }
+                Doc::BgblurStack => {
+                    render_core::vello::abi::load_bgblur_stack_scene(24);
                 }
             }
             render_core::vello::abi::set_render_options(0, 1.0);

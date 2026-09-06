@@ -466,6 +466,29 @@ impl FrameDag {
         self.nodes.len() - 1
     }
 
+    /// Push a region-space chain node (an H′ blur clone): it reads another region's lease and
+    /// materializes into region `idx`'s lease, so escaped draft taps can resolve to CHAIN-correct
+    /// content (H-blurred, not raw). Same bind-index reset rules as [`Self::push_region`].
+    pub fn push_region_blur(
+        &mut self,
+        idx: usize,
+        op: UnitOp,
+        reach: Rect,
+        inputs: Vec<usize>,
+        label: String,
+    ) -> usize {
+        self.bind_idx.take();
+        self.nodes.push(Node {
+            op,
+            target: crate::vello::plan::Target::Atlas,
+            source: Source::Region(idx),
+            label,
+            reach: Some(reach),
+            inputs,
+        });
+        self.nodes.len() - 1
+    }
+
     /// Wire a region value into its reader: every `Reload` node of gather `gid` gains a read edge
     /// from `region_node`, so the schedule puts the region's write strictly before any round that
     /// can sample it. Reload inputs are structural (only the scheduler walks them), so the append
@@ -506,8 +529,17 @@ impl FrameDag {
             Some(BindingShape { base, input, to_draft, draft_taps, region_out: false })
         };
         if matches!(n.source, Source::Region(_)) {
+            // A region GROUND (input-free Rasterize) rasterizes fenced draws — nothing bound but
+            // the atlas. A region CHAIN node — an H′ blur, or the value window's Rasterize that
+            // composites a masked V over redrawn content — taps leases through the region-route
+            // records; its dispatch rides the loadu shape (base = the snapshot binding, unused).
+            let base = if matches!(n.op, UnitOp::Rasterize(_)) && n.inputs.is_empty() {
+                Slot::None
+            } else {
+                Slot::Backdrop
+            };
             return Some(BindingShape {
-                base: Slot::None,
+                base,
                 input: Slot::None,
                 to_draft: true,
                 draft_taps: false,
@@ -1146,18 +1178,31 @@ impl FrameDag {
     /// Liveness per node: reached from an accumulator write by following `inputs`. One reverse pass
     /// suffices — the node vec is topological, so every consumer sits after its inputs.
     fn liveness(&self) -> Vec<bool> {
+        // To fixpoint, not one pass: a Reload's read edge into a region value points at a LATER
+        // index (regions join after the scene build), so a single reverse sweep marks the value
+        // but never its own chain (an inner clone's H and ground). Region graphs are shallow —
+        // this converges in two or three sweeps.
         let mut lv = vec![false; self.nodes.len()];
-        for i in (0..self.nodes.len()).rev() {
-            if self.nodes[i].writes_accumulator() {
-                lv[i] = true;
-            }
-            if lv[i] {
-                for &j in &self.nodes[i].inputs {
-                    lv[j] = true;
+        loop {
+            let mut changed = false;
+            for i in (0..self.nodes.len()).rev() {
+                if self.nodes[i].writes_accumulator() && !lv[i] {
+                    lv[i] = true;
+                    changed = true;
+                }
+                if lv[i] {
+                    for &j in &self.nodes[i].inputs {
+                        if !lv[j] {
+                            lv[j] = true;
+                            changed = true;
+                        }
+                    }
                 }
             }
+            if !changed {
+                return lv;
+            }
         }
-        lv
     }
 
     /// Remove every node that no longer reaches the accumulator (an elided blur's orphan, an
