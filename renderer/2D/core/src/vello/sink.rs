@@ -947,11 +947,9 @@ impl Sink {
             p.begin();
         }
         let _tenc = crate::vello::prof::now();
-        let regions = crate::vello::region::RegionTable::frame(width, height);
+        let mut regions = crate::vello::region::RegionTable::frame(width, height);
         let acc_h = regions.frame_height();
-        let grid_h = regions.grid_height();
         let acc_sz = (width as f32, acc_h as f32);
-        let mut scene = backend.new_scene(width as u16, grid_h as u16);
 
         let reaches: Vec<[f32; 4]> = gathers
             .iter()
@@ -959,6 +957,70 @@ impl Sink {
                 wv_clamp_reach(self.wv_marker_reach(gid, kind, full_view, width, height), width, height)
             })
             .collect();
+        // Demand → regions: every gather whose UNCLAMPED reach escapes the frame asks for the
+        // off-frame content its taps can touch (reach + warp/scatter slack or 3σ), at the density
+        // the effect declares. `plan` prices the set against the byte budget and rents grid rows.
+        let served: Vec<(u128, usize)> = if std::env::var("WV_DEMAND").is_ok_and(|v| v == "0") {
+            Vec::new()
+        } else {
+            let budget = std::env::var("WV_DEMAND_BUDGET_MB")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .map_or(64 * 1024 * 1024, |mb| mb.saturating_mul(1024 * 1024).max(1));
+            let demands: Vec<crate::vello::demand::Demand> = gathers
+                .iter()
+                .filter_map(|&(_, gid, kind)| {
+                    let r = self.wv_marker_reach(gid, kind, full_view, width, height);
+                    if r == [0.0, 0.0, 0.0, 0.0] || r == [0.0, 0.0, width as f32, height as f32] {
+                        return None;
+                    }
+                    let (pad, desired) = crate::vello::abi::with_scene(|live, _, modifiers| {
+                        let n = live.get(gid)?;
+                        let m = modifiers.get(&gid).copied().unwrap_or(Affine::IDENTITY);
+                        crate::effect_graph::lens_geometry(n, m).map(|(g, geom)| {
+                            let cs = full_view.as_coeffs();
+                            let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
+                            let half_diag = ((geom.width * 0.5).hypot(geom.height * 0.5)
+                                * f64::from(scale)) as f32;
+                            let slack = crate::effect_graph::lens_warp_slack(&g, scale, half_diag)
+                                .max(crate::effect_graph::lens_scatter_slack(&g, scale));
+                            (f64::from(slack).max(64.0), f64::from(g.acceptable_downscale))
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        let sigma = self.gather_sigma(gid, full_view, 1.0);
+                        ((3.0 * f64::from(sigma) + 8.0).max(64.0), 1.0)
+                    });
+                    Some(crate::vello::demand::Demand {
+                        rect: [
+                            f64::from(r[0]) - pad,
+                            f64::from(r[1]) - pad,
+                            f64::from(r[2]) + pad,
+                            f64::from(r[3]) + pad,
+                        ],
+                        desired_k: desired,
+                        reader: gid,
+                    })
+                })
+                .collect();
+            crate::vello::demand::plan(&demands, &mut regions, width, height, budget, 8192)
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("WV_DBG_REGIONS").is_ok() {
+            for &(reader, ri) in &served {
+                let r = &regions.regions[ri];
+                eprintln!(
+                    "WV_DBG_REGIONS: region {ri} reader={:04x} source=({:.0},{:.0} {:.0}x{:.0}) k={:.3} grid={:?}",
+                    (reader & 0xffff) as u16,
+                    r.source[0], r.source[1],
+                    r.source[2] - r.source[0], r.source[3] - r.source[1],
+                    r.k, r.grid,
+                );
+            }
+        }
+        let grid_h = regions.grid_height();
+        backend.set_frame_extent(width, acc_h);
+        let mut scene = backend.new_scene(width as u16, grid_h as u16);
         // Fill the DAG's view-dependent uniforms, stamp each effect's DEVICE reach onto its
         // nodes (the marker contract lives on device tiles), and let `schedule()` decide every round.
         crate::vello::abi::with_scene(|scene, _viewport, modifiers| {
@@ -1008,6 +1070,24 @@ impl Sink {
             },
         );
         dag.normalize();
+        // Region ground nodes join AFTER normalize (prune's renumbering is done): one folded Body
+        // rasterize per served demand, wired into every Reload of its reader so the schedule puts
+        // the region's lease write strictly before any round that samples it.
+        let region_nodes: Vec<(usize, usize, u128)> = served
+            .iter()
+            .map(|&(reader, ri)| {
+                let g = regions.regions[ri].grid;
+                let reach = Rect::new(
+                    f64::from(g[0]),
+                    f64::from(g[1]),
+                    f64::from(g[2]),
+                    f64::from(g[3]),
+                );
+                let n = dag.push_region(ri, reach, format!("region {ri}"));
+                dag.wire_region_reader(n, reader);
+                (ri, n, reader)
+            })
+            .collect();
         {
             let dev: HashMap<u128, [f32; 4]> =
                 gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
@@ -1172,6 +1252,10 @@ impl Sink {
             masked: bool,
             band: bool,
             off: u32,
+            /// Marker/lease footprint override in device pixels. `None` = the gather's clamped
+            /// reach; `Some` for marks whose footprint is not the reader's (a region ground: its
+            /// grid rect).
+            rect: Option<[f32; 4]>,
         }
         let mut marks: HashMap<u128, Vec<UnitMark>> = HashMap::new();
         let sil_fold = true;
@@ -1236,6 +1320,7 @@ impl Sink {
                                     masked: true,
                                     band: false,
                                     off: 0,
+                                    rect: None,
                                 });
                             }
                             continue;
@@ -1259,6 +1344,7 @@ impl Sink {
                                 masked: false,
                                 band: false,
                                 off: 0,
+                                    rect: None,
                             });
                         }
                         continue;
@@ -1296,6 +1382,7 @@ impl Sink {
                             masked: true,
                             band: false,
                             off: 0,
+                                    rect: None,
                         });
                         continue;
                     }
@@ -1353,6 +1440,7 @@ impl Sink {
                                     masked: false,
                                     band: false,
                                     off: 0,
+                                    rect: None,
                                 });
                             }
                         }
@@ -1441,7 +1529,7 @@ impl Sink {
                             rec[2][0] = 2.0;
                         }
                         crate::vello::bake::stamp_field_anchor(&desc, &mut rec);
-                        out.push(UnitMark { node: i, round: sched.round[i], desc, rec, ctl, masked, band, off: 0 });
+                        out.push(UnitMark { node: i, round: sched.round[i], desc, rec, ctl, masked, band, off: 0, rect: None });
                     }
                     // A band whose flood coverage the marker's own area cannot reproduce (`analytic:
                     // false` — glyph coverage) folds the flood recovery into its punch V pass: the V
@@ -1484,6 +1572,26 @@ impl Sink {
                 if !out.is_empty() {
                     marks.insert(gid, out);
                 }
+            }
+            // Region ground fences: one zero-desc mark per region node, keyed under its READER's
+            // gid. The marker fences the region's translated content draws onto its grid-rect
+            // tiles at the region's round, and the OUTPUT record (stamped by the lease loop below)
+            // shifts the window's stores into the region's lease. Inserted at the front — region
+            // rounds are the earliest, and their tiles are disjoint from every frame mark's.
+            for &(ri, node, reader) in &region_nodes {
+                let g = regions.regions[ri].grid;
+                let ms = marks.entry(reader).or_default();
+                ms.insert(0, UnitMark {
+                    node,
+                    round: sched.round[node],
+                    desc: [0.0f32; 26],
+                    rec: [[0.0f32; 4]; 5],
+                    ctl: 0,
+                    masked: false,
+                    band: false,
+                    off: 0,
+                    rect: Some([g[0] as f32, g[1] as f32, g[2] as f32, g[3] as f32]),
+                });
             }
         }
         // A mark that COMPOSES the accumulator when it runs — not an inner band (over the body) and
@@ -1546,6 +1654,7 @@ impl Sink {
                     masked: false,
                     band: false,
                     off: 0,
+                    rect: None,
                 });
             }
         }
@@ -1839,7 +1948,7 @@ impl Sink {
                         if !dag.binding_shape(m.node).is_some_and(|s| s.to_draft) {
                             continue;
                         }
-                        let r = reach_of[&gid];
+                        let r = m.rect.unwrap_or(reach_of[&gid]);
                         let x0 = (r[0].max(0.0) as u32 / TILE_PX) * TILE_PX;
                         let y0 = (r[1].max(0.0) as u32 / TILE_PX) * TILE_PX;
                         let x1 = ((r[2].ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(width);
@@ -2228,7 +2337,20 @@ impl Sink {
                 )
                 .to_path(0.1),
             );
-            if let crate::vello::units::UnitOp::Rasterize(
+            if let DagSource::Region(ri) = dag.nodes[s].source {
+                // A region ground draws every root BELOW its reader, spliced under the region's
+                // device→grid transform — the fragment cache re-bases each leaf's encoding, so
+                // this is a transform-splice, not a re-encode. The surrounding clip (the region's
+                // grid rect) culls everything the rect does not show.
+                let below = regions.regions[ri]
+                    .reader
+                    .and_then(|gid| gi_of.get(&gid).copied())
+                    .unwrap_or(0);
+                if below > 0 {
+                    let t = regions.device_to_grid(ri) * root;
+                    backend.draw_scene_range(scene, t, 0, below);
+                }
+            } else if let crate::vello::units::UnitOp::Rasterize(
                 crate::vello::units::RasterSource::Body { offset },
             ) = dag.nodes[s].op
             {
@@ -2300,10 +2422,11 @@ impl Sink {
                     } else {
                         crate::vello::bake::EID_MATERIALIZE
                     };
-                    backend.draw_effect_marker(&mut scene, root, gid, eid, z, r, m.off, reaches[j], m.ctl);
-                    marker_rects.push((r, reaches[j]));
+                    let mr = m.rect.unwrap_or(reaches[j]);
+                    backend.draw_effect_marker(&mut scene, root, gid, eid, z, r, m.off, mr, m.ctl);
+                    marker_rects.push((r, mr));
                     if is_fence(m) {
-                        emit_sil_draws(backend, &mut scene, m.node, reaches[j]);
+                        emit_sil_draws(backend, &mut scene, m.node, mr);
                     }
                 }
                 z += 1;
@@ -2348,10 +2471,11 @@ impl Sink {
                             } else {
                                 crate::vello::bake::EID_MATERIALIZE
                             };
-                            backend.draw_effect_marker(&mut scene, root, gid, eid, z, m.round, m.off, reaches[j], m.ctl);
-                            marker_rects.push((m.round, reaches[j]));
+                            let mr = m.rect.unwrap_or(reaches[j]);
+                            backend.draw_effect_marker(&mut scene, root, gid, eid, z, m.round, m.off, mr, m.ctl);
+                            marker_rects.push((m.round, mr));
                             if is_fence(m) {
-                                emit_sil_draws(backend, &mut scene, m.node, reaches[j]);
+                                emit_sil_draws(backend, &mut scene, m.node, mr);
                             }
                         }
                     }
@@ -2377,10 +2501,11 @@ impl Sink {
                         } else {
                             crate::vello::bake::EID_MATERIALIZE
                         };
-                        backend.draw_effect_marker(&mut scene, root, gid, eid, z, m.round, m.off, reaches[j], m.ctl);
-                        marker_rects.push((m.round, reaches[j]));
+                        let mr = m.rect.unwrap_or(reaches[j]);
+                        backend.draw_effect_marker(&mut scene, root, gid, eid, z, m.round, m.off, mr, m.ctl);
+                        marker_rects.push((m.round, mr));
                         if is_fence(m) {
-                            emit_sil_draws(backend, &mut scene, m.node, reaches[j]);
+                            emit_sil_draws(backend, &mut scene, m.node, mr);
                         }
                     }
                 } else {
@@ -3352,6 +3477,7 @@ impl Sink {
         }
         self.frame_transient.push(acc_tex);
         self.frame_transient.push(snap_tex);
+        backend.set_frame_extent(0, 0);
     }
 
     /// A full-viewport 1:1 src-over blit of `src` onto `target`.

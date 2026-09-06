@@ -18,6 +18,7 @@
 
 pub mod abi;
 pub mod bake;
+pub mod demand;
 pub mod blend;
 pub mod draw;
 pub mod editor;

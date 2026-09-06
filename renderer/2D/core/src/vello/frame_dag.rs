@@ -50,6 +50,10 @@ pub enum Source {
     /// `Op` says which pass within that effect (rasterize the source, blur it, compose it); `slot` says
     /// which effect — so a drop's colour and an inner's colour never get confused.
     Effect { shape: u128, slot: usize },
+    /// An interest region's ground: the below-z scene content drawn into the region's grid rect
+    /// (translated + scaled by its density) and materialized into a lease. The payload is the
+    /// region's index in the frame's `RegionTable`.
+    Region(usize),
 }
 
 /// The coarse role of a node, DERIVED from its `op` and `target` — a view for display and queries, not
@@ -423,6 +427,12 @@ impl FrameDag {
     /// texture, and rides inline instead.
     #[must_use]
     pub fn folded_source(&self, j: usize) -> bool {
+        if matches!(self.nodes[j].source, Source::Region(_)) {
+            return matches!(
+                self.nodes[j].op,
+                UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. })
+            );
+        }
         let (_, tex) = self.bind_idx();
         tex[j]
             && match self.nodes[j].op {
@@ -432,6 +442,38 @@ impl FrameDag {
                 }
                 _ => false,
             }
+    }
+
+    /// Push an interest region's ground node: a folded Body rasterize into a scratch lease, drawn
+    /// from `Source::Region(idx)`. `reach` is the region's grid rect in device pixels — its marker
+    /// footprint and its lease size. Region nodes join the DAG after the scene build, so the lazy
+    /// binding index is reset here.
+    pub fn push_region(&mut self, idx: usize, reach: Rect, label: String) -> usize {
+        self.bind_idx.take();
+        self.nodes.push(Node {
+            op: UnitOp::Rasterize(crate::vello::units::RasterSource::Body { offset: [0.0; 2] }),
+            target: crate::vello::plan::Target::Atlas,
+            source: Source::Region(idx),
+            label,
+            reach: Some(reach),
+            inputs: vec![],
+        });
+        self.nodes.len() - 1
+    }
+
+    /// Wire a region value into its reader: every `Reload` node of gather `gid` gains a read edge
+    /// from `region_node`, so the schedule puts the region's write strictly before any round that
+    /// can sample it. Reload inputs are structural (only the scheduler walks them), so the append
+    /// is invisible to arm baking.
+    pub fn wire_region_reader(&mut self, region_node: usize, gid: u128) {
+        self.bind_idx.take();
+        for n in &mut self.nodes {
+            if matches!(n.op, UnitOp::Reload)
+                && matches!(n.source, Source::Effect { shape, .. } if shape == gid)
+            {
+                n.inputs.push(region_node);
+            }
+        }
     }
 
     #[must_use]
@@ -718,8 +760,17 @@ impl FrameDag {
             }
         }
 
+        // A region component is a pure source consumers read cross-barrier: it processes FIRST (so
+        // its base is known when a consumer's push needs it) and packs into the earliest rounds its
+        // binding class admits.
+        let mut is_region = vec![false; ncomp];
+        for (i, node) in self.nodes.iter().enumerate() {
+            if matches!(node.source, Source::Region(_)) {
+                is_region[comp[i]] = true;
+            }
+        }
         let mut corder: Vec<usize> = (0..ncomp).collect();
-        corder.sort_by_key(|&c| first[c]);
+        corder.sort_by_key(|&c| (u8::from(!is_region[c]), first[c]));
         let mut base = vec![0u32; ncomp];
         let mut load: Vec<u64> = Vec::new();
         let mut shape_at: HashMap<u32, BindingShape> = HashMap::new();
@@ -743,6 +794,21 @@ impl FrameDag {
                 if reach_overlap(reach[c], reach[d], tile) {
                     let gap = u32::from(is_effect[c] && is_effect[d]);
                     b = b.max(base[d] + span[d] + gap);
+                }
+            }
+            // A read edge OUT of a region component is a true write-before-read on a lease, and the
+            // region's grid rect never overlaps its consumer's reach — the spine push above cannot
+            // see it. Regions process first (corder), so their rounds are final here: push this
+            // component's base until every such read lands strictly after its region's write.
+            for i in 0..n {
+                if comp[i] != c {
+                    continue;
+                }
+                for &j in &self.nodes[i].inputs {
+                    if is_region[comp[j]] && comp[j] != c {
+                        let need = (base[comp[j]] + off[j] + 1).saturating_sub(off[i]);
+                        b = b.max(need);
+                    }
                 }
             }
             loop {
@@ -1886,6 +1952,9 @@ mod tests {
                             *slot < crate::effect::effect_stack(node).len(),
                             "slot {slot} indexes shape {shape:x}'s effect stack",
                         );
+                    }
+                    Source::Region(_) => {
+                        unreachable!("the scene builder never emits region nodes — the sink pushes them")
                     }
                 }
             }

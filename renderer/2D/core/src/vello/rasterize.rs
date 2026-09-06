@@ -120,6 +120,11 @@ pub trait RasterBackend {
     /// float offset of this effect's descriptor in the `effect_params` buffer; `0` otherwise.
     fn draw_effect_marker(&mut self, _scene: &mut Self::Scene, _transform: Affine, _id: u128, _effect_id: u32, _seg_after: u32, _round: u32, _p2: u32, _reach: [f32; 4], _atomic_ctl: u32) {}
 
+    /// Declare the FRAME extent (accumulator/backdrop rows) for subsequent renders whose target
+    /// covers a taller tile grid (interest-region rows rented below the frame). `(0, 0)` restores
+    /// frame == target. Default no-op — only the phased (classic) backend distinguishes the two.
+    fn set_frame_extent(&mut self, _width: u32, _height: u32) {}
+
     /// Rasterize `scene` into `target` (a `width × height` texture), clearing to `base_color` first.
     ///
     /// Records into the caller's `enc` and does **not** submit: an effect-heavy frame runs hundreds of

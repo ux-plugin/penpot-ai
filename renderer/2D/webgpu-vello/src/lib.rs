@@ -838,6 +838,10 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         });
     }
 
+    fn set_frame_extent(&mut self, width: u32, height: u32) {
+        vello::set_frame(width, height);
+    }
+
     fn draw_effect_marker(&mut self, scene: &mut ClassicCtx, transform: Affine, id: u128, effect_id: u32, seg_after: u32, round: u32, p2: u32, reach: [f32; 4], atomic_ctl: u32) {
         let r = Rect::new(
             f64::from(reach[0]).max(0.0),
@@ -862,7 +866,22 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
                 if let Some(node) = model.get(id) {
                     let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
                     let matrix = transform * viewport * modifier * node.effective_transform();
-                    scene.draw_effect(matrix, &render_core::geometry::outline(node), effect_id, params);
+                    let outline = render_core::geometry::outline(node);
+                    // A masked marker draws the raw silhouette; one overhanging BELOW its
+                    // frame-clamped reach would bin into region grid rows and stray into a
+                    // region's command stream. Clipping to the reach cuts exactly the part that
+                    // can influence no frame pixel — and only overhanging shapes pay the clip.
+                    use render_core::kurbo::Shape;
+                    let bb = matrix.transform_rect_bbox(outline.bounding_box());
+                    let overhangs = bb.y1 > r.y1 + 0.5;
+                    if overhangs {
+                        scene.set_transform(Affine::IDENTITY);
+                        scene.push_clip_layer(&r.to_path(0.1));
+                    }
+                    scene.draw_effect(matrix, &outline, effect_id, params);
+                    if overhangs {
+                        scene.pop_layer();
+                    }
                 }
             });
         } else {
