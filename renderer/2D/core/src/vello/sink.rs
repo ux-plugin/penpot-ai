@@ -947,9 +947,11 @@ impl Sink {
             p.begin();
         }
         let _tenc = crate::vello::prof::now();
-        let acc_h = height;
+        let regions = crate::vello::region::RegionTable::frame(width, height);
+        let acc_h = regions.frame_height();
+        let grid_h = regions.grid_height();
         let acc_sz = (width as f32, acc_h as f32);
-        let mut scene = backend.new_scene(width as u16, acc_h as u16);
+        let mut scene = backend.new_scene(width as u16, grid_h as u16);
 
         let reaches: Vec<[f32; 4]> = gathers
             .iter()
@@ -1672,7 +1674,7 @@ impl Sink {
                 let x0 = (r[0].max(0.0) as u32 / TILE_PX) * TILE_PX;
                 let y0 = (r[1].max(0.0) as u32 / TILE_PX) * TILE_PX;
                 let x1 = ((r[2].max(0.0).ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(width);
-                let y1 = ((r[3].max(0.0).ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(acc_h);
+                let y1 = ((r[3].max(0.0).ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(grid_h);
                 u64::from(x1.saturating_sub(x0)) * u64::from(y1.saturating_sub(y0))
             };
             let mut order: Vec<u128> = marks.keys().copied().collect();
@@ -1841,7 +1843,7 @@ impl Sink {
                         let x0 = (r[0].max(0.0) as u32 / TILE_PX) * TILE_PX;
                         let y0 = (r[1].max(0.0) as u32 / TILE_PX) * TILE_PX;
                         let x1 = ((r[2].ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(width);
-                        let y1 = ((r[3].ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(acc_h);
+                        let y1 = ((r[3].ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(grid_h);
                         lives.push(LiveRect {
                             node: jobs.len(),
                             w: x1 - x0,
@@ -2305,7 +2307,7 @@ impl Sink {
                     }
                 }
                 z += 1;
-                let full = [0.0, 0.0, width as f32, acc_h as f32];
+                let full = [0.0, 0.0, width as f32, grid_h as f32];
                 backend.draw_effect_marker(&mut scene, root, 0, 6, z, front_end + 1, 0, full, 0);
                 marker_rects.push((front_end + 1, full));
             }
@@ -2668,7 +2670,7 @@ impl Sink {
             std::collections::HashSet<u32>,
         ) = {
             let wt = width.div_ceil(TILE_PX);
-            let ht = acc_h.div_ceil(TILE_PX);
+            let ht = grid_h.div_ceil(TILE_PX);
             let full = (wt as usize) * (ht as usize);
 
             struct Win {
@@ -2980,7 +2982,7 @@ impl Sink {
                 let tex = self.pool.acquire_target(
                     device,
                     width,
-                    acc_h,
+                    grid_h,
                     crate::vello::sdf::SDF_FORMAT,
                     wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                     "wv sdf",
@@ -3004,7 +3006,7 @@ impl Sink {
         }
 
         let _tpb = crate::vello::prof::now();
-        backend.phased_begin(&scene, device, queue, &mut enc, width, acc_h, crate::vello::abi::background(), &fx_bytes);
+        backend.phased_begin(&scene, device, queue, &mut enc, width, grid_h, crate::vello::abi::background(), &fx_bytes);
         crate::vello::prof::dbg_add(31, crate::vello::prof::now() - _tpb);
 
         backend.phased_frontend_full(device, queue, &mut enc);
@@ -3051,7 +3053,7 @@ impl Sink {
                     );
                     let read_edge = |n: usize| -> Option<usize> { read_edge_of(&dag, shp, n) };
                     let mut acquire = || {
-                        let t = self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv unit scratch");
+                        let t = self.pool.acquire_target(device, width, grid_h, format, phase_usage, "wv unit scratch");
                         let v = t.create_view(&wgpu::TextureViewDescriptor::default());
                         draft_texs.push(t);
                         v

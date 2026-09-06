@@ -30,6 +30,7 @@ pub mod graph;
 pub mod plan;
 pub mod prof;
 pub mod rasterize;
+pub mod region;
 pub mod sdf;
 pub mod rich_editor;
 pub mod svg;
