@@ -563,6 +563,28 @@ impl ClassicRenderer {
 }
 
 impl ClassicBackend {
+    /// The region atlas view for a fine dispatch, or a persistent 1x1 dummy when none is bound
+    /// (the binding layout always carries the slot).
+    fn region_view(&mut self, device: &wgpu::Device) -> wgpu::TextureView {
+        if let Some(v) = &self.region_atlas {
+            return v.clone();
+        }
+        if self.region_dummy.is_none() {
+            let t = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("wv region dummy"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            self.region_dummy = Some(t.create_view(&wgpu::TextureViewDescriptor::default()));
+        }
+        self.region_dummy.clone().expect("dummy just built")
+    }
+
     /// SPIKE accessor — reach the vello renderer from the focus renderer. Throwaway.
     pub fn renderer_mut(&mut self) -> &mut ClassicRenderer {
         &mut self.renderer
@@ -651,6 +673,10 @@ pub struct ClassicBackend {
     /// The in-progress persistent phased render, live between `phased_begin` and `phased_finish` so
     /// the sink can drive phases one at a time with a gather's effect recorded between them.
     phased_session: Option<vello::low_level::PhasedSession>,
+    /// The frame's region atlas view (interest-region leases), bound read-only by every
+    /// backdrop-tapping fine dispatch; a 1x1 dummy rides the slot when no regions are rented.
+    region_atlas: Option<wgpu::TextureView>,
+    region_dummy: Option<wgpu::TextureView>,
     /// Encoded leaf-body fragments spliced by the whole-viewport walk — see [`walk::BodyCache`].
     body_cache: crate::walk::BodyCache,
     /// DEBUG (native only): the phased session's bump-buffer resource id + a device/queue clone, so
@@ -674,6 +700,8 @@ impl ClassicBackend {
             inline_images: std::collections::HashMap::new(),
             next_inline: 0,
             phased_session: None,
+            region_atlas: None,
+            region_dummy: None,
             body_cache: crate::walk::BodyCache::default(),
             #[cfg(not(target_arch = "wasm32"))]
             debug_bump_id: None,
@@ -842,6 +870,17 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         vello::set_frame(width, height);
     }
 
+    fn phase_region_atlas(&mut self, view: Option<&wgpu::TextureView>) {
+        self.region_atlas = view.cloned();
+    }
+
+    fn draw_fill_rect(&mut self, scene: &mut ClassicCtx, rect: [f32; 4], color: [f32; 4]) {
+        let r = Rect::new(f64::from(rect[0]), f64::from(rect[1]), f64::from(rect[2]), f64::from(rect[3]));
+        let c = vello_common::peniko::Color::new([color[0], color[1], color[2], color[3]]);
+        scene.set_transform(Affine::IDENTITY);
+        scene.scene.fill(Fill::NonZero, Affine::IDENTITY, c, None, &r);
+    }
+
     fn draw_effect_marker(&mut self, scene: &mut ClassicCtx, transform: Affine, id: u128, effect_id: u32, seg_after: u32, round: u32, p2: u32, reach: [f32; 4], atomic_ctl: u32) {
         let r = Rect::new(
             f64::from(reach[0]).max(0.0),
@@ -866,22 +905,12 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
                 if let Some(node) = model.get(id) {
                     let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
                     let matrix = transform * viewport * modifier * node.effective_transform();
-                    let outline = render_core::geometry::outline(node);
-                    // A masked marker draws the raw silhouette; one overhanging BELOW its
-                    // frame-clamped reach would bin into region grid rows and stray into a
-                    // region's command stream. Clipping to the reach cuts exactly the part that
-                    // can influence no frame pixel — and only overhanging shapes pay the clip.
-                    use render_core::kurbo::Shape;
-                    let bb = matrix.transform_rect_bbox(outline.bounding_box());
-                    let overhangs = bb.y1 > r.y1 + 0.5;
-                    if overhangs {
-                        scene.set_transform(Affine::IDENTITY);
-                        scene.push_clip_layer(&r.to_path(0.1));
-                    }
-                    scene.draw_effect(matrix, &outline, effect_id, params);
-                    if overhangs {
-                        scene.pop_layer();
-                    }
+                    // A masked marker's silhouette may overhang below the frame into region
+                    // grid rows — harmlessly: region windows run the EARLIEST rounds (front,
+                    // class-separated), so a stray frame marker on a band tile is out of every
+                    // region window (no execution, no store claim), and it sits later in the
+                    // stream than the region's own fence + draws (no walk break before them).
+                    scene.draw_effect(matrix, &render_core::geometry::outline(node), effect_id, params);
                 }
             });
         } else {
@@ -1075,10 +1104,11 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         slot10: Option<(bool, &wgpu::TextureView)>,
         target: &wgpu::TextureView,
     ) {
+        let region = self.region_view(device);
         let session = self.phased_session.as_mut().expect("phased_fine_segment_rwu without phased_begin");
         self.renderer
             .inner
-            .phased_fine_segment_rwu_into(session, device, queue, enc, seg_lo, seg_target, snap, slot10, target)
+            .phased_fine_segment_rwu_into(session, device, queue, enc, seg_lo, seg_target, snap, slot10, &region, target)
             .expect("phased_fine_segment_rwu_into");
     }
 
@@ -1093,10 +1123,11 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         slot10: Option<(bool, &wgpu::TextureView)>,
         out: &wgpu::TextureView,
     ) {
+        let region = self.region_view(device);
         let session = self.phased_session.as_mut().expect("phased_fine_segment_loadu without phased_begin");
         self.renderer
             .inner
-            .phased_fine_segment_loadu_into(session, device, queue, enc, seg_lo, seg_target, snap, slot10, out)
+            .phased_fine_segment_loadu_into(session, device, queue, enc, seg_lo, seg_target, snap, slot10, &region, out)
             .expect("phased_fine_segment_loadu_into");
     }
 

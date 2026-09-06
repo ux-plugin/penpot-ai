@@ -125,6 +125,15 @@ pub trait RasterBackend {
     /// frame == target. Default no-op — only the phased (classic) backend distinguishes the two.
     fn set_frame_extent(&mut self, _width: u32, _height: u32) {}
 
+    /// Bind the region atlas (the interest-region leases) for subsequent backdrop-tapping fine
+    /// dispatches; `None` unbinds (a dummy rides the slot). Default no-op — only the phased
+    /// (classic) backend routes escaped taps.
+    fn phase_region_atlas(&mut self, _view: Option<&wgpu::TextureView>) {}
+
+    /// Fill `rect` (device px, identity transform) with a solid premul-straight `color` — the page
+    /// ground an interest region's content composites over. Default no-op.
+    fn draw_fill_rect(&mut self, _scene: &mut Self::Scene, _rect: [f32; 4], _color: [f32; 4]) {}
+
     /// Rasterize `scene` into `target` (a `width × height` texture), clearing to `base_color` first.
     ///
     /// Records into the caller's `enc` and does **not** submit: an effect-heavy frame runs hundreds of

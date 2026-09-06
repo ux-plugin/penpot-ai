@@ -69,8 +69,12 @@ pub mod bits {
     pub const VALUE_OVER: u32 = 16384;
 }
 
-/// The number of operand records every arm carries after its 26-float header.
-pub const REC_COUNT: usize = 5;
+/// The number of operand records every arm carries after its 26-float header. Records 5 and 6 are
+/// the reader's REGION route: record 5 = the serving region's device source rect `[x0, y0, x1, y2]`,
+/// record 6 = `[atlas_x, atlas_y, k, flag]` — the region lease's origin in the region atlas, its
+/// density, and a non-zero flag when a region serves this mark. Zero (the default) means no region:
+/// escaped taps keep the edge-extend clamp.
+pub const REC_COUNT: usize = 7;
 /// Floats per operand record: `[source, window x, window y, param]`. Record `i` sits at
 /// `off + 26 + i * REC_STRIDE`. Roles: record 0 = the VALUE the arm transforms, record 1 = the
 /// REFERENCE (`orig`) binary pointwise units compare against, record 2 = the composite's COVERAGE,
@@ -258,7 +262,7 @@ pub fn bake_unit(op: &UnitOp, policy: Policy) -> [f32; 26] {
 /// declared fact ([`crate::vello::fine_field::programs`], the source's centre slot), so this is a
 /// table lookup, never a per-program branch; a program with no anchor (or no field at all) leaves
 /// the record untouched.
-pub fn stamp_field_anchor(desc: &[f32; 26], rec: &mut [[f32; 4]; 5]) {
+pub fn stamp_field_anchor(desc: &[f32; 26], rec: &mut [[f32; 4]; 7]) {
     static ANCHORS: std::sync::OnceLock<Vec<(u32, usize)>> = std::sync::OnceLock::new();
     let table = ANCHORS.get_or_init(|| {
         crate::vello::fine_field::programs()

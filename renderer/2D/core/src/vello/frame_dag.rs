@@ -176,6 +176,11 @@ pub struct BindingShape {
     /// pointwise read of the same slot rides the input-permutation — different pipelines, so a tapping
     /// and a non-tapping node never share a dispatch even with equal slots.
     pub draft_taps: bool,
+    /// The output is the REGION ATLAS (an interest region's lease), not a side scratch atlas. A
+    /// region value lives across many consumer rounds, which the side atlases' die-next-round
+    /// parity model cannot express — so region writes get their own binding class and never share
+    /// a dispatch with side-atlas work.
+    pub region_out: bool,
 }
 
 /// The barrier-aware schedule: each node's round, where a round is one dispatch and consecutive rounds
@@ -498,8 +503,17 @@ impl FrameDag {
             }
         };
         let shape = |base: Slot, input: Slot, to_draft: bool, draft_taps: bool| {
-            Some(BindingShape { base, input, to_draft, draft_taps })
+            Some(BindingShape { base, input, to_draft, draft_taps, region_out: false })
         };
+        if matches!(n.source, Source::Region(_)) {
+            return Some(BindingShape {
+                base: Slot::None,
+                input: Slot::None,
+                to_draft: true,
+                draft_taps: false,
+                region_out: true,
+            });
+        }
         match &n.op {
             UnitOp::Blur { .. } => match &self.nodes[n.inputs[0]].op {
                 UnitOp::Rasterize(_) if folded(n.inputs[0]) => {
@@ -852,12 +866,25 @@ impl FrameDag {
         for i in 0..n {
             round[i] = base[comp[i]] + off[i];
         }
-        debug_assert!(
-            self.nodes.iter().enumerate().all(|(i, node)| {
-                node.inputs.iter().all(|&j| comp[j] == comp[i] || round[j] <= round[i])
-            }),
-            "cross-component data edge scheduled out of order — the spine push no longer covers it"
-        );
+        // Two accumulator writers are ordered per tile by the PTCL stream (segments), not by
+        // rounds — a nominal round inversion between them is harmless. Every VALUE edge (a draft
+        // or region lease read) must respect rounds: the texture is only whole after its round.
+        #[cfg(debug_assertions)]
+        for (i, node) in self.nodes.iter().enumerate() {
+            for &j in &node.inputs {
+                if self.nodes[i].writes_accumulator() && self.nodes[j].writes_accumulator() {
+                    continue;
+                }
+                assert!(
+                    comp[j] == comp[i] || round[j] <= round[i],
+                    "cross-component value edge scheduled out of order: {j} '{}' (r{}) -> {i} '{}' (r{})",
+                    self.nodes[j].label,
+                    round[j],
+                    self.nodes[i].label,
+                    round[i],
+                );
+            }
+        }
 
         // Per-node barrier tag (display + executor): the strongest incoming edge barrier.
         let mut barrier = vec![None; n];

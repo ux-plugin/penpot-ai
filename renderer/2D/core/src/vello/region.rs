@@ -108,6 +108,14 @@ impl RegionTable {
         self.frame_h
     }
 
+    /// The first rented grid row — where region shelves start (frame height, tile-ceiled). The
+    /// region atlas maps grid rows `[band_origin_y, grid_height)` one-to-one: a lease's atlas
+    /// origin is its grid origin minus `(0, band_origin_y)`.
+    #[must_use]
+    pub fn band_origin_y(&self) -> u32 {
+        self.frame_h.div_ceil(TILE_PX) * TILE_PX
+    }
+
     /// The tile grid's height: the frame rows plus every rented shelf, tile-aligned. This is the
     /// scene/coarse/fine addressing domain — always ≥ [`Self::frame_height`].
     #[must_use]

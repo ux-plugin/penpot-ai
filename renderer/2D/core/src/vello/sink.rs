@@ -970,6 +970,17 @@ impl Sink {
             let demands: Vec<crate::vello::demand::Demand> = gathers
                 .iter()
                 .filter_map(|&(_, gid, kind)| {
+                    // Only a BACKDROP-reading gather can consume a region today (its chain roots
+                    // at a Reload the region wires into). A stack's self-reading blur (layer blur)
+                    // needs draft-side routing — the deferred second half.
+                    let reads_backdrop = crate::vello::abi::with_scene(|live, _, _| {
+                        live.get(gid)
+                            .map(|n| n.background_blur.is_some() || n.glass.is_some())
+                    })
+                    .unwrap_or(false);
+                    if !reads_backdrop {
+                        return None;
+                    }
                     let r = self.wv_marker_reach(gid, kind, full_view, width, height);
                     if r == [0.0, 0.0, 0.0, 0.0] || r == [0.0, 0.0, width as f32, height as f32] {
                         return None;
@@ -1247,7 +1258,7 @@ impl Sink {
             node: usize,
             round: u32,
             desc: [f32; 26],
-            rec: [[f32; 4]; 5],
+            rec: [[f32; 4]; 7],
             ctl: u32,
             masked: bool,
             band: bool,
@@ -1315,7 +1326,7 @@ impl Sink {
                                     node: compose_idx,
                                     round: sched.round[compose_idx],
                                     desc,
-                                    rec: [[0.0f32; 4]; 5],
+                                    rec: [[0.0f32; 4]; 7],
                                     ctl: 0,
                                     masked: true,
                                     band: false,
@@ -1339,7 +1350,7 @@ impl Sink {
                                 node: root,
                                 round: sched.round[root],
                                 desc: [0.0f32; 26],
-                                rec: [[0.0f32; 4]; 5],
+                                rec: [[0.0f32; 4]; 7],
                                 ctl: 0,
                                 masked: false,
                                 band: false,
@@ -1371,7 +1382,7 @@ impl Sink {
                             desc[0] += bits::TINT as f32;
                             desc[14..18].copy_from_slice(&c);
                         }
-                        let mut rec = [[0.0f32; 4]; 5];
+                        let mut rec = [[0.0f32; 4]; 7];
                         crate::vello::bake::stamp_field_anchor(&desc, &mut rec);
                         out.push(UnitMark {
                             node: compose_idx,
@@ -1417,7 +1428,7 @@ impl Sink {
                             _ => None,
                         }
                     });
-                    let stamp_program = |r: &mut [[f32; 4]; 5]| {
+                    let stamp_program = |r: &mut [[f32; 4]; 7]| {
                         if let Some(decode) = sampled {
                             r[3][0] = 2.0;
                             r[3][3] = decode;
@@ -1435,7 +1446,7 @@ impl Sink {
                                     node: sn,
                                     round: sched.round[sn],
                                     desc: [0.0f32; 26],
-                                    rec: [[0.0f32; 4]; 5],
+                                    rec: [[0.0f32; 4]; 7],
                                     ctl: 0,
                                     masked: false,
                                     band: false,
@@ -1512,7 +1523,7 @@ impl Sink {
                         } else {
                             continue;
                         };
-                        let mut rec = [[0.0f32; 4]; 5];
+                        let mut rec = [[0.0f32; 4]; 7];
                         rec[0][0] = src[0];
                         rec[1][0] = src[1];
                         rec[2][0] = src[2];
@@ -1585,7 +1596,7 @@ impl Sink {
                     node,
                     round: sched.round[node],
                     desc: [0.0f32; 26],
-                    rec: [[0.0f32; 4]; 5],
+                    rec: [[0.0f32; 4]; 7],
                     ctl: 0,
                     masked: false,
                     band: false,
@@ -1649,7 +1660,7 @@ impl Sink {
                     node: body_idx,
                     round,
                     desc: [0.0f32; 26],
-                    rec: [[0.0f32; 4]; 5],
+                    rec: [[0.0f32; 4]; 7],
                     ctl: 0,
                     masked: false,
                     band: false,
@@ -1823,7 +1834,7 @@ impl Sink {
             };
             let class_of = |n: usize| {
                 let s = dag.binding_shape(n).expect("admitted marks have a shape");
-                (sk(s.base), sk(s.input), u8::from(s.draft_taps))
+                (sk(s.base), sk(s.input), u8::from(s.draft_taps) | (u8::from(s.region_out) << 1))
             };
             let mut keys: Vec<(u8, (u8, u8, u8))> =
                 admitted.iter().map(|&(n, d)| (d, class_of(n))).collect();
@@ -1945,6 +1956,9 @@ impl Sink {
                 // taps against it, never against the atlas (a neighbouring lease is not content).
                 for (&gid, ms) in &marks {
                     for m in ms {
+                        if dag.binding_shape(m.node).is_some_and(|s| s.region_out) {
+                            continue;
+                        }
                         if !dag.binding_shape(m.node).is_some_and(|s| s.to_draft) {
                             continue;
                         }
@@ -2302,6 +2316,37 @@ impl Sink {
                 }
             }
         }
+        // Region routing records. A region ground mark stores into the region atlas: its OUTPUT
+        // record shifts grid rows onto atlas rows (`origin = (0, band_origin_y)` — the atlas maps
+        // the rented band one-to-one). Every mark of a SERVED reader gets the route to its region:
+        // record 5 = the region's device source rect, record 6 = the lease's atlas origin + k +
+        // flag, so escaped backdrop taps resolve into materialized content instead of edge-extend.
+        {
+            let band_y0 = regions.band_origin_y() as f32;
+            let region_of_reader: HashMap<u128, usize> = served.iter().map(|&(r, i)| (r, i)).collect();
+            for (&gid, ms) in marks.iter_mut() {
+                for m in ms.iter_mut() {
+                    if matches!(
+                        dag.nodes[m.node].source,
+                        crate::vello::frame_dag::Source::Region(_)
+                    ) {
+                        m.rec[4] = [1.0, 0.0, band_y0, 0.0];
+                        continue;
+                    }
+                    if let Some(&ri) = region_of_reader.get(&gid) {
+                        let r = &regions.regions[ri];
+                        m.rec[5] = [
+                            r.source[0] as f32,
+                            r.source[1] as f32,
+                            r.source[2] as f32,
+                            r.source[3] as f32,
+                        ];
+                        m.rec[6] =
+                            [r.grid[0] as f32, r.grid[1] as f32 - band_y0, r.k as f32, 1.0];
+                    }
+                }
+            }
+        }
         let mut fx_params: Vec<f32> = Vec::new();
         for ms in marks.values_mut() {
             for m in ms.iter_mut() {
@@ -2338,10 +2383,13 @@ impl Sink {
                 .to_path(0.1),
             );
             if let DagSource::Region(ri) = dag.nodes[s].source {
-                // A region ground draws every root BELOW its reader, spliced under the region's
-                // device→grid transform — the fragment cache re-bases each leaf's encoding, so
-                // this is a transform-splice, not a re-encode. The surrounding clip (the region's
-                // grid rect) culls everything the rect does not show.
+                // A region ground seeds the PAGE colour first (a backdrop tap past the document
+                // still reads the page, exactly like the accumulator's base-colour seed), then
+                // draws every root BELOW its reader, spliced under the region's device→grid
+                // transform — the fragment cache re-bases each leaf's encoding, so this is a
+                // transform-splice, not a re-encode. The surrounding clip (the region's grid rect)
+                // culls everything the rect does not show.
+                backend.draw_fill_rect(scene, clip, crate::vello::abi::background().components);
                 let below = regions.regions[ri]
                     .reader
                     .and_then(|gid| gi_of.get(&gid).copied())
@@ -2558,6 +2606,24 @@ impl Sink {
             "wv snap",
         );
         let snap = snap_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        // THE region atlas: one rgba8 texture mapping the rented grid band one-to-one (atlas row 0
+        // = grid row `band_origin_y`). Region ground windows store into it (their OUTPUT records
+        // shift by the band origin) and every backdrop-tapping dispatch binds it read-only so
+        // escaped taps resolve through the reader's region route records.
+        let region_atlas_tex = (regions.regions.len() > 1).then(|| {
+            let h = (grid_h - regions.band_origin_y()).max(TILE_PX);
+            self.pool.acquire_target(
+                device,
+                width,
+                h,
+                format,
+                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+                "wv region atlas",
+            )
+        });
+        let region_atlas =
+            region_atlas_tex.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
+        backend.phase_region_atlas(region_atlas.as_ref());
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_ROUNDS").is_ok() {
             eprintln!(
@@ -3174,7 +3240,11 @@ impl Sink {
                     }
                     debug_assert!(
                         unit_nodes.iter().all(|&n| dag.binding_shape(n) == Some(shp)),
-                        "one binding shape per round",
+                        "one binding shape per round: window_lo={window_lo} nodes={:?}",
+                        unit_nodes
+                            .iter()
+                            .map(|&n| (n, dag.nodes[n].label.clone(), dag.binding_shape(n)))
+                            .collect::<Vec<_>>(),
                     );
                     let read_edge = |n: usize| -> Option<usize> { read_edge_of(&dag, shp, n) };
                     let mut acquire = || {
@@ -3219,7 +3289,18 @@ impl Sink {
                         backend.phase_snap_copy(device, queue, &mut enc, &refresh, &acc, &snap);
                     }
                     if shp.to_draft {
-                        let dv = match (shp.base, shp.input) {
+                        let dv = if shp.region_out {
+                            // A region ground window: the fenced, translated content draws paint
+                            // the region atlas; per-mark OUTPUT records shift grid rows onto atlas
+                            // rows, and the OOB default drops any unmarked tile's store.
+                            let dv = region_atlas
+                                .clone()
+                                .expect("a region round scheduled without a region atlas");
+                            backend.phase_scratch_origins([OOB, OOB], [0, 0]);
+                            backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &dv);
+                            dv
+                        } else {
+                        match (shp.base, shp.input) {
                             (Slot::None, Slot::None) => {
                                 // A rasterize window: the fenced silhouette draws paint the lease;
                                 // nothing is bound but the draft.
@@ -3282,6 +3363,7 @@ impl Sink {
                                 dv
                             }
                             other => panic!("unit dispatch: unexpected materialize shape {other:?}"),
+                        }
                         };
                         for &n in unit_nodes {
                             node_scratch.insert(n, dv.clone());
@@ -3477,6 +3559,10 @@ impl Sink {
         }
         self.frame_transient.push(acc_tex);
         self.frame_transient.push(snap_tex);
+        if let Some(t) = region_atlas_tex {
+            self.frame_transient.push(t);
+        }
+        backend.phase_region_atlas(None);
         backend.set_frame_extent(0, 0);
     }
 

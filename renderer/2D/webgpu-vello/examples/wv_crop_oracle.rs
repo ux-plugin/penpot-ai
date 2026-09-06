@@ -163,7 +163,11 @@ fn main() {
 
     let mut failures = 0u32;
     let mut installed: Option<Doc> = None;
+    let only = std::env::var("WV_CASE").ok();
     for case in cases() {
+        if only.as_deref().is_some_and(|f| !case.name.contains(f)) {
+            continue;
+        }
         if installed != Some(case.doc) {
             match case.doc {
                 Doc::LensGrid => {
@@ -269,7 +273,7 @@ fn main() {
             case.name,
             if ok { "PASS" } else { "FAIL" },
         );
-        if !ok {
+        if !ok || std::env::var("WV_DUMP").is_ok() {
             write_png(&format!("{PROOFS}/crop-{}-direct.png", case.name), &direct, W, H);
             write_png(&format!("{PROOFS}/crop-{}-reference.png", case.name), &reference, W, H);
             write_png(&format!("{PROOFS}/crop-{}-tiled.png", case.name), &tiled, W, H);
