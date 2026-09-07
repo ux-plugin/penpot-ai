@@ -947,7 +947,7 @@ impl Sink {
             p.begin();
         }
         let _tenc = crate::vello::prof::now();
-        let mut regions = crate::vello::region::RegionTable::frame(width, height);
+        let regions = crate::vello::region::RegionTable::frame(width, height);
         let acc_h = regions.frame_height();
         let acc_sz = (width as f32, acc_h as f32);
 
@@ -957,135 +957,11 @@ impl Sink {
                 wv_clamp_reach(self.wv_marker_reach(gid, kind, full_view, width, height), width, height)
             })
             .collect();
-        // Demand → regions: every gather whose UNCLAMPED reach escapes the frame asks for the
-        // off-frame content its taps can touch (reach + warp/scatter slack or 3σ), at the density
-        // the effect declares. `plan` prices the set against the byte budget and rents grid rows.
-        let served: Vec<(u128, usize)> = if std::env::var("WV_DEMAND").is_ok_and(|v| v == "0") {
-            Vec::new()
-        } else {
-            let budget = std::env::var("WV_DEMAND_BUDGET_MB")
-                .ok()
-                .and_then(|v| v.parse::<u64>().ok())
-                .map_or(64 * 1024 * 1024, |mb| mb.saturating_mul(1024 * 1024).max(1));
-            let demands: Vec<crate::vello::demand::Demand> = gathers
-                .iter()
-                .filter_map(|&(_, gid, kind)| {
-                    // Only a BACKDROP-reading gather can consume a region today (its chain roots
-                    // at a Reload the region wires into). A stack's self-reading blur (layer blur)
-                    // needs draft-side routing — the deferred second half.
-                    let reads_backdrop = crate::vello::abi::with_scene(|live, _, _| {
-                        live.get(gid)
-                            .map(|n| n.background_blur.is_some() || n.glass.is_some())
-                    })
-                    .unwrap_or(false);
-                    if !reads_backdrop {
-                        return None;
-                    }
-                    let r = self.wv_marker_reach(gid, kind, full_view, width, height);
-                    if r == [0.0, 0.0, 0.0, 0.0] || r == [0.0, 0.0, width as f32, height as f32] {
-                        return None;
-                    }
-                    let (pad, desired) = crate::vello::abi::with_scene(|live, _, modifiers| {
-                        let n = live.get(gid)?;
-                        let m = modifiers.get(&gid).copied().unwrap_or(Affine::IDENTITY);
-                        crate::effect_graph::lens_geometry(n, m).map(|(g, geom)| {
-                            let cs = full_view.as_coeffs();
-                            let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
-                            let half_diag = ((geom.width * 0.5).hypot(geom.height * 0.5)
-                                * f64::from(scale)) as f32;
-                            let slack = crate::effect_graph::lens_warp_slack(&g, scale, half_diag)
-                                .max(crate::effect_graph::lens_scatter_slack(&g, scale));
-                            (f64::from(slack).max(64.0), f64::from(g.acceptable_downscale))
-                        })
-                    })
-                    .unwrap_or_else(|| {
-                        let sigma = self.gather_sigma(gid, full_view, 1.0);
-                        ((3.0 * f64::from(sigma) + 8.0).max(64.0), 1.0)
-                    });
-                    Some(crate::vello::demand::Demand {
-                        rect: [
-                            f64::from(r[0]) - pad,
-                            f64::from(r[1]) - pad,
-                            f64::from(r[2]) + pad,
-                            f64::from(r[3]) + pad,
-                        ],
-                        desired_k: desired,
-                        reader: gid,
-                    })
-                })
-                .collect();
-            crate::vello::demand::plan(&demands, &mut regions, width, height, budget, 8192)
-        };
-        // Chain clones: a pure background blur's V pass taps the H draft VERTICALLY — its escaped
-        // taps want H-BLURRED content, which the raw region value cannot give. Rent a second lease
-        // (L1) per served pure-bgblur reader; a region-space H′ node fills it below and the V
-        // arm's route records retarget to it. Glass chains keep raw-value routing (their heads are
-        // lens-local — deferred). WV_NO_CLONES=1 is the A/B teeth lever.
-        let clone_plan: Vec<(u128, usize, usize)> = if std::env::var("WV_NO_CLONES")
-            .is_ok_and(|v| v == "1")
-        {
-            Vec::new()
-        } else {
-            served
-                .iter()
-                .filter_map(|&(reader, ri)| {
-                    let pure = crate::vello::abi::with_scene(|live, _, _| {
-                        live.get(reader)
-                            .map(|n| n.background_blur.is_some() && n.glass.is_none())
-                    })
-                    .unwrap_or(false);
-                    if !pure {
-                        return None;
-                    }
-                    let (source, k) = {
-                        let r = &regions.regions[ri];
-                        (r.source, r.k)
-                    };
-                    regions.allocate(source, k, None, 8192).map(|l1| (reader, ri, l1))
-                })
-                .collect()
-        };
-        // Inner-content clones: a pure background blur INSIDE a region's content must run in
-        // region space or the region value shows raw content where the padded truth is blurred.
-        // Per served region, the LOWEST-Z such shape intersecting the source rect gets its chain
-        // cloned: the ground splits at its z into an aux lease (P0), a region-space H fills the
-        // chain atlas at the same rows, and a compose window redraws the ground, composites the
-        // masked V, and finishes the upper content into the final lease. One inner per region —
-        // deeper stacks need partial-value seeding (deferred).
-        let inner_plan: Vec<(usize, usize, usize, u128)> = if std::env::var("WV_NO_CLONES")
-            .is_ok_and(|v| v == "1")
-        {
-            Vec::new()
-        } else {
-            let gi_of_reader: HashMap<u128, usize> =
-                gathers.iter().map(|&(gi, gid, _)| (gid, gi)).collect();
-            served
-                .iter()
-                .filter_map(|&(reader, ri)| {
-                    let below = gi_of_reader.get(&reader).copied()?;
-                    let source = regions.regions[ri].source;
-                    let k = regions.regions[ri].k;
-                    let inner = crate::vello::abi::with_scene(|live, viewport, modifiers| {
-                        live.roots().iter().take(below).enumerate().find_map(|(gi, &id)| {
-                            let n = live.get(id)?;
-                            if n.background_blur.is_none() || n.glass.is_some() {
-                                return None;
-                            }
-                            let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-                            let b = (full_view * m * n.effective_transform())
-                                .transform_rect_bbox(n.bounds);
-                            let _ = viewport;
-                            (b.x1 > source[0] && b.x0 < source[2] && b.y1 > source[1]
-                                && b.y0 < source[3])
-                                .then_some((gi, id))
-                        })
-                    })?;
-                    let (gi_a, inner_id) = inner;
-                    let aux = regions.allocate(source, k, None, 8192)?;
-                    Some((ri, aux, gi_a, inner_id))
-                })
-                .collect()
-        };
+        // Demand → regions is being rebuilt on per-node demanded footprints (a reverse
+        // propagation over the finished DAG, one lowering for every op); the gather-level,
+        // effect-predicate planner that lived here — and its per-effect clone/inner-clone
+        // machinery — is demolished. Until the rebuild lands, no region mints.
+        let served: Vec<(u128, usize)> = Vec::new();
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_REGIONS").is_ok() {
             for &(reader, ri) in &served {
@@ -1096,12 +972,6 @@ impl Sink {
                     r.source[0], r.source[1],
                     r.source[2] - r.source[0], r.source[3] - r.source[1],
                     r.k, r.grid,
-                );
-            }
-            for &(ri, aux, gi_a, inner_id) in &inner_plan {
-                eprintln!(
-                    "WV_DBG_REGIONS: inner region={ri} aux={aux} gi={gi_a} id={:04x}",
-                    (inner_id & 0xffff) as u16,
                 );
             }
         }
@@ -1164,102 +1034,12 @@ impl Sink {
             let g = regions.regions[ri].grid;
             Rect::new(f64::from(g[0]), f64::from(g[1]), f64::from(g[2]), f64::from(g[3]))
         };
-        let mut inners: Vec<(usize, usize, usize, u128, usize, usize, usize)> = Vec::new();
         let region_nodes: Vec<(usize, usize, u128)> = served
             .iter()
             .map(|&(reader, ri)| {
-                if let Some(&(_, aux, gi_a, inner_id)) =
-                    inner_plan.iter().find(|&&(r, ..)| r == ri)
-                {
-                    let sigma = self.gather_sigma(inner_id, full_view, 1.0);
-                    let k = regions.regions[ri].k as f32;
-                    let n_g = dag.push_region(aux, grid_rect(aux), format!("region {ri} lower"));
-                    let n_h = dag.push_region_blur(
-                        aux,
-                        crate::vello::units::UnitOp::Blur {
-                            sigma: sigma * k,
-                            linear: true,
-                            axis: crate::vello::units::BlurAxis::X,
-                            edge: crate::vello::units::BlurEdge::Backdrop,
-                        },
-                        grid_rect(aux),
-                        vec![n_g],
-                        format!("region {ri} inner-h"),
-                    );
-                    let n_w2 = dag.push_region_blur(
-                        ri,
-                        crate::vello::units::UnitOp::Rasterize(
-                            crate::vello::units::RasterSource::Body { offset: [0.0; 2] },
-                        ),
-                        grid_rect(ri),
-                        vec![n_h],
-                        format!("region {ri} value"),
-                    );
-                    dag.wire_region_reader(n_w2, reader);
-                    inners.push((ri, aux, gi_a, inner_id, n_g, n_h, n_w2));
-                    (ri, n_w2, reader)
-                } else {
-                    let n = dag.push_region(ri, grid_rect(ri), format!("region {ri}"));
-                    dag.wire_region_reader(n, reader);
-                    (ri, n, reader)
-                }
-            })
-            .collect();
-        // H′ clone nodes: for each planned clone, mirror the reader's H blur over the region value
-        // — same op at the region's density, reading L0, writing L1 — and wire it into the V node
-        // so the schedule puts the region-space H strictly before any round whose escaped taps
-        // sample it. `clones` carries what the mark/record stamping below needs.
-        let clones: Vec<(u128, usize, usize, usize, usize)> = clone_plan
-            .iter()
-            .filter_map(|&(reader, ri_l0, ri_l1)| {
-                use crate::vello::frame_dag::Source as DagSource;
-                use crate::vello::units::UnitOp;
-                let l0_node = region_nodes.iter().find(|&&(ri, _, _)| ri == ri_l0)?.1;
-                let is_reader_blur = |i: usize, axis: crate::vello::units::BlurAxis| {
-                    matches!(dag.nodes[i].source, DagSource::Effect { shape, .. } if shape == reader)
-                        && matches!(dag.nodes[i].op, UnitOp::Blur { axis: a, .. } if a == axis)
-                };
-                let h = (0..dag.nodes.len())
-                    .find(|&i| is_reader_blur(i, crate::vello::units::BlurAxis::X))?;
-                let v = (0..dag.nodes.len()).find(|&i| {
-                    is_reader_blur(i, crate::vello::units::BlurAxis::Y)
-                        && dag.nodes[i].inputs.first() == Some(&h)
-                })?;
-                let UnitOp::Blur { sigma, linear, axis: _, edge } = dag.nodes[h].op else {
-                    return None;
-                };
-                #[cfg(not(target_arch = "wasm32"))]
-                if std::env::var("WV_DBG_REGIONS").is_ok() {
-                    eprintln!(
-                        "WV_DBG_CLONES: reader={:04x} h={h} v={v} sigma={sigma} k={}",
-                        (reader & 0xffff) as u16,
-                        regions.regions[ri_l1].k,
-                    );
-                }
-                let (g, k) = {
-                    let r = &regions.regions[ri_l1];
-                    (r.grid, r.k as f32)
-                };
-                let reach = Rect::new(
-                    f64::from(g[0]),
-                    f64::from(g[1]),
-                    f64::from(g[2]),
-                    f64::from(g[3]),
-                );
-                let hp = dag.push_region_blur(
-                    ri_l1,
-                    crate::vello::units::UnitOp::Blur {
-                        sigma: sigma * k,
-                        linear,
-                        axis: crate::vello::units::BlurAxis::X,
-                        edge,
-                    },
-                    reach,
-                    vec![l0_node],
-                    format!("region {ri_l1} h-clone"),
-                );
-                dag.nodes[v].inputs.push(hp);
-                Some((reader, hp, ri_l0, ri_l1, v))
+                let n = dag.push_region(ri, grid_rect(ri), format!("region {ri}"));
+                dag.wire_region_reader(n, reader);
+                (ri, n, reader)
             })
             .collect();
         {
@@ -1780,86 +1560,6 @@ impl Sink {
                     off: 0,
                     rect: Some([g[0] as f32, g[1] as f32, g[2] as f32, g[3] as f32]),
                     mark_shape: None,
-                });
-            }
-            // H′ clone marks: an ordinary blur materialize arm over the L1 tiles. Every tap it
-            // makes lands past the frame, so the whole kernel resolves through the mark's region
-            // route (stamped below) — no input window, no device rect.
-            for &(reader, hp, _, ri_l1, _) in &clones {
-                let crate::vello::units::UnitOp::Blur { sigma, linear, .. } = dag.nodes[hp].op
-                else {
-                    continue;
-                };
-                let g = regions.regions[ri_l1].grid;
-                let ms = marks.entry(reader).or_default();
-                ms.insert(1, UnitMark {
-                    node: hp,
-                    round: sched.round[hp],
-                    desc: crate::vello::bake::blur_arm(sigma, linear, false, Policy::default(), None),
-                    rec: [[0.0f32; 4]; 7],
-                    ctl: 0,
-                    masked: false,
-                    band: false,
-                    off: 0,
-                    rect: Some([g[0] as f32, g[1] as f32, g[2] as f32, g[3] as f32]),
-                    mark_shape: None,
-                });
-            }
-            // Inner-content clone marks: the lower ground's fence (aux rows), the region-space H
-            // (aux rows, chain atlas), and the V composite that runs INSIDE the value window —
-            // same node as the value fence, keyed on its round, masked by the inner shape's
-            // silhouette drawn under the region transform.
-            for &(ri, aux, _, inner_id, n_g, n_h, n_w2) in &inners {
-                let Some(&(_, _, reader)) = region_nodes.iter().find(|&&(r, _, _)| r == ri) else {
-                    continue;
-                };
-                let crate::vello::units::UnitOp::Blur { sigma, linear, .. } = dag.nodes[n_h].op
-                else {
-                    continue;
-                };
-                let ga = regions.regions[aux].grid;
-                let gv = regions.regions[ri].grid;
-                let aux_rect = [ga[0] as f32, ga[1] as f32, ga[2] as f32, ga[3] as f32];
-                let ms = marks.entry(reader).or_default();
-                ms.insert(0, UnitMark {
-                    node: n_g,
-                    round: sched.round[n_g],
-                    desc: [0.0f32; 26],
-                    rec: [[0.0f32; 4]; 7],
-                    ctl: 0,
-                    masked: false,
-                    band: false,
-                    off: 0,
-                    rect: Some(aux_rect),
-                    mark_shape: None,
-                });
-                ms.insert(1, UnitMark {
-                    node: n_h,
-                    round: sched.round[n_h],
-                    desc: crate::vello::bake::blur_arm(sigma, linear, false, Policy::default(), None),
-                    rec: [[0.0f32; 4]; 7],
-                    ctl: 0,
-                    masked: false,
-                    band: false,
-                    off: 0,
-                    rect: Some(aux_rect),
-                    mark_shape: None,
-                });
-                let pos = ms
-                    .iter()
-                    .position(|m| m.node == n_w2)
-                    .map_or(ms.len(), |p| p + 1);
-                ms.insert(pos, UnitMark {
-                    node: n_w2,
-                    round: sched.round[n_w2],
-                    desc: crate::vello::bake::blur_arm(sigma, linear, true, Policy::default(), None),
-                    rec: [[0.0f32; 4]; 7],
-                    ctl: 0,
-                    masked: true,
-                    band: false,
-                    off: 0,
-                    rect: Some([gv[0] as f32, gv[1] as f32, gv[2] as f32, gv[3] as f32]),
-                    mark_shape: Some((inner_id, regions.device_to_grid(ri) * root)),
                 });
             }
         }
@@ -2583,21 +2283,6 @@ impl Sink {
         {
             let band_y0 = regions.band_origin_y() as f32;
             let region_of_reader: HashMap<u128, usize> = served.iter().map(|&(r, i)| (r, i)).collect();
-            struct RegionRoute {
-                rect_ri: usize,
-                src_ri: usize,
-                chain: bool,
-            }
-            let mut mark_routes: HashMap<usize, RegionRoute> = HashMap::new();
-            for &(_, hp, l0, l1, _) in &clones {
-                mark_routes.insert(hp, RegionRoute { rect_ri: l1, src_ri: l0, chain: false });
-            }
-            for &(ri, aux, _, _, _, n_h, n_w2) in &inners {
-                mark_routes.insert(n_h, RegionRoute { rect_ri: aux, src_ri: aux, chain: false });
-                mark_routes.insert(n_w2, RegionRoute { rect_ri: ri, src_ri: aux, chain: true });
-            }
-            let l1_of_v: HashMap<usize, usize> =
-                clones.iter().map(|&(_, _, _, l1, v)| (v, l1)).collect();
             for (&gid, ms) in marks.iter_mut() {
                 for m in ms.iter_mut() {
                     if matches!(
@@ -2605,26 +2290,6 @@ impl Sink {
                         crate::vello::frame_dag::Source::Region(_)
                     ) {
                         m.rec[4] = [1.0, 0.0, band_y0, 0.0];
-                        // A region-space chain mark's taps all land past the frame in grid
-                        // coordinates: its route maps its own rect onto the source lease's atlas
-                        // rows one-to-one, widened by the kernel's slack (record 6.w — taps beyond
-                        // the rect clamp inside it; the sign selects the chain atlas). Fences
-                        // (zero desc) carry no route.
-                        if m.desc[0] != 0.0 {
-                            if let Some(rt) = mark_routes.get(&m.node) {
-                                let g1 = regions.regions[rt.rect_ri].grid;
-                                let g0 = regions.regions[rt.src_ri].grid;
-                                let slack = (3.0 * m.desc[4] + 8.0).max(1.0);
-                                m.rec[5] =
-                                    [g1[0] as f32, g1[1] as f32, g1[2] as f32, g1[3] as f32];
-                                m.rec[6] = [
-                                    g0[0] as f32,
-                                    g0[1] as f32 - band_y0,
-                                    1.0,
-                                    if rt.chain { -slack } else { slack },
-                                ];
-                            }
-                        }
                         continue;
                     }
                     if let Some(&ri) = region_of_reader.get(&gid) {
@@ -2635,13 +2300,8 @@ impl Sink {
                             r.source[2] as f32,
                             r.source[3] as f32,
                         ];
-                        // The V pass's escaped taps want H-BLURRED content: retarget its route to
-                        // the clone's L1 lease. Every other arm keeps the raw value (L0).
-                        let (out, sel) = l1_of_v
-                            .get(&m.node)
-                            .map_or((ri, 1.0), |&l1| (l1, -1.0));
-                        let g = regions.regions[out].grid;
-                        m.rec[6] = [g[0] as f32, g[1] as f32 - band_y0, r.k as f32, sel];
+                        let g = regions.regions[ri].grid;
+                        m.rec[6] = [g[0] as f32, g[1] as f32 - band_y0, r.k as f32, 1.0];
                     }
                 }
             }
@@ -2668,33 +2328,11 @@ impl Sink {
         // draws are CLIPPED to the fence marker's rect: a fence exists only on the tiles that
         // rect covers, and an escaped draw would land at the surrounding segment and composite
         // into the picture (glyph punch silhouettes overhang their gather's reach).
-        // What a region window's fence DRAWS: `(transform region, z lo, z hi)`. A plain region
-        // draws every root below its reader; a split ground stops at the inner shape; the value
-        // window redraws the same lower range (its upper range rides after the V mark).
-        let region_draws: HashMap<usize, (usize, usize, usize)> = {
-            let mut m: HashMap<usize, (usize, usize, usize)> = HashMap::new();
-            for &(ri, node, reader) in &region_nodes {
-                let below = gi_of.get(&reader).copied().unwrap_or(0);
-                if let Some(&(_, aux, gi_a, _, n_g, _, n_w2)) =
-                    inners.iter().find(|&&(r, ..)| r == ri)
-                {
-                    m.insert(n_g, (aux, 0, gi_a));
-                    m.insert(n_w2, (ri, 0, gi_a));
-                } else {
-                    m.insert(node, (ri, 0, below));
-                }
-            }
-            m
-        };
-        // Draws that follow a V-composite mark in its window: the content ABOVE the inner shape
-        // (the inner's own body included — it paints over its composited blur).
-        let after_draws: HashMap<usize, (usize, usize, usize)> = inners
+        // What a region window's fence DRAWS: `(transform region, z lo, z hi)` — every root
+        // below its reader, spliced under the region transform.
+        let region_draws: HashMap<usize, (usize, usize, usize)> = region_nodes
             .iter()
-            .filter_map(|&(ri, _, gi_a, _, _, _, n_w2)| {
-                let reader = region_nodes.iter().find(|&&(r, _, _)| r == ri)?.2;
-                let below = gi_of.get(&reader).copied()?;
-                Some((n_w2, (ri, gi_a, below)))
-            })
+            .map(|&(ri, node, reader)| (node, (ri, 0, gi_of.get(&reader).copied().unwrap_or(0))))
             .collect();
         let emit_sil_draws = |backend: &mut B, scene: &mut B::Scene, s: usize, clip: [f32; 4]| {
             let _ts = crate::vello::prof::now();
@@ -2802,23 +2440,6 @@ impl Sink {
                     if is_fence(m) {
                         emit_sil_draws(backend, &mut scene, m.node, mr);
                     }
-                    if let Some(&(txri, lo, hi)) = after_draws.get(&m.node) {
-                        if m.masked && hi > lo {
-                            scene.set_transform(Affine::IDENTITY);
-                            scene.push_clip_layer(
-                                &Rect::new(
-                                    f64::from(mr[0]),
-                                    f64::from(mr[1]),
-                                    f64::from(mr[2]),
-                                    f64::from(mr[3]),
-                                )
-                                .to_path(0.1),
-                            );
-                            let t = regions.device_to_grid(txri) * root;
-                            backend.draw_scene_range(&mut scene, t, lo, hi);
-                            scene.pop_layer();
-                        }
-                    }
                 }
                 z += 1;
                 let full = [0.0, 0.0, width as f32, grid_h as f32];
@@ -2869,23 +2490,6 @@ impl Sink {
                             if is_fence(m) {
                                 emit_sil_draws(backend, &mut scene, m.node, mr);
                             }
-                            if let Some(&(txri, lo, hi)) = after_draws.get(&m.node) {
-                                if m.masked && hi > lo {
-                                    scene.set_transform(Affine::IDENTITY);
-                                    scene.push_clip_layer(
-                                        &Rect::new(
-                                            f64::from(mr[0]),
-                                            f64::from(mr[1]),
-                                            f64::from(mr[2]),
-                                            f64::from(mr[3]),
-                                        )
-                                        .to_path(0.1),
-                                    );
-                                    let t = regions.device_to_grid(txri) * root;
-                                    backend.draw_scene_range(&mut scene, t, lo, hi);
-                                    scene.pop_layer();
-                                }
-                            }
                         }
                     }
                     cursor = gi + 1;
@@ -2916,23 +2520,6 @@ impl Sink {
                         marker_rects.push((m.round, mr));
                         if is_fence(m) {
                             emit_sil_draws(backend, &mut scene, m.node, mr);
-                        }
-                        if let Some(&(txri, lo, hi)) = after_draws.get(&m.node) {
-                            if m.masked && hi > lo {
-                                scene.set_transform(Affine::IDENTITY);
-                                scene.push_clip_layer(
-                                    &Rect::new(
-                                        f64::from(mr[0]),
-                                        f64::from(mr[1]),
-                                        f64::from(mr[2]),
-                                        f64::from(mr[3]),
-                                    )
-                                    .to_path(0.1),
-                                );
-                                let t = regions.device_to_grid(txri) * root;
-                                backend.draw_scene_range(&mut scene, t, lo, hi);
-                                scene.pop_layer();
-                            }
                         }
                     }
                 } else {
@@ -3001,13 +2588,11 @@ impl Sink {
                 "wv region atlas",
             )
         });
-        // The CHAIN atlas: region-space intermediates (an H' blur's L1). A separate texture with
-        // stable roles — chain dispatches READ the values atlas while WRITING here (one texture
-        // for both would be an exclusive-usage conflict) — selected per route by the sign of the
-        // slack word (record 6.w < 0 = chain).
-        let region_chain_tex = (!clones.is_empty())
-            .then(|| region_dims)
-            .flatten()
+        // The CHAIN atlas: region-space intermediates (a band-instance blur's lease). A separate
+        // texture with stable roles — chain dispatches READ the values atlas while WRITING here
+        // (one texture for both would be an exclusive-usage conflict) — selected per route by the
+        // sign of the slack word (record 6.w < 0 = chain).
+        let region_chain_tex = region_dims
             .map(|h| {
                 self.pool.acquire_target(
                     device,
