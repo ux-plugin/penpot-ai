@@ -1249,6 +1249,7 @@ impl Sink {
                     .collect::<Vec<_>>()
             })
         };
+        let mut root_of: HashMap<u128, usize> = HashMap::new();
         let served: Vec<(u128, usize)> = if std::env::var("WV_DEMAND").is_ok_and(|v| v == "0") {
             Vec::new()
         } else {
@@ -1269,27 +1270,40 @@ impl Sink {
             // that arrived over the accumulator spine (a later reader needing this one's output
             // — the fold serves that side with its own leases), and minting from that union
             // would balloon every region to the widest reader's footprint.
-            fn tail_pads(
+            // A chain's servable ROOT is what its taps ultimately read: the backdrop (a Reload)
+            // or the shape's own content (an input-free Body rasterize — a layer blur's
+            // body-read). Which kind decides the region's LOWERING (fold + page seed vs a bare
+            // body splice), never which effect authored it. A Coverage-rooted chain (a shadow
+            // silhouette) is not served yet — its band instance needs silhouette emission under
+            // the region transform, the next letter of the same rule.
+            fn tail_root(
                 dag: &crate::vello::frame_dag::FrameDag,
                 n: usize,
                 shape: u128,
-            ) -> Option<f64> {
+            ) -> Option<(f64, usize)> {
                 use crate::vello::frame_dag::Source as DagSource;
-                use crate::vello::units::UnitOp;
+                use crate::vello::units::{RasterSource, UnitOp};
                 dag.nodes[n]
                     .inputs
                     .iter()
                     .filter_map(|&t| {
                         if matches!(dag.nodes[t].op, UnitOp::Reload) {
-                            return Some(0.0);
+                            return Some((0.0, t));
                         }
                         if !matches!(dag.nodes[t].source, DagSource::Effect { shape: s, .. } if s == shape)
                         {
                             return None;
                         }
-                        tail_pads(dag, t, shape).map(|p| p + f64::from(dag.nodes[t].pad))
+                        if matches!(dag.nodes[t].op, UnitOp::Rasterize(RasterSource::Body { .. }))
+                            && dag.nodes[t].inputs.is_empty()
+                        {
+                            return Some((0.0, t));
+                        }
+                        tail_root(dag, t, shape).map(|(p, r)| (p + f64::from(dag.nodes[t].pad), r))
                     })
-                    .fold(None, |a: Option<f64>, p| Some(a.map_or(p, |a| a.max(p))))
+                    .fold(None, |a: Option<(f64, usize)>, p| {
+                        Some(a.map_or(p, |a| if p.0 > a.0 { p } else { a }))
+                    })
             }
             let mut readers: Vec<(u128, Rect)> = Vec::new();
             for c in 0..dag.nodes.len() {
@@ -1300,10 +1314,19 @@ impl Sink {
                 else {
                     continue;
                 };
-                let Some(p) = tail_pads(&dag, c, shape) else { continue };
+                let Some((p, root)) = tail_root(&dag, c, shape) else { continue };
                 let seed = dag.nodes[c].reach.map_or(frame_rect, |r| r.intersect(frame_rect));
                 if seed.width() <= 0.0 || seed.height() <= 0.0 {
                     continue;
+                }
+                // A shape can carry several chains (a shadow AND a layer blur); the backdrop
+                // root wins the region's lowering when both kinds serve.
+                match root_of.get(&shape) {
+                    Some(&r0)
+                        if matches!(dag.nodes[r0].op, crate::vello::units::UnitOp::Reload) => {}
+                    _ => {
+                        root_of.insert(shape, root);
+                    }
                 }
                 let rect = seed.inflate(p, p);
                 match readers.iter_mut().find(|(s, _)| *s == shape) {
@@ -1358,6 +1381,9 @@ impl Sink {
             masked: bool,
             /// Serve-test inflation for the mark's route (kernel or displacement bound).
             slack: f32,
+            /// A fence's window opens on the page colour (a backdrop ground/window) or on
+            /// transparency (a body-content ground — a layer blur's own pixels).
+            seed: bool,
             /// Chain-control bits, mirroring the in-frame mark assembly: 0 for fences and blur
             /// arms, 1 (atomic) for a displacing/pointwise head instance.
             ctl: u32,
@@ -1384,7 +1410,45 @@ impl Sink {
                 let r = &regions.regions[ri];
                 (r.source, r.k as f32)
             };
-            let writers = writers_of(&dag, below, source);
+            // A BODY-rooted region (the chain reads the shape's own content, not the backdrop):
+            // its value is the reader's body fragment spliced under the region transform over
+            // TRANSPARENCY — no page seed, no inner-writer fold, and the ordering edge lands on
+            // the root's consumers (there is no Reload to wire). Everything downstream — the
+            // reader's spilled blur steps, route stamping through `band_of` — is the same code
+            // the backdrop path uses.
+            let body_root = root_of.get(&reader).copied().filter(|&r| {
+                matches!(
+                    dag.nodes[r].op,
+                    crate::vello::units::UnitOp::Rasterize(
+                        crate::vello::units::RasterSource::Body { .. }
+                    )
+                )
+            });
+            if let Some(root) = body_root {
+                let node = dag.push_region(ri, grid_rect(&regions, ri), format!("region {ri} body"));
+                band_plan.push((reader, BandMark {
+                    node,
+                    rect: regions.regions[ri].grid,
+                    desc: None,
+                    masked: false,
+                    slack: 0.0,
+                    ctl: 0,
+                    seed: false,
+                    mask: None,
+                    route: None,
+                    draws: Some((ri, below, below + 1)),
+                }));
+                let n_before = dag.nodes.len() - 1;
+                for c in 0..n_before {
+                    if dag.nodes[c].inputs.contains(&root)
+                        && matches!(dag.nodes[c].source, crate::vello::frame_dag::Source::Effect { shape, .. } if shape == reader)
+                    {
+                        dag.nodes[c].inputs.push(node);
+                    }
+                }
+                band_of.insert(root, (node, ri, false));
+            }
+            let writers = if body_root.is_some() { Vec::new() } else { writers_of(&dag, below, source) };
             let fold_leases = (!writers.is_empty())
                 .then(|| {
                     let mut vals =
@@ -1414,6 +1478,7 @@ impl Sink {
                     masked: false,
                     slack: 0.0,
                     ctl: 0,
+                    seed: true,
                     mask: None,
                     route: None,
                     draws: Some((vals[0], 0, first_gi)),
@@ -1447,6 +1512,7 @@ impl Sink {
                         masked: false,
                         slack: (3.0 * sigma * k + 8.0).max(1.0),
                         ctl: 0,
+                        seed: false,
                         mask: None,
                         route: Some((prev_lease, false)),
                         draws: None,
@@ -1468,6 +1534,7 @@ impl Sink {
                         masked: false,
                         slack: 0.0,
                         ctl: 0,
+                        seed: true,
                         mask: None,
                         route: None,
                         draws: Some((target, 0, first_gi)),
@@ -1499,6 +1566,7 @@ impl Sink {
                             masked: true,
                             slack: (3.0 * vs * k + 8.0).max(1.0),
                             ctl: 0,
+                            seed: false,
                             mask: Some((wid, target)),
                             route: Some((chains_l[j], true)),
                             draws: Some((target, gi_j, hi)),
@@ -1508,6 +1576,8 @@ impl Sink {
                     prev_lease = target;
                 }
                 prev
+            } else if let Some(root) = body_root {
+                band_of[&root].0
             } else {
                 let node =
                     dag.push_region(ri, grid_rect(&regions, ri), format!("region {ri}"));
@@ -1518,19 +1588,22 @@ impl Sink {
                     masked: false,
                     slack: 0.0,
                     ctl: 0,
+                    seed: true,
                     mask: None,
                     route: None,
                     draws: Some((ri, 0, below)),
                 }));
                 node
             };
-            dag.wire_region_reader(value_node, reader);
             let orig_len = dag.nodes.len();
-            for i in 0..orig_len {
-                if matches!(dag.nodes[i].op, crate::vello::units::UnitOp::Reload)
-                    && matches!(dag.nodes[i].source, crate::vello::frame_dag::Source::Effect { shape, .. } if shape == reader)
-                {
-                    band_of.insert(i, (value_node, ri, false));
+            if body_root.is_none() {
+                dag.wire_region_reader(value_node, reader);
+                for i in 0..orig_len {
+                    if matches!(dag.nodes[i].op, crate::vello::units::UnitOp::Reload)
+                        && matches!(dag.nodes[i].source, crate::vello::frame_dag::Source::Effect { shape, .. } if shape == reader)
+                    {
+                        band_of.insert(i, (value_node, ri, false));
+                    }
                 }
             }
             // The reader's own chain, generalized: every SPILLED, GATHER-TAPPED node of the chain
@@ -1639,6 +1712,7 @@ impl Sink {
                     masked: false,
                     slack,
                     ctl,
+                    seed: false,
                     mask: None,
                     route: Some((src_lease, src_chain)),
                     draws: None,
@@ -2402,9 +2476,9 @@ impl Sink {
             for (gid, ms) in &marks {
                 for m in ms {
                     eprintln!(
-                        "WV_DBG_MARKS: gid={:04x} node={} op={:?} round={} ctl={} masked={} band={} bits={} u1=({}, {}) a={}",
+                        "WV_DBG_MARKS: gid={:04x} node={} op={:?} round={} ctl={} masked={} band={} bits={} u1=({}, {}) a={} rec5={:?} rec6={:?}",
                         (gid & 0xffff) as u16, m.node, dag.nodes[m.node].op, m.round, m.ctl, m.masked, m.band,
-                        m.desc[0], m.desc[6], m.desc[7], m.desc[17],
+                        m.desc[0], m.desc[6], m.desc[7], m.desc[17], m.rec[5], m.rec[6],
                     );
                 }
             }
@@ -2823,6 +2897,37 @@ impl Sink {
                         continue;
                     }
                     if let Some(&ri) = region_of_reader.get(&gid) {
+                        // The mark's escaped taps read whatever lease serves what its ARM samples:
+                        // a BLUR samples its input draft, so it reads that node's band instance
+                        // when one was minted; every other arm's routed taps are backdrop taps
+                        // (fx_bilin), served by the region's raw value. A COVERAGE-edge blur whose
+                        // input has no instance (a shadow silhouette pass — content that really
+                        // ends) must NOT route: its record stays zero so the serve test never
+                        // fires and its taps keep fading to transparent. All derived from op
+                        // semantics + `band_of`, never planned per effect.
+                        let banded = matches!(
+                            dag.nodes[m.node].op,
+                            crate::vello::units::UnitOp::Blur { .. }
+                        )
+                        .then(|| {
+                            dag.nodes[m.node]
+                                .inputs
+                                .first()
+                                .and_then(|j| band_of.get(j).copied())
+                                .map(|(_, l, c)| (l, c))
+                        })
+                        .flatten();
+                        if banded.is_none()
+                            && matches!(
+                                dag.nodes[m.node].op,
+                                crate::vello::units::UnitOp::Blur {
+                                    edge: crate::vello::units::BlurEdge::Coverage,
+                                    ..
+                                }
+                            )
+                        {
+                            continue;
+                        }
                         let r = &regions.regions[ri];
                         m.rec[5] = [
                             r.source[0] as f32,
@@ -2830,23 +2935,7 @@ impl Sink {
                             r.source[2] as f32,
                             r.source[3] as f32,
                         ];
-                        // The mark's escaped taps read whatever lease serves what its ARM samples:
-                        // a BLUR samples its input draft, so it reads that node's band instance
-                        // when one was minted; every other arm's routed taps are backdrop taps
-                        // (fx_bilin), served by the region's raw value. Derived from op semantics
-                        // + `band_of`, never planned per effect.
-                        let is_blur =
-                            matches!(dag.nodes[m.node].op, crate::vello::units::UnitOp::Blur { .. });
-                        let (out, chain) = is_blur
-                            .then(|| {
-                                dag.nodes[m.node]
-                                    .inputs
-                                    .first()
-                                    .and_then(|j| band_of.get(j).copied())
-                                    .map(|(_, l, c)| (l, c))
-                            })
-                            .flatten()
-                            .unwrap_or((ri, false));
+                        let (out, chain) = banded.unwrap_or((ri, false));
                         let g = regions.regions[out].grid;
                         m.rec[6] = [
                             g[0] as f32,
@@ -2883,12 +2972,34 @@ impl Sink {
         // What a band fence DRAWS: `(transform region, z lo, z hi)` from the functor's plan — a
         // plain region draws every root below its reader; a fold's ground and windows stop at
         // the first writer (their later ranges ride each masked arm's `after`).
-        let region_draws: HashMap<usize, (usize, usize, usize)> = band_plan
+        let region_draws: HashMap<usize, (usize, usize, usize, bool)> = band_plan
             .iter()
             .filter_map(|&(_, ref bm)| {
-                bm.desc.is_none().then(|| bm.draws.map(|d| (bm.node, d))).flatten()
+                bm.desc
+                    .is_none()
+                    .then(|| bm.draws.map(|(t, lo, hi)| (bm.node, (t, lo, hi, bm.seed))))
+                    .flatten()
             })
             .collect();
+        // FRAME-content draws must never rasterize onto rented band rows: a document taller than
+        // the viewport keeps drawing below it (the scene is unclipped), and those strays land on
+        // band tiles where they composite INTO region windows over the band's own output — the
+        // register is shared per tile, ordering does not save it. Clip every root-transform scene
+        // splice to the frame rows whenever bands exist; the clip edge sits at `band_origin_y`
+        // (tile-ceiled, past the accumulator's last stored row), so frame AA is untouched.
+        let frame_clip = (regions.regions.len() > 1)
+            .then(|| Rect::new(0.0, 0.0, f64::from(width), f64::from(regions.band_origin_y())));
+        let draw_frame_range =
+            |backend: &mut B, scene: &mut B::Scene, t: Affine, lo: usize, hi: usize| {
+                if let Some(c) = frame_clip {
+                    scene.set_transform(Affine::IDENTITY);
+                    scene.push_clip_layer(&c.to_path(0.1));
+                    backend.draw_scene_range(scene, t, lo, hi);
+                    scene.pop_layer();
+                } else {
+                    backend.draw_scene_range(scene, t, lo, hi);
+                }
+            };
         let emit_sil_draws = |backend: &mut B, scene: &mut B::Scene, s: usize, clip: [f32; 4]| {
             let _ts = crate::vello::prof::now();
             use crate::vello::frame_dag::Source as DagSource;
@@ -2903,14 +3014,21 @@ impl Sink {
                 .to_path(0.1),
             );
             if let DagSource::Region(_) = dag.nodes[s].source {
-                // A region window seeds the PAGE colour first (a backdrop tap past the document
-                // still reads the page, exactly like the accumulator's base-colour seed), then
-                // draws its z range spliced under the region's device→grid transform — the
-                // fragment cache re-bases each leaf's encoding, so this is a transform-splice,
-                // not a re-encode. The surrounding clip (the window's grid rect) culls everything
-                // the rect does not show.
-                backend.draw_fill_rect(scene, clip, crate::vello::abi::background().components);
-                if let Some(&(txri, lo, hi)) = region_draws.get(&s) {
+                // A BACKDROP region window seeds the PAGE colour first (a backdrop tap past the
+                // document still reads the page, exactly like the accumulator's base-colour
+                // seed); a BODY-content window (a layer blur's own pixels) opens on transparency
+                // — the plan's seed flag decides. Then the z range splices under the region's
+                // device→grid transform — the fragment cache re-bases each leaf's encoding, so
+                // this is a transform-splice, not a re-encode. The surrounding clip (the
+                // window's grid rect) culls everything the rect does not show.
+                if let Some(&(txri, lo, hi, seed)) = region_draws.get(&s) {
+                    if seed {
+                        backend.draw_fill_rect(
+                            scene,
+                            clip,
+                            crate::vello::abi::background().components,
+                        );
+                    }
                     if hi > lo {
                         let t = regions.device_to_grid(txri) * root;
                         backend.draw_scene_range(scene, t, lo, hi);
@@ -3019,7 +3137,7 @@ impl Sink {
             }
             for (j, &(gi, gid, kind)) in gathers.iter().enumerate() {
                 if gi > cursor {
-                    backend.draw_scene_range(&mut scene, root, cursor, gi);
+                    draw_frame_range(backend, &mut scene, root, cursor, gi);
                     cursor = gi;
                 }
                 b.push(backend.draw_object_count(&scene));
@@ -3045,7 +3163,7 @@ impl Sink {
                                 backend.draw_effect_marker(&mut scene, root, gid, 6u32, z, m.round, 0, reaches[j], 0);
                                 marker_rects.push((m.round, reaches[j]));
                                 let t = root * Affine::translate((f64::from(offset[0]), f64::from(offset[1])));
-                                backend.draw_scene_range(&mut scene, t, gi, gi + 1);
+                                draw_frame_range(backend, &mut scene, t, gi, gi + 1);
                                 continue;
                             }
                             z += 1;
@@ -3092,7 +3210,7 @@ impl Sink {
                             backend.draw_effect_marker(&mut scene, root, gid, 6u32, z, m.round, 0, reaches[j], 0);
                             marker_rects.push((m.round, reaches[j]));
                             let t = root * Affine::translate((f64::from(offset[0]), f64::from(offset[1])));
-                            backend.draw_scene_range(&mut scene, t, gi, gi + 1);
+                            draw_frame_range(backend, &mut scene, t, gi, gi + 1);
                             continue;
                         }
                         z += 1;
@@ -3131,7 +3249,7 @@ impl Sink {
                     );
                 }
             }
-            backend.draw_scene_range(&mut scene, root, cursor, usize::MAX);
+            draw_frame_range(backend, &mut scene, root, cursor, usize::MAX);
             (b, mb, z)
         };
         let total_draws = backend.draw_object_count(&scene);
@@ -3187,7 +3305,9 @@ impl Sink {
                 width,
                 h,
                 format,
-                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+                wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::STORAGE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
                 "wv region atlas",
             )
         });
@@ -3202,7 +3322,9 @@ impl Sink {
                     width,
                     h,
                     format,
-                    wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+                    wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::STORAGE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC,
                     "wv region chain",
                 )
             });
@@ -4160,6 +4282,53 @@ impl Sink {
         }
         if let Some(p) = self.pass_prof.as_mut() {
             p.after_submit();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Ok(dir) = std::env::var("WV_DUMP_ATLAS") {
+            let dump = |tex: &wgpu::Texture, name: &str| {
+                let (w, h) = (tex.width(), tex.height());
+                let padded = (w * 4).div_ceil(256) * 256;
+                let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("wv atlas dump"),
+                    size: u64::from(padded) * u64::from(h),
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                let mut e = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                e.copy_texture_to_buffer(
+                    tex.as_image_copy(),
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &buf,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(padded),
+                            rows_per_image: Some(h),
+                        },
+                    },
+                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                );
+                queue.submit([e.finish()]);
+                let slice = buf.slice(..);
+                slice.map_async(wgpu::MapMode::Read, |_| {});
+                let _ = device.poll(wgpu::PollType::wait_indefinitely());
+                let data = slice.get_mapped_range();
+                let mut out = Vec::with_capacity((w * h * 4) as usize);
+                for row in 0..h {
+                    let s = (row * padded) as usize;
+                    out.extend_from_slice(&data[s..s + (w * 4) as usize]);
+                }
+                static FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                let f = FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let path = format!("{dir}/{f:03}-{name}-{w}x{h}.raw");
+                let _ = std::fs::write(&path, &out);
+                eprintln!("WV_DUMP_ATLAS: wrote {path}");
+            };
+            if let Some(t) = region_atlas_tex.as_ref() {
+                dump(t, "values");
+            }
+            if let Some(t) = region_chain_tex.as_ref() {
+                dump(t, "chain");
+            }
         }
         self.frame_transient.push(acc_tex);
         self.frame_transient.push(snap_tex);
