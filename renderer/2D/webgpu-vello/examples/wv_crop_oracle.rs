@@ -41,6 +41,8 @@ enum Doc {
     Editor,
     BgblurStack,
     BgblurStackDeep,
+    DropShadow,
+    ShadowUnderBgblur,
 }
 
 /// Every zoom here divides `MARGIN` exactly in f32 — the padded render's device shift must be a
@@ -65,6 +67,8 @@ fn cases() -> Vec<Case> {
         c("ed-bgblur-bottom", Doc::Editor, 4.0, (-530.0, -278.5)),
         c("ed-layerblur-right", Doc::Editor, 4.0, (-145.0, -74.0)),
         c("ed-fit", Doc::Editor, 2.0, (0.0, 0.0)),
+        c("shadow-right", Doc::DropShadow, 8.0, (-1.0, -63.0)),
+        c("shadow-writer-bottom", Doc::ShadowUnderBgblur, 4.0, (-1.0, 21.5)),
         c("bgblur-stack-right", Doc::BgblurStack, 2.0, (0.0, 0.0)),
         c("bgblur-stack-deep", Doc::BgblurStackDeep, 2.0, (0.0, 0.0)),
     ]
@@ -187,6 +191,12 @@ fn main() {
                 Doc::BgblurStackDeep => {
                     render_core::vello::abi::load_bgblur_stack3_scene(24);
                 }
+                Doc::DropShadow => {
+                    render_core::vello::abi::load_dropblur_diag_scene();
+                }
+                Doc::ShadowUnderBgblur => {
+                    render_core::vello::abi::load_shadow_under_bgblur_scene();
+                }
             }
             render_core::vello::abi::set_render_options(0, 1.0);
             render_core::vello::abi::set_canvas_background(0xffff_ffff);
@@ -240,6 +250,9 @@ fn main() {
         pad_sink.render_whole_viewport(&mut pad_backend, &device, &queue, &pad_target, Affine::IDENTITY, pw, ph, true);
         device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).expect("poll");
         let padded = read_back(&device, &queue, &pad_target, pw, ph);
+        if std::env::var("WV_DUMP_PADDED").is_ok() {
+            write_png(&format!("{PROOFS}/crop-{}-padded-full.png", case.name), &padded, pw, ph);
+        }
 
         let mut interior = 0u64;
         let mut interior_max = 0u8;

@@ -1310,6 +1310,45 @@ pub fn build_dropblur_diag_scene() -> (Scene, Vec<(usize, &'static str)>) {
     b.finish()
 }
 
+/// A drop-shadowed blob whose soft shadow falls under a BACKDROP-BLUR panel. When the panel
+/// straddles a viewport edge, its escaped blur taps must see the shadow in the served region —
+/// the band fold has to replay the shadow chain as a COVERAGE writer (silhouette ground →
+/// region-density H → colour-over V) or the band renders shadowless.
+#[must_use]
+pub fn build_shadow_under_bgblur_scene() -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    b.advance("shadow under bgblur");
+    let r = b.rect();
+    let region = r.inflate(60.0, 120.0);
+    let stripe = 12.0_f64;
+    let mut y = region.y0;
+    let mut i = 0i64;
+    while y < region.y1 {
+        let id = b.id();
+        let mut node = Node::new(id, ShapeKind::Rect);
+        node.bounds = Rect::new(region.x0, y, region.x1, (y + stripe).min(region.y1));
+        node.fills = vec![Paint::plain(Brush::Solid(if i % 2 == 0 { col(70, 130, 200) } else { col(235, 235, 245) }))];
+        b.root(node);
+        y += stripe;
+        i += 1;
+    }
+    let id = b.id();
+    let mut n = Node::new(id, ShapeKind::Path);
+    n.bounds = r;
+    n.path = Some(blob_path(r));
+    n.fills = vec![Paint::plain(Brush::Solid(cola(84, 74, 183, 110)))];
+    n.shadows = vec![Shadow { color: cola(0, 0, 0, 200), blur: 12.0, spread: 0.0, offset: Vec2::new(16.0, 20.0), inset: false }];
+    b.root(n);
+    let id = b.id();
+    let mut p = Node::new(id, ShapeKind::Rect);
+    p.bounds = Rect::new(r.x0 - 40.0, r.y1 - 30.0, r.x1 + 80.0, r.y1 + 90.0);
+    p.corners = Some(RoundedRectRadii::from_single_radius(10.0));
+    p.fills = vec![Paint::plain(Brush::Solid(cola(255, 255, 255, 40)))];
+    p.background_blur = Some(12.0);
+    b.root(p);
+    b.finish()
+}
+
 /// Cells over a light page exercising non-box INNER shadows: a filled path and a text block, each with
 /// an inset shadow (a dark band hugging the inside edge on the offset side), beside the same path with
 /// no shadow. Classic has no inline non-box inner shadow, so this is driven through the sink

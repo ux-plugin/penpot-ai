@@ -2123,6 +2123,13 @@ pub extern "C" fn load_dropblur_diag_scene() -> u32 {
     install_fixture(crate::parity::build_dropblur_diag_scene())
 }
 
+/// Install the **shadow-under-bgblur test** ([`crate::parity::build_shadow_under_bgblur_scene`]) —
+/// a drop-shadowed blob under a backdrop-blur panel, the coverage-WRITER fold verification target.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_shadow_under_bgblur_scene() -> u32 {
+    install_fixture(crate::parity::build_shadow_under_bgblur_scene())
+}
+
 /// Install the **multi-shadow test** ([`crate::parity::build_multi_shadow_scene`]) — one path carrying
 /// two soft drops, another carrying a drop + inner (mixed), the inline multi-shadow verification target.
 #[unsafe(no_mangle)]
