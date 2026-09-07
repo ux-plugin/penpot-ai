@@ -28,8 +28,6 @@ pub struct RegionDesc {
     /// The grid real estate its draws bin into: `[x0, y0, x1, y1]` in pixels, tile-aligned.
     /// Region 0: the frame rows. Regions 1..N: shelves below `frame_height`.
     pub grid: [u32; 4],
-    /// The gather that demanded it (`None` for region 0).
-    pub reader: Option<u128>,
 }
 
 impl RegionDesc {
@@ -61,7 +59,6 @@ impl RegionTable {
                 source: [0.0, 0.0, f64::from(width), f64::from(height)],
                 k: 1.0,
                 grid: [0, 0, width, height],
-                reader: None,
             }],
             frame_w: width,
             frame_h: height,
@@ -75,13 +72,7 @@ impl RegionTable {
     /// left-to-right, opening a new shelf row when the current one is full. Returns the region's
     /// index, or `None` when the scaled rect cannot fit the grid width or would push the grid past
     /// `max_grid_h` (the caller's texture-dimension ceiling).
-    pub fn allocate(
-        &mut self,
-        source: [f64; 4],
-        k: f64,
-        reader: Option<u128>,
-        max_grid_h: u32,
-    ) -> Option<usize> {
+    pub fn allocate(&mut self, source: [f64; 4], k: f64, max_grid_h: u32) -> Option<usize> {
         let w = (((source[2] - source[0]) * k).ceil() as u32).div_ceil(TILE_PX) * TILE_PX;
         let h = (((source[3] - source[1]) * k).ceil() as u32).div_ceil(TILE_PX) * TILE_PX;
         if w == 0 || h == 0 || w > self.frame_w {
@@ -98,7 +89,7 @@ impl RegionTable {
         let grid = [self.shelf_x, self.shelf_y, self.shelf_x + w, self.shelf_y + h];
         self.shelf_x += w;
         self.shelf_h = self.shelf_h.max(h);
-        self.regions.push(RegionDesc { source, k, grid, reader });
+        self.regions.push(RegionDesc { source, k, grid });
         Some(self.regions.len() - 1)
     }
 
@@ -154,7 +145,7 @@ mod tests {
     #[test]
     fn allocate_rents_rows_below_the_frame() {
         let mut t = RegionTable::frame(1216, 622);
-        let a = t.allocate([-100.0, 0.0, 0.0, 50.0], 1.0, Some(7), 8192).unwrap();
+        let a = t.allocate([-100.0, 0.0, 0.0, 50.0], 1.0, 8192).unwrap();
         let g = t.regions[a].grid;
         assert_eq!(g[1], 624);
         assert_eq!(g[2] - g[0], 112);
@@ -168,17 +159,17 @@ mod tests {
         let mut t = RegionTable::frame(256, 128);
         let mut last_y = 0;
         for i in 0..5 {
-            let idx = t.allocate([0.0, 0.0, 100.0, 30.0], 1.0, Some(i), 8192).unwrap();
+            let idx = t.allocate([0.0, 0.0, 100.0, 30.0], 1.0, 8192).unwrap();
             last_y = t.regions[idx].grid[1];
         }
         assert!(last_y > 128);
-        assert!(t.allocate([0.0, 0.0, 100.0, 30.0], 1.0, Some(9), 160).is_none());
+        assert!(t.allocate([0.0, 0.0, 100.0, 30.0], 1.0, 160).is_none());
     }
 
     #[test]
     fn k_scales_the_rented_rect_and_the_mapping() {
         let mut t = RegionTable::frame(1024, 512);
-        let i = t.allocate([1024.0, 0.0, 1224.0, 100.0], 0.5, Some(3), 8192).unwrap();
+        let i = t.allocate([1024.0, 0.0, 1224.0, 100.0], 0.5, 8192).unwrap();
         let (w, h) = t.regions[i].texel_size();
         assert_eq!(w, 112);
         assert_eq!(h, 64);

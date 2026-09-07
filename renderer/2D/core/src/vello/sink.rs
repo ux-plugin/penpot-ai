@@ -1562,19 +1562,19 @@ impl Sink {
             let fold_leases = (!writers.is_empty())
                 .then(|| {
                     let mut vals =
-                        vec![regions.allocate(source, f64::from(k), None, max_grid_h)?];
+                        vec![regions.allocate(source, f64::from(k), max_grid_h)?];
                     for _ in 1..writers.len() {
-                        vals.push(regions.allocate(source, f64::from(k), None, max_grid_h)?);
+                        vals.push(regions.allocate(source, f64::from(k), max_grid_h)?);
                     }
                     let mut chains_l = Vec::new();
                     for _ in 0..writers.len() {
-                        chains_l.push(regions.allocate(source, f64::from(k), None, max_grid_h)?);
+                        chains_l.push(regions.allocate(source, f64::from(k), max_grid_h)?);
                     }
                     let mut sils = Vec::new();
                     for &(_, _, h, _) in &writers {
                         sils.push(match cov_root(&dag, h) {
                             Some(_) => {
-                                Some(regions.allocate(source, f64::from(k), None, max_grid_h)?)
+                                Some(regions.allocate(source, f64::from(k), max_grid_h)?)
                             }
                             None => None,
                         });
@@ -1694,7 +1694,7 @@ impl Sink {
                         draws: Some((target, 0, first_gi)),
                         sil: None,
                     }));
-                    for (j, &(gi_j, wid, hj, vj)) in writers.iter().take(i + 1).enumerate() {
+                    for (j, &(gi_j, wid, _, vj)) in writers.iter().take(i + 1).enumerate() {
                         let crate::vello::units::UnitOp::Blur {
                             sigma: vs, linear: vl, ..
                         } = dag.nodes[vj].op
@@ -1725,7 +1725,6 @@ impl Sink {
                                 })
                                 .expect("chain_of only accepts stamped coverage chains")
                         });
-                        let _ = hj;
                         band_plan.push((reader, BandMark {
                             node: w_node,
                             rect: regions.regions[target].grid,
@@ -1823,7 +1822,7 @@ impl Sink {
                     }
                     _ => continue,
                 }
-                let Some(lease) = regions.allocate(source, f64::from(k), None, max_grid_h) else {
+                let Some(lease) = regions.allocate(source, f64::from(k), max_grid_h) else {
                     continue;
                 };
                 let (op_inst, desc, slack, ctl) = match &dag.nodes[j].op {

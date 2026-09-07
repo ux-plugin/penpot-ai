@@ -472,9 +472,10 @@ impl FrameDag {
         self.nodes.len() - 1
     }
 
-    /// Push a region-space chain node (an H′ blur clone): it reads another region's lease and
-    /// materializes into region `idx`'s lease, so escaped draft taps can resolve to CHAIN-correct
-    /// content (H-blurred, not raw). Same bind-index reset rules as [`Self::push_region`].
+    /// Push a region-space chain node (a band instance: a blur, a lens head, a fold window): it
+    /// reads another region's lease and materializes into region `idx`'s lease, so escaped taps
+    /// can resolve to CHAIN-correct content (H-blurred, warped — not raw). Same bind-index reset
+    /// rules as [`Self::push_region`].
     pub fn push_region_blur(
         &mut self,
         idx: usize,
@@ -581,8 +582,8 @@ impl FrameDag {
         };
         if matches!(n.source, Source::Region(_)) {
             // A region GROUND (input-free Rasterize) rasterizes fenced draws — nothing bound but
-            // the atlas. A region CHAIN node — an H′ blur, or the value window's Rasterize that
-            // composites a masked V over redrawn content — taps leases through the region-route
+            // the atlas. A region CHAIN node — a band blur/head instance, or the fold window's
+            // Rasterize that composites a writer's V over redrawn content — taps leases through the region-route
             // records; its dispatch rides the loadu shape (base = the snapshot binding, unused).
             let base = if matches!(n.op, UnitOp::Rasterize(_)) && n.inputs.is_empty() {
                 Slot::None
@@ -1231,7 +1232,7 @@ impl FrameDag {
     fn liveness(&self) -> Vec<bool> {
         // To fixpoint, not one pass: a Reload's read edge into a region value points at a LATER
         // index (regions join after the scene build), so a single reverse sweep marks the value
-        // but never its own chain (an inner clone's H and ground). Region graphs are shallow —
+        // but never its own chain (a fold writer's H and ground). Region graphs are shallow —
         // this converges in two or three sweeps.
         let mut lv = vec![false; self.nodes.len()];
         loop {
