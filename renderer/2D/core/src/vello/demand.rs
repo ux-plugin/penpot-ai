@@ -21,6 +21,10 @@ pub struct Demand {
     pub desired_k: f64,
     /// The gather that emitted this demand.
     pub reader: u128,
+    /// How many leases of `rect`'s size serving this demand will rent (the band functor's fold
+    /// allocates ground/window/chain leases beyond the primary value) — scales the demand's cost
+    /// in the budget squeeze so k drops before the shelf overflows.
+    pub leases: u32,
 }
 
 const K_FLOOR: f64 = 1.0 / 64.0;
@@ -51,7 +55,10 @@ pub fn plan(
     let bytes: f64 = live
         .iter()
         .zip(&ks)
-        .map(|(d, k)| (d.rect[2] - d.rect[0]) * k * (d.rect[3] - d.rect[1]) * k * 4.0)
+        .map(|(d, k)| {
+            (d.rect[2] - d.rect[0]) * k * (d.rect[3] - d.rect[1]) * k * 4.0
+                * f64::from(d.leases.max(1))
+        })
         .sum();
     if bytes > budget_bytes as f64 {
         let squeeze = (budget_bytes as f64 / bytes).sqrt();
@@ -72,7 +79,7 @@ mod tests {
     use super::*;
 
     fn dem(rect: [f64; 4], desired_k: f64) -> Demand {
-        Demand { rect, desired_k, reader: 7 }
+        Demand { rect, desired_k, reader: 7, leases: 1 }
     }
 
     #[test]

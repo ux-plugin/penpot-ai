@@ -1838,6 +1838,45 @@ pub fn build_bgblur_stack_scene(radius: f32) -> (Scene, Vec<(usize, &'static str
     b.finish()
 }
 
+/// Three stacked pure background blurs: the [`build_bgblur_stack_scene`] pair plus a wider panel
+/// ABOVE both, straddling the right frame edge — its interest region holds TWO lower blur writers,
+/// so chain-correct region content needs the compose fold at depth two (window replay).
+pub fn build_bgblur_stack3_scene(radius: f32) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    b.advance("bgblur stack3");
+    let (w, h) = (1680.0_f64, 800.0_f64);
+    let stripe = 120.0_f64;
+    let cols = [col(200, 60, 40), col(40, 90, 200), col(240, 220, 90)];
+    let nx = (w / stripe).ceil() as usize;
+    for gx in 0..nx {
+        let mut node = Node::new(b.id(), ShapeKind::Rect);
+        let x = gx as f64 * stripe;
+        node.bounds = Rect::new(x, 0.0, x + stripe, h);
+        node.fills = vec![Paint::plain(Brush::Solid(cols[gx % 3]))];
+        b.root(node);
+    }
+    let mut band = Node::new(b.id(), ShapeKind::Rect);
+    band.bounds = Rect::new(0.0, 560.0, w, 610.0);
+    band.fills = vec![Paint::plain(Brush::Solid(col(20, 160, 60)))];
+    b.root(band);
+    let mut a = Node::new(b.id(), ShapeKind::Rect);
+    a.bounds = Rect::new(1290.0, 220.0, 1400.0, 400.0);
+    a.corners = Some(RoundedRectRadii::from_single_radius(12.0));
+    a.background_blur = Some(radius);
+    b.root(a);
+    let mut p = Node::new(b.id(), ShapeKind::Rect);
+    p.bounds = Rect::new(560.0, 200.0, 1400.0, 420.0);
+    p.corners = Some(RoundedRectRadii::from_single_radius(12.0));
+    p.background_blur = Some(radius);
+    b.root(p);
+    let mut top = Node::new(b.id(), ShapeKind::Rect);
+    top.bounds = Rect::new(1000.0, 150.0, 1500.0, 500.0);
+    top.corners = Some(RoundedRectRadii::from_single_radius(12.0));
+    top.background_blur = Some(radius);
+    b.root(top);
+    b.finish()
+}
+
 pub fn build_backdrop_tint_grid_scene(n: usize) -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
     let cols = (n as f64).sqrt().ceil() as usize;

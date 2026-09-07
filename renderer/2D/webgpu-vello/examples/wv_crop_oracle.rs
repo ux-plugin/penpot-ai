@@ -40,6 +40,7 @@ enum Doc {
     LensGrid,
     Editor,
     BgblurStack,
+    BgblurStackDeep,
 }
 
 /// Every zoom here divides `MARGIN` exactly in f32 — the padded render's device shift must be a
@@ -65,6 +66,7 @@ fn cases() -> Vec<Case> {
         c("ed-layerblur-right", Doc::Editor, 4.0, (-145.0, -74.0)),
         c("ed-fit", Doc::Editor, 2.0, (0.0, 0.0)),
         c("bgblur-stack-right", Doc::BgblurStack, 2.0, (0.0, 0.0)),
+        c("bgblur-stack-deep", Doc::BgblurStackDeep, 2.0, (0.0, 0.0)),
     ]
 }
 
@@ -181,6 +183,9 @@ fn main() {
                 }
                 Doc::BgblurStack => {
                     render_core::vello::abi::load_bgblur_stack_scene(24);
+                }
+                Doc::BgblurStackDeep => {
+                    render_core::vello::abi::load_bgblur_stack3_scene(24);
                 }
             }
             render_core::vello::abi::set_render_options(0, 1.0);
