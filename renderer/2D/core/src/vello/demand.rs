@@ -4,11 +4,13 @@
 //! Every gather whose (unclamped) reach escapes the frame emits a [`Demand`]: the device rect its
 //! taps can touch plus a slack pad, and the density cap the effect is happy with (`desired_k` —
 //! an effect fine with half-res backdrop asks 0.5 and saves budget). [`plan`] turns demands into
-//! [`crate::vello::region::RegionTable`] allocations: per-demand `k = clamp(desired)`, then one
-//! global √-scale squeeze when the summed bytes exceed the budget — floorless down to 1/64, so a
-//! huge demand under a tight budget renders coarse rather than not at all. A demand that still
-//! cannot rent grid rows (the texture ceiling) is dropped; its reader's taps keep today's
-//! edge-clamp behavior.
+//! [`crate::vello::region::RegionTable`] allocations under two constraints: the BYTE budget (a
+//! VRAM wish — one global √-scale squeeze when the summed lease bytes exceed it) and SHELF
+//! feasibility (the real thing — a trial-pack of the actual allocator in rental order, lowering
+//! one global density scale, then bisecting back up, until every lease the band functor will
+//! rent actually places). Both are floorless down to 1/64, so a huge demand under a tight
+//! ceiling renders coarse rather than not at all. A demand that cannot place even alone at the
+//! floor is dropped; its reader's taps keep today's edge-clamp behavior.
 
 use crate::vello::region::RegionTable;
 
@@ -88,11 +90,26 @@ pub fn plan(
                 .zip(&hopeless)
                 .all(|((d, &k), &h)| h || (1..d.leases.max(1)).all(|_| rent(d, k)))
     };
-    while !fits(&ks, table) && ks.iter().any(|&k| k > K_FLOOR) {
-        for k in &mut ks {
-            *k = (*k * 0.85).max(K_FLOOR);
-        }
+    let mut scale = 1.0f64;
+    let at = |ks: &[f64], s: f64| ks.iter().map(|k| (k * s).max(K_FLOOR)).collect::<Vec<_>>();
+    while !fits(&at(&ks, scale), table) && ks.iter().any(|&k| k * scale > K_FLOOR) {
+        scale *= 0.85;
     }
+    // The ladder is coarse (×0.85 per rung); bisect back up between the last failing scale and
+    // the fitting one so density isn't left on a rung when a finer k also places.
+    if scale < 1.0 {
+        let (mut lo, mut hi) = (scale, scale / 0.85);
+        for _ in 0..5 {
+            let mid = f64::midpoint(lo, hi);
+            if fits(&at(&ks, mid), table) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        scale = lo;
+    }
+    let ks = at(&ks, scale);
     live.iter()
         .zip(&ks)
         .filter_map(|(d, &k)| {

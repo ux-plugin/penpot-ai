@@ -1201,6 +1201,22 @@ impl Sink {
         // 128MB max-binding limit). The budget squeeze drops k until leases fit under it.
         let max_grid_h: u32 = (48_000 / width.div_ceil(16)).max(16).min(512) * 16;
         let gi_of0: HashMap<u128, usize> = gathers.iter().map(|&(gi, gid, _)| (gid, gi)).collect();
+        // A node needs a band instance only when some consumer SAMPLES it as its source texture
+        // — a BLUR's kernel taps its input draft, a SCATTER's grain jitters across its input —
+        // every other arm taps the BACKDROP (fx_bilin), which the region's raw value already
+        // serves. Shared by the census (lease counting) and the band functor's step loop.
+        let tapped: HashSet<usize> = dag
+            .nodes
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.op,
+                    crate::vello::units::UnitOp::Blur { .. }
+                        | crate::vello::units::UnitOp::Scatter(_)
+                )
+            })
+            .filter_map(|c| c.inputs.first().copied())
+            .collect();
         // The silhouette payload a coverage ground draws: what emit's in-frame silhouette
         // arm derives — the shape, its silhouette class index, and inset — from a coverage
         // root's `Effect { shape, slot }` source.
@@ -1298,18 +1314,13 @@ impl Sink {
         let served: Vec<(u128, usize)> = if std::env::var("WV_DEMAND").is_ok_and(|v| v == "0") {
             Vec::new()
         } else {
-            // The byte budget is ALSO row-bound: the squeeze only sees bytes, but the shelf dies
-            // at `max_grid_h` rows first — cap the budget at half the band's byte capacity
-            // (shelf packing wastes the rest) so k drops until the leases actually fit.
-            let band_capacity = u64::from(max_grid_h.saturating_sub(regions.band_origin_y()))
-                * u64::from(width)
-                * 4
-                / 2;
+            // The byte budget is a pure VRAM wish (env knob, 64MB default). Shelf feasibility —
+            // rows, real first-fit packing, every extra lease — is the trial-pack's job inside
+            // `plan`, so no capacity heuristic pre-squeezes k below what actually places.
             let budget = std::env::var("WV_DEMAND_BUDGET_MB")
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
-                .map_or(64 * 1024 * 1024, |mb| mb.saturating_mul(1024 * 1024).max(1))
-                .min(band_capacity.max(1));
+                .map_or(64 * 1024 * 1024, |mb| mb.saturating_mul(1024 * 1024).max(1));
             // A reader's region rect is CHAIN-LOCAL: its Compose's visible seed inflated by the
             // pads along its own tail down to the Reload. The global `dmnds` also carries demand
             // that arrived over the accumulator spine (a later reader needing this one's output
@@ -1429,11 +1440,33 @@ impl Sink {
                             })
                         })
                         .count() as u32;
+                    // The rentals serving this demand, counted the way the functor spends them:
+                    // the ground (plan's own allocation), one lease per SPILLED TAPPED step of
+                    // the reader's chain (the step loop), and per fold writer a value + a chain
+                    // lease (+ a silhouette lease when coverage-rooted). An undercount here is a
+                    // silent quality hole — the trial-pack approves a density whose LAST lease
+                    // then fails to rent and that reader's taps fall to the clamp.
+                    let steps = (0..dag.nodes.len())
+                        .filter(|&j| {
+                            matches!(dag.nodes[j].source, crate::vello::frame_dag::Source::Effect { shape: s, .. } if s == shape)
+                                && !dag.nodes[j].writes_accumulator()
+                                && tapped.contains(&j)
+                                && dmnds[j].is_some_and(|d| frame_rect.union(d) != frame_rect)
+                                && matches!(
+                                    dag.nodes[j].op,
+                                    crate::vello::units::UnitOp::Blur { .. }
+                                        | crate::vello::units::UnitOp::Warp(_)
+                                        | crate::vello::units::UnitOp::Scatter(_)
+                                        | crate::vello::units::UnitOp::Shade(_)
+                                        | crate::vello::units::UnitOp::MaskMix(_)
+                                )
+                        })
+                        .count() as u32;
                     crate::vello::demand::Demand {
                         rect: [r.x0, r.y0, r.x1, r.y1],
                         desired_k: desired,
                         reader: shape,
-                        leases: 2 + 2 * ws.len() as u32 + cov,
+                        leases: 1 + steps + 2 * ws.len() as u32 + cov,
                     }
                 })
                 .collect();
@@ -1481,16 +1514,6 @@ impl Sink {
         let mut band_of: HashMap<usize, (usize, usize, bool)> = HashMap::new();
         let mut band_plan: Vec<(u128, BandMark)> = Vec::new();
         let mut writes_chain: HashSet<usize> = HashSet::new();
-        // A node needs a band instance only when some BLUR taps it as its source texture: blur
-        // arms are the one op whose kernel samples its INPUT through the region routes — every
-        // displacing/pointwise arm taps the BACKDROP (fx_bilin), which the region's raw value
-        // already serves.
-        let tapped: HashSet<usize> = dag
-            .nodes
-            .iter()
-            .filter(|c| matches!(c.op, crate::vello::units::UnitOp::Blur { .. }))
-            .filter_map(|c| c.inputs.first().copied())
-            .collect();
         for &(reader, ri) in &served {
             let below = gi_of0.get(&reader).copied().unwrap_or(0);
             let (source, k) = {
@@ -3085,16 +3108,18 @@ impl Sink {
                     }
                     if let Some(&ri) = region_of_reader.get(&gid) {
                         // The mark's escaped taps read whatever lease serves what its ARM samples:
-                        // a BLUR samples its input draft, so it reads that node's band instance
-                        // when one was minted; every other arm's routed taps are backdrop taps
-                        // (fx_bilin), served by the region's raw value. A COVERAGE-edge blur whose
-                        // input has no instance (a shadow silhouette pass — content that really
-                        // ends) must NOT route: its record stays zero so the serve test never
-                        // fires and its taps keep fading to transparent. All derived from op
-                        // semantics + `band_of`, never planned per effect.
+                        // a BLUR samples its input draft and a SCATTER jitters across its input
+                        // surface, so both read that node's band instance when one was minted;
+                        // every other arm's routed taps are backdrop taps (fx_bilin), served by
+                        // the region's raw value. A COVERAGE-edge blur whose input has no
+                        // instance (a shadow silhouette pass — content that really ends) must
+                        // NOT route: its record stays zero so the serve test never fires and its
+                        // taps keep fading to transparent. All derived from op semantics +
+                        // `band_of`, never planned per effect.
                         let banded = matches!(
                             dag.nodes[m.node].op,
                             crate::vello::units::UnitOp::Blur { .. }
+                                | crate::vello::units::UnitOp::Scatter(_)
                         )
                         .then(|| {
                             dag.nodes[m.node]
@@ -3110,7 +3135,7 @@ impl Sink {
                                 crate::vello::units::UnitOp::Blur {
                                     edge: crate::vello::units::BlurEdge::Coverage,
                                     ..
-                                }
+                                } | crate::vello::units::UnitOp::Scatter(_)
                             )
                         {
                             continue;
