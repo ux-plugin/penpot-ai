@@ -66,6 +66,33 @@ pub fn plan(
             *k = (*k * squeeze).max(K_FLOOR);
         }
     }
+    // The byte squeeze models VRAM; feasibility is SHELF ROWS under real first-fit packing —
+    // a k the bytes afford can still overflow the grid once the band functor rents each
+    // demand's extra leases, and a lease that fails to rent silently degrades its reader to
+    // the edge clamp. Trial-pack the actual allocator in the real rental order (grounds
+    // first, then every demand's extras) and lower k until the WHOLE plan places.
+    let hopeless: Vec<bool> = live
+        .iter()
+        .map(|d| {
+            let mut t = table.clone();
+            t.allocate(d.rect, K_FLOOR, None, max_grid_h).is_none()
+        })
+        .collect();
+    let fits = |ks: &[f64], table: &RegionTable| -> bool {
+        let mut t = table.clone();
+        let mut rent = |d: &Demand, k: f64| t.allocate(d.rect, k, None, max_grid_h).is_some();
+        live.iter().zip(ks).zip(&hopeless).all(|((d, &k), &h)| h || rent(d, k))
+            && live
+                .iter()
+                .zip(ks)
+                .zip(&hopeless)
+                .all(|((d, &k), &h)| h || (1..d.leases.max(1)).all(|_| rent(d, k)))
+    };
+    while !fits(&ks, table) && ks.iter().any(|&k| k > K_FLOOR) {
+        for k in &mut ks {
+            *k = (*k * 0.85).max(K_FLOOR);
+        }
+    }
     live.iter()
         .zip(&ks)
         .filter_map(|(d, &k)| {

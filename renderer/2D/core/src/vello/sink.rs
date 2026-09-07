@@ -1305,7 +1305,7 @@ impl Sink {
                         Some(a.map_or(p, |a| if p.0 > a.0 { p } else { a }))
                     })
             }
-            let mut readers: Vec<(u128, Rect)> = Vec::new();
+            let mut readers: Vec<(u128, Rect, f64)> = Vec::new();
             for c in 0..dag.nodes.len() {
                 if !matches!(dag.nodes[c].op, crate::vello::units::UnitOp::Compose { .. }) {
                     continue;
@@ -1329,14 +1329,42 @@ impl Sink {
                     }
                 }
                 let rect = seed.inflate(p, p);
-                match readers.iter_mut().find(|(s, _)| *s == shape) {
-                    Some((_, r)) => *r = r.union(rect),
-                    None => readers.push((shape, rect)),
+                match readers.iter_mut().find(|(s, _, _)| *s == shape) {
+                    Some((_, r, pp)) => {
+                        *r = r.union(rect);
+                        *pp = pp.max(p);
+                    }
+                    None => readers.push((shape, rect, p)),
                 }
             }
+            // A lease serves only taps OUTSIDE the frame, plus the pad margin the band chain
+            // needs to compute values there — the in-frame interior of a chain-local rect is
+            // redundant with the frame itself. Cropping to bbox(rect ∖ frame) ⊕ p keeps every
+            // served tap covered and stops a sliver escape from renting (and budget-squeezing
+            // everyone for) a frame-sized lease.
+            let spill_crop = |r: Rect, p: f64| -> Rect {
+                let mut s: Option<Rect> = None;
+                let mut add = |slab: Rect| {
+                    s = Some(s.map_or(slab, |a| a.union(slab)));
+                };
+                if r.x0 < frame_rect.x0 {
+                    add(Rect::new(r.x0, r.y0, frame_rect.x0, r.y1));
+                }
+                if r.x1 > frame_rect.x1 {
+                    add(Rect::new(frame_rect.x1, r.y0, r.x1, r.y1));
+                }
+                if r.y0 < frame_rect.y0 {
+                    add(Rect::new(r.x0, r.y0, r.x1, frame_rect.y0));
+                }
+                if r.y1 > frame_rect.y1 {
+                    add(Rect::new(r.x0, frame_rect.y1, r.x1, r.y1));
+                }
+                s.map_or(r, |s| r.intersect(s.inflate(p, p)))
+            };
             let demands: Vec<crate::vello::demand::Demand> = readers
                 .into_iter()
-                .map(|(shape, r)| {
+                .map(|(shape, r, p)| {
+                    let r = spill_crop(r, p);
                     let desired = crate::vello::abi::with_scene(|live, _, modifiers| {
                         let n = live.get(shape)?;
                         let m = modifiers.get(&shape).copied().unwrap_or(Affine::IDENTITY);

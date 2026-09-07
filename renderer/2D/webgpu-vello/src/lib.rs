@@ -1038,10 +1038,11 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         out: &wgpu::TextureView,
     ) {
         let _trd = render_core::vello::prof::now();
+        let (region, chain) = self.region_views(device);
         let session = self.phased_session.as_mut().expect("phased_fine_segment_draft without phased_begin");
         self.renderer
             .inner
-            .phased_fine_segment_draft_into(session, device, queue, enc, seg_lo, seg_target, base, draft, out)
+            .phased_fine_segment_draft_into(session, device, queue, enc, seg_lo, seg_target, base, draft, &region, &chain, out)
             .expect("phased_fine_segment_draft_into");
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
     }
@@ -1058,10 +1059,11 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         out: &wgpu::TextureView,
     ) {
         let _trd = render_core::vello::prof::now();
+        let (region, chain) = self.region_views(device);
         let session = self.phased_session.as_mut().expect("phased_fine_segment_input without phased_begin");
         self.renderer
             .inner
-            .phased_fine_segment_input_into(session, device, queue, enc, seg_lo, seg_target, base, input, out)
+            .phased_fine_segment_input_into(session, device, queue, enc, seg_lo, seg_target, base, input, &region, &chain, out)
             .expect("phased_fine_segment_input_into");
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
     }
