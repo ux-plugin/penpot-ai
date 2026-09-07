@@ -947,7 +947,7 @@ impl Sink {
             p.begin();
         }
         let _tenc = crate::vello::prof::now();
-        let regions = crate::vello::region::RegionTable::frame(width, height);
+        let mut regions = crate::vello::region::RegionTable::frame(width, height);
         let acc_h = regions.frame_height();
         let acc_sz = (width as f32, acc_h as f32);
 
@@ -957,27 +957,6 @@ impl Sink {
                 wv_clamp_reach(self.wv_marker_reach(gid, kind, full_view, width, height), width, height)
             })
             .collect();
-        // Demand → regions is being rebuilt on per-node demanded footprints (a reverse
-        // propagation over the finished DAG, one lowering for every op); the gather-level,
-        // effect-predicate planner that lived here — and its per-effect clone/inner-clone
-        // machinery — is demolished. Until the rebuild lands, no region mints.
-        let served: Vec<(u128, usize)> = Vec::new();
-        #[cfg(not(target_arch = "wasm32"))]
-        if std::env::var("WV_DBG_REGIONS").is_ok() {
-            for &(reader, ri) in &served {
-                let r = &regions.regions[ri];
-                eprintln!(
-                    "WV_DBG_REGIONS: region {ri} reader={:04x} source=({:.0},{:.0} {:.0}x{:.0}) k={:.3} grid={:?}",
-                    (reader & 0xffff) as u16,
-                    r.source[0], r.source[1],
-                    r.source[2] - r.source[0], r.source[3] - r.source[1],
-                    r.k, r.grid,
-                );
-            }
-        }
-        let grid_h = regions.grid_height();
-        backend.set_frame_extent(width, acc_h);
-        let mut scene = backend.new_scene(width as u16, grid_h as u16);
         // Fill the DAG's view-dependent uniforms, stamp each effect's DEVICE reach onto its
         // nodes (the marker contract lives on device tiles), and let `schedule()` decide every round.
         crate::vello::abi::with_scene(|scene, _viewport, modifiers| {
@@ -1027,21 +1006,6 @@ impl Sink {
             },
         );
         dag.normalize();
-        // Region ground nodes join AFTER normalize (prune's renumbering is done): one folded Body
-        // rasterize per served demand, wired into every Reload of its reader so the schedule puts
-        // the region's lease write strictly before any round that samples it.
-        let grid_rect = |ri: usize| {
-            let g = regions.regions[ri].grid;
-            Rect::new(f64::from(g[0]), f64::from(g[1]), f64::from(g[2]), f64::from(g[3]))
-        };
-        let region_nodes: Vec<(usize, usize, u128)> = served
-            .iter()
-            .map(|&(reader, ri)| {
-                let n = dag.push_region(ri, grid_rect(ri), format!("region {ri}"));
-                dag.wire_region_reader(n, reader);
-                (ri, n, reader)
-            })
-            .collect();
         {
             let dev: HashMap<u128, [f32; 4]> =
                 gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
@@ -1108,12 +1072,6 @@ impl Sink {
                 dag.nodes[i].op,
                 crate::vello::units::UnitOp::Blur { .. } | crate::vello::units::UnitOp::Warp(_)
             ) {
-                continue;
-            }
-            // A region-space chain node (an H' clone) roots at the region GROUND — a Body
-            // rasterize — but its sigma is already device-scaled (copied from the reader's chain,
-            // times the region's density). The radius-to-sigma body arm must not touch it.
-            if matches!(dag.nodes[i].source, crate::vello::frame_dag::Source::Region(_)) {
                 continue;
             }
             let mut r = i;
@@ -1184,6 +1142,132 @@ impl Sink {
                 _ => {}
             }
         }
+        // Tap pads: how far each node's input taps stray from its output pixel, in device pixels,
+        // stamped AFTER the loop above so every sigma is view-final. Keyed on the op alone — a
+        // blur's kernel extent, a displacing head's slack bound from its authored parameters;
+        // pointwise ops tap in place. This is the only per-op reach knowledge the planner holds.
+        for i in 0..dag.nodes.len() {
+            dag.nodes[i].pad = match dag.nodes[i].op {
+                crate::vello::units::UnitOp::Blur { sigma, .. } => {
+                    64.0f32.max((3.0 * sigma).ceil() + 8.0)
+                }
+                crate::vello::units::UnitOp::Warp(_) | crate::vello::units::UnitOp::Scatter(_) => {
+                    let crate::vello::frame_dag::Source::Effect { shape, .. } =
+                        dag.nodes[i].source
+                    else {
+                        continue;
+                    };
+                    crate::vello::abi::with_scene(|live, _, modifiers| {
+                        let n = live.get(shape)?;
+                        let m = modifiers.get(&shape).copied().unwrap_or(Affine::IDENTITY);
+                        crate::effect_graph::lens_geometry(n, m).map(|(g, geom)| {
+                            let scale = view_scale;
+                            let half_diag = ((geom.width * 0.5).hypot(geom.height * 0.5)
+                                * f64::from(scale)) as f32;
+                            crate::effect_graph::lens_warp_slack(&g, scale, half_diag)
+                                .max(crate::effect_graph::lens_scatter_slack(&g, scale))
+                                .max(64.0)
+                        })
+                    })
+                    .unwrap_or(0.0)
+                }
+                _ => 0.0,
+            };
+        }
+        // Demand → regions: the reverse footprint propagation asks, per node, what device rect its
+        // output must cover; a Reload whose demand escapes the frame needs off-frame BACKDROP —
+        // content no clamp can fake — so its chain's reader rents a region. Structural, not
+        // effect-typed: any op alphabet that roots at a Reload gets served the same way. The
+        // declared render-scale is the effect's authored knob (a data read, defaulting to 1).
+        let served: Vec<(u128, usize)> = if std::env::var("WV_DEMAND").is_ok_and(|v| v == "0") {
+            Vec::new()
+        } else {
+            let budget = std::env::var("WV_DEMAND_BUDGET_MB")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .map_or(64 * 1024 * 1024, |mb| mb.saturating_mul(1024 * 1024).max(1));
+            let frame_rect = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+            let dmnds = dag.demands(frame_rect);
+            #[cfg(not(target_arch = "wasm32"))]
+            if std::env::var("WV_DBG_DEMANDS").is_ok() {
+                for (i, d) in dmnds.iter().enumerate() {
+                    let Some(d) = d else { continue };
+                    if frame_rect.union(*d) == frame_rect {
+                        continue;
+                    }
+                    eprintln!(
+                        "WV_DBG_DEMANDS: node {i} [{}] pad={:.0} demand=({:.0},{:.0} {:.0}x{:.0})",
+                        dag.nodes[i].label,
+                        dag.nodes[i].pad,
+                        d.x0, d.y0, d.width(), d.height(),
+                    );
+                }
+            }
+            let mut readers: Vec<(u128, Rect)> = Vec::new();
+            for (i, d) in dmnds.iter().enumerate() {
+                let Some(d) = d else { continue };
+                if !matches!(dag.nodes[i].op, crate::vello::units::UnitOp::Reload) {
+                    continue;
+                }
+                let crate::vello::frame_dag::Source::Effect { shape, .. } = dag.nodes[i].source
+                else {
+                    continue;
+                };
+                match readers.iter_mut().find(|(s, _)| *s == shape) {
+                    Some((_, r)) => *r = r.union(*d),
+                    None => readers.push((shape, *d)),
+                }
+            }
+            let demands: Vec<crate::vello::demand::Demand> = readers
+                .into_iter()
+                .map(|(shape, r)| {
+                    let desired = crate::vello::abi::with_scene(|live, _, modifiers| {
+                        let n = live.get(shape)?;
+                        let m = modifiers.get(&shape).copied().unwrap_or(Affine::IDENTITY);
+                        crate::effect_graph::lens_geometry(n, m)
+                            .map(|(g, _)| f64::from(g.acceptable_downscale))
+                    })
+                    .unwrap_or(1.0);
+                    crate::vello::demand::Demand {
+                        rect: [r.x0, r.y0, r.x1, r.y1],
+                        desired_k: desired,
+                        reader: shape,
+                    }
+                })
+                .collect();
+            crate::vello::demand::plan(&demands, &mut regions, width, height, budget, 8192)
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("WV_DBG_REGIONS").is_ok() {
+            for &(reader, ri) in &served {
+                let r = &regions.regions[ri];
+                eprintln!(
+                    "WV_DBG_REGIONS: region {ri} reader={:04x} source=({:.0},{:.0} {:.0}x{:.0}) k={:.3} grid={:?}",
+                    (reader & 0xffff) as u16,
+                    r.source[0], r.source[1],
+                    r.source[2] - r.source[0], r.source[3] - r.source[1],
+                    r.k, r.grid,
+                );
+            }
+        }
+        let grid_h = regions.grid_height();
+        backend.set_frame_extent(width, acc_h);
+        let mut scene = backend.new_scene(width as u16, grid_h as u16);
+        // Region ground nodes join AFTER normalize (prune's renumbering is done): one folded Body
+        // rasterize per served demand, wired into every Reload of its reader so the schedule puts
+        // the region's lease write strictly before any round that samples it.
+        let grid_rect = |ri: usize| {
+            let g = regions.regions[ri].grid;
+            Rect::new(f64::from(g[0]), f64::from(g[1]), f64::from(g[2]), f64::from(g[3]))
+        };
+        let region_nodes: Vec<(usize, usize, u128)> = served
+            .iter()
+            .map(|&(reader, ri)| {
+                let n = dag.push_region(ri, grid_rect(ri), format!("region {ri}"));
+                dag.wire_region_reader(n, reader);
+                (ri, n, reader)
+            })
+            .collect();
         let dag = dag;
         // The scratch BUDGET — the upstream capacity valve. The scheduler defers whole effects to
         // later rounds until their concurrent draft footprint fits, so the lease planner below is

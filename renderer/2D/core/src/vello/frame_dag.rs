@@ -86,6 +86,11 @@ pub struct Node {
     /// Page-space footprint, for the region-scoped accumulator and tile-vs-footprint barrier test.
     /// `None` for a whole-frame node (the background).
     pub reach: Option<Rect>,
+    /// Tap pad in DEVICE pixels: how far this node's input taps stray from the output pixel
+    /// (a blur's kernel extent, a warp's displacement bound; zero for pointwise ops). Stamped by
+    /// the planner after view-dependent op finalization; [`FrameDag::demands`] inflates every
+    /// input's demanded footprint by its consumer's pad.
+    pub pad: f32,
     pub inputs: Vec<usize>,
 }
 
@@ -461,6 +466,7 @@ impl FrameDag {
             source: Source::Region(idx),
             label,
             reach: Some(reach),
+            pad: 0.0,
             inputs: vec![],
         });
         self.nodes.len() - 1
@@ -484,6 +490,7 @@ impl FrameDag {
             source: Source::Region(idx),
             label,
             reach: Some(reach),
+            pad: 0.0,
             inputs,
         });
         self.nodes.len() - 1
@@ -500,6 +507,50 @@ impl FrameDag {
                 && matches!(n.source, Source::Effect { shape, .. } if shape == gid)
             {
                 n.inputs.push(region_node);
+            }
+        }
+    }
+
+    /// Per-node demanded footprint: the device rect over which this node's OUTPUT must exist for
+    /// the frame to be correct. Accumulator writers seed their own visible footprint (`reach`
+    /// clamped to `frame`; `None` reach = the whole frame); every node then demands each input
+    /// over its own demand inflated by its own [`Node::pad`] — a blur needs its source for a
+    /// kernel radius around every output pixel, a pointwise op needs it exactly there. `None` =
+    /// nothing demands the node. Runs to fixpoint because read edges may cite later indices
+    /// (region values wire into earlier Reloads — the same forward references `liveness` handles).
+    /// The part of a demand outside `frame` is the node's SPILL: content the planner must
+    /// materialize in the region shelf for escaped taps to resolve.
+    #[must_use]
+    pub fn demands(&self, frame: Rect) -> Vec<Option<Rect>> {
+        let mut dm: Vec<Option<Rect>> = vec![None; self.nodes.len()];
+        let grow = |slot: &mut Option<Rect>, r: Rect, changed: &mut bool| {
+            let u = slot.map_or(r, |d| d.union(r));
+            if slot.map_or(true, |d| d != u) {
+                *slot = Some(u);
+                *changed = true;
+            }
+        };
+        loop {
+            let mut changed = false;
+            for i in (0..self.nodes.len()).rev() {
+                if self.nodes[i].writes_accumulator() {
+                    let seed = self.nodes[i]
+                        .reach
+                        .map_or(frame, |r| r.intersect(frame));
+                    if seed.width() > 0.0 && seed.height() > 0.0 {
+                        grow(&mut dm[i], seed, &mut changed);
+                    }
+                }
+                if let Some(d) = dm[i] {
+                    let p = f64::from(self.nodes[i].pad);
+                    let want = d.inflate(p, p);
+                    for &j in &self.nodes[i].inputs {
+                        grow(&mut dm[j], want, &mut changed);
+                    }
+                }
+            }
+            if !changed {
+                return dm;
             }
         }
     }
@@ -1427,7 +1478,7 @@ impl Builder {
     fn push(&mut self, op: UnitOp, target: Target, label: String, reach: Option<Rect>, inputs: Vec<usize>) -> usize {
         let id = self.dag.nodes.len();
         let source = self.cur.clone();
-        self.dag.nodes.push(Node { op, target, source, label, reach, inputs });
+        self.dag.nodes.push(Node { op, target, source, label, reach, pad: 0.0, inputs });
         id
     }
 
@@ -2281,5 +2332,108 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn hand_node(
+        op: UnitOp,
+        target: crate::vello::plan::Target,
+        reach: Option<Rect>,
+        pad: f32,
+        inputs: Vec<usize>,
+    ) -> Node {
+        Node { op, target, source: Source::Background, label: String::new(), reach, pad, inputs }
+    }
+
+    #[test]
+    fn demands_compose_pads_along_the_chain() {
+        use crate::vello::plan::Target;
+        use crate::vello::units::{BlurAxis, BlurEdge};
+        let blur = |pad: f32, inputs: Vec<usize>| {
+            hand_node(
+                UnitOp::Blur { sigma: 1.0, linear: false, axis: BlurAxis::X, edge: BlurEdge::Backdrop },
+                Target::Atlas,
+                None,
+                pad,
+                inputs,
+            )
+        };
+        let dag = FrameDag {
+            nodes: vec![
+                hand_node(UnitOp::Reload, Target::Atlas, None, 0.0, vec![]),
+                blur(100.0, vec![0]),
+                blur(100.0, vec![1]),
+                hand_node(
+                    UnitOp::Compose { mode: crate::vello::units::ComposeMode::MaskedMix, colour: None },
+                    Target::Accumulator,
+                    Some(Rect::new(900.0, 400.0, 1000.0, 500.0)),
+                    0.0,
+                    vec![2],
+                ),
+            ],
+            bind_idx: Default::default(),
+        };
+        let dm = dag.demands(Rect::new(0.0, 0.0, 1024.0, 512.0));
+        assert_eq!(dm[3], Some(Rect::new(900.0, 400.0, 1000.0, 500.0)));
+        assert_eq!(dm[2], Some(Rect::new(900.0, 400.0, 1000.0, 500.0)));
+        assert_eq!(dm[1], Some(Rect::new(800.0, 300.0, 1100.0, 600.0)));
+        assert_eq!(dm[0], Some(Rect::new(700.0, 200.0, 1200.0, 700.0)));
+    }
+
+    #[test]
+    fn demands_union_over_consumers_and_ignore_undemanded() {
+        use crate::vello::plan::Target;
+        let dag = FrameDag {
+            nodes: vec![
+                hand_node(UnitOp::Reload, Target::Atlas, None, 0.0, vec![]),
+                hand_node(
+                    UnitOp::Compose { mode: crate::vello::units::ComposeMode::MaskedMix, colour: None },
+                    Target::Accumulator,
+                    Some(Rect::new(0.0, 0.0, 50.0, 50.0)),
+                    30.0,
+                    vec![0],
+                ),
+                hand_node(
+                    UnitOp::Compose { mode: crate::vello::units::ComposeMode::MaskedMix, colour: None },
+                    Target::Accumulator,
+                    Some(Rect::new(200.0, 200.0, 300.0, 260.0)),
+                    0.0,
+                    vec![0],
+                ),
+                hand_node(UnitOp::Reload, Target::Atlas, None, 0.0, vec![]),
+            ],
+            bind_idx: Default::default(),
+        };
+        let dm = dag.demands(Rect::new(0.0, 0.0, 512.0, 512.0));
+        assert_eq!(dm[0], Some(Rect::new(-30.0, -30.0, 300.0, 260.0)));
+        assert_eq!(dm[3], None, "a node no consumer demands has no demand");
+    }
+
+    #[test]
+    fn demands_reach_forward_references() {
+        // A Reload's read edge can cite a LATER index (region values wire in after the scene
+        // build); the fixpoint must carry demand across it — the same lesson liveness learned.
+        use crate::vello::plan::Target;
+        let dag = FrameDag {
+            nodes: vec![
+                hand_node(UnitOp::Reload, Target::Atlas, None, 0.0, vec![2]),
+                hand_node(
+                    UnitOp::Compose { mode: crate::vello::units::ComposeMode::MaskedMix, colour: None },
+                    Target::Accumulator,
+                    Some(Rect::new(0.0, 0.0, 64.0, 64.0)),
+                    16.0,
+                    vec![0],
+                ),
+                hand_node(
+                    UnitOp::Rasterize(crate::vello::units::RasterSource::Body { offset: [0.0; 2] }),
+                    Target::Atlas,
+                    None,
+                    0.0,
+                    vec![],
+                ),
+            ],
+            bind_idx: Default::default(),
+        };
+        let dm = dag.demands(Rect::new(0.0, 0.0, 512.0, 512.0));
+        assert_eq!(dm[2], Some(Rect::new(-16.0, -16.0, 80.0, 80.0)));
     }
 }
