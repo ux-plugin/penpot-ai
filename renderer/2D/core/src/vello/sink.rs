@@ -1385,7 +1385,8 @@ impl Sink {
             /// transparency (a body-content ground — a layer blur's own pixels).
             seed: bool,
             /// Chain-control bits, mirroring the in-frame mark assembly: 0 for fences and blur
-            /// arms, 1 (atomic) for a displacing/pointwise head instance.
+            /// arms, 3 (atomic + composite — the value must land in the STORED register, bit 2,
+            /// or the window stores its transparent seed) for a displacing/pointwise head.
             ctl: u32,
             mask: Option<(u128, usize)>,
             route: Option<(usize, bool)>,
@@ -1632,6 +1633,21 @@ impl Sink {
                     continue;
                 };
                 use crate::vello::units::UnitOp;
+                match &dag.nodes[j].op {
+                    UnitOp::Blur { .. } => {}
+                    UnitOp::Warp(_)
+                    | UnitOp::Scatter(_)
+                    | UnitOp::Shade(_)
+                    | UnitOp::MaskMix(_) => {
+                        if lens.is_none() {
+                            continue;
+                        }
+                    }
+                    _ => continue,
+                }
+                let Some(lease) = regions.allocate(source, f64::from(k), None, max_grid_h) else {
+                    continue;
+                };
                 let (op_inst, desc, slack, ctl) = match &dag.nodes[j].op {
                     UnitOp::Blur { sigma, linear, axis, edge } => {
                         let (sigma, linear, axis, edge) = (*sigma, *linear, *axis, *edge);
@@ -1653,16 +1669,12 @@ impl Sink {
                     | UnitOp::Shade(u0)
                     | UnitOp::MaskMix(u0) => {
                         // A displacing head's band instance re-anchors its field uniforms to the
-                        // lease's grid frame (`lens_device_field` with the region origin + k).
-                        // The mechanism is in place but its field frame is not yet pixel-verified
-                        // (first cut UNDER-spread the escaped frost content), so it stays gated
-                        // until it earns its oracle numbers; ungated, glass escapes keep the raw
-                        // region value — the strictly-safe fallback.
-                        if !std::env::var("WV_BAND_HEADS").is_ok_and(|v| v == "1") {
-                            continue;
-                        }
+                        // grid frame of its OWN lease (`lens_device_field` with that lease's
+                        // origin + k) — band marks evaluate `px` in grid coordinates, so an anchor
+                        // built from the ground lease's grid places the lens one lease away and
+                        // the head degenerates to the identity copy.
                         let Some((g, geom)) = lens.as_ref() else { continue };
-                        let r = &regions.regions[ri];
+                        let r = &regions.regions[lease];
                         let (bw, bh) = r.texel_size();
                         let origin = (
                             r.source[0] - f64::from(r.grid[0]) / r.k,
@@ -1688,12 +1700,9 @@ impl Sink {
                             crate::vello::bake::Policy::default(),
                             None,
                         );
-                        (op, desc, dag.nodes[j].pad.max(1.0), 1u32)
+                        (op, desc, dag.nodes[j].pad.max(1.0), 3u32)
                     }
                     _ => continue,
-                };
-                let Some(lease) = regions.allocate(source, f64::from(k), None, max_grid_h) else {
-                    continue;
                 };
                 let inst = dag.push_region_blur(
                     lease,
