@@ -1177,8 +1177,41 @@ impl Sink {
         let frame_rect = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
         let max_grid_h: u32 = (48_000 / width.div_ceil(16)).max(16).min(512) * 16;
         let wlk = crate::vello::walk::walk(&mut dag, frame_rect);
-        let fin = (!wlk.pieces.is_empty())
-            .then(|| crate::vello::finalize::finalize(&mut dag, &wlk, &|_| None, u64::MAX));
+        let ask_of: HashMap<u128, f64> = crate::vello::abi::with_scene(|live, _, _| {
+            gathers
+                .iter()
+                .filter_map(|&(_, gid, _)| {
+                    let n = live.get(gid)?;
+                    let g = n.glass.as_ref()?;
+                    (g.acceptable_downscale > 0.0 && g.acceptable_downscale < 1.0)
+                        .then(|| (gid, f64::from(g.acceptable_downscale)))
+                })
+                .collect()
+        });
+        let ask_by_node: HashMap<usize, f64> = wlk
+            .coverage
+            .iter()
+            .filter_map(|(r, _)| {
+                let crate::vello::frame_dag::Source::Effect { shape, .. } =
+                    dag.nodes[*r].source
+                else {
+                    return None;
+                };
+                ask_of.get(&shape).map(|&a| (*r, a))
+            })
+            .collect();
+        let shelf_budget = u64::from(max_grid_h.saturating_sub(height.div_ceil(16) * 16))
+            .saturating_mul(u64::from(width))
+            .saturating_mul(4)
+            .max(1);
+        let fin = (!wlk.pieces.is_empty()).then(|| {
+            crate::vello::finalize::finalize(
+                &mut dag,
+                &wlk,
+                &|r| ask_by_node.get(&r).copied(),
+                shelf_budget,
+            )
+        });
         let mut rid_of: HashMap<usize, usize> = HashMap::new();
         let mut piece_owner: HashMap<usize, u128> = HashMap::new();
         if let Some(f) = &fin {
@@ -1248,7 +1281,12 @@ impl Sink {
                         dropped.insert(n);
                         continue;
                     }
-                    match regions.allocate([r.x0, r.y0, r.x1, r.y1], 1.0, max_grid_h) {
+                    let kq = fin
+                        .as_ref()
+                        .and_then(|f| f.k.get(&n).copied())
+                        .unwrap_or(1.0)
+                        .clamp(1.0 / 64.0, 1.0);
+                    match regions.allocate([r.x0, r.y0, r.x1, r.y1], kq, max_grid_h) {
                         Some(ri) => {
                             rid_of.insert(n, ri);
                             dag.nodes[n].source = crate::vello::frame_dag::Source::Region(ri);
@@ -1290,6 +1328,19 @@ impl Sink {
                     dag.nodes[t].op = crate::vello::units::UnitOp::Rasterize(
                         crate::vello::units::RasterSource::Body { offset: [0.0; 2] },
                     );
+                    continue;
+                }
+                let kt = f.k.get(&t).copied().unwrap_or(1.0);
+                let crossing = dag.nodes[t].inputs.first().is_some_and(|j| {
+                    (f.k.get(j).copied().unwrap_or(1.0) - kt).abs() > 1e-6
+                });
+                if crossing {
+                    dag.nodes[t].op = crate::vello::units::UnitOp::Blur {
+                        sigma: 0.6,
+                        linear: false,
+                        axis: crate::vello::units::BlurAxis::X,
+                        edge: crate::vello::units::BlurEdge::Backdrop,
+                    };
                 }
             }
             dag.reset_binding_index();
@@ -1690,21 +1741,28 @@ impl Sink {
             let owner = &piece_owner;
             let grid_of = |n: usize| regions.regions[rid_of[&n]].grid;
             let dev_of = |n: usize| dag.nodes[n].reach.unwrap_or(frame_rect);
-            let route_rec = |target: usize, rect5: [f32; 4], slack: f32, rec: &mut [[f32; 4]; 7]| {
+            let k_of = |n: usize| fin.k.get(&n).copied().unwrap_or(1.0);
+            let route_rec = |target: usize,
+                             rect5: [f32; 4],
+                             slack: f32,
+                             k_self: f64,
+                             rec: &mut [[f32; 4]; 7]| {
                 let g = regions.regions[rid_of[&target]].grid;
                 let chain = fin.sides.get(target).copied().unwrap_or(0) == 1;
                 let s = slack.max(1.0);
+                let z = (k_of(target) / k_self) as f32;
                 rec[5] = rect5;
-                rec[6] = [g[0] as f32, g[1] as f32 - band_y0, 1.0, if chain { -s } else { s }];
+                rec[6] = [g[0] as f32, g[1] as f32 - band_y0, z, if chain { -s } else { s }];
             };
             let rect_in_grid = |n: usize, j: usize| -> [f32; 4] {
                 let gn = grid_of(n);
                 let (rn, rj) = (dev_of(n), dev_of(j));
+                let kn = k_of(n);
                 [
-                    gn[0] as f32 + (rj.x0 - rn.x0) as f32,
-                    gn[1] as f32 + (rj.y0 - rn.y0) as f32,
-                    gn[0] as f32 + (rj.x1 - rn.x0) as f32,
-                    gn[1] as f32 + (rj.y1 - rn.y0) as f32,
+                    gn[0] as f32 + ((rj.x0 - rn.x0) * kn) as f32,
+                    gn[1] as f32 + ((rj.y0 - rn.y0) * kn) as f32,
+                    gn[0] as f32 + ((rj.x1 - rn.x0) * kn) as f32,
+                    gn[1] as f32 + ((rj.y1 - rn.y0) * kn) as f32,
                 ]
             };
             let consumed_only_by_steps = |n: usize| {
@@ -1799,10 +1857,12 @@ impl Sink {
                                 }
                             }
                         });
+                        let kn = k_of(n);
+                        let vs = vs * kn as f32;
                         let mut vrec = [[0.0f32; 4]; 7];
                         vrec[4] = [1.0, 0.0, band_y0, 0.0];
                         if let Some(x) = x_target {
-                            route_rec(x, rect_in_grid(n, x), 3.0 * vs + 8.0, &mut vrec);
+                            route_rec(x, rect_in_grid(n, x), 3.0 * vs + 8.0, kn, &mut vrec);
                         }
                         let desc = blur_arm(
                             vs,
@@ -1852,9 +1912,11 @@ impl Sink {
                         if consumed_only_by_steps(n) {
                             continue;
                         }
+                        let kn = k_of(n);
+                        let sigma = sigma * kn as f32;
                         if let Some(&j) = dag.nodes[n].inputs.first() {
                             if rid_of.contains_key(&j) {
-                                route_rec(j, rect_in_grid(n, j), dag.nodes[n].pad, &mut rec);
+                                route_rec(j, rect_in_grid(n, j), dag.nodes[n].pad, kn, &mut rec);
                             }
                         }
                         let desc = blur_arm(
@@ -1889,7 +1951,7 @@ impl Sink {
                     ) => {
                         if let Some(&j) = dag.nodes[n].inputs.first() {
                             if rid_of.contains_key(&j) {
-                                route_rec(j, rect_in_grid(n, j), dag.nodes[n].pad, &mut rec);
+                                route_rec(j, rect_in_grid(n, j), dag.nodes[n].pad, k_of(n), &mut rec);
                             }
                         }
                         let desc = crate::vello::bake::arm_descriptor(
@@ -1982,7 +2044,7 @@ impl Sink {
                     m.rec[6] = [
                         g[0] as f32,
                         g[1] as f32 - band_y0,
-                        r.k as f32,
+                        k_of(r.target) as f32,
                         if chain { -slack } else { slack },
                     ];
                 }
@@ -3718,24 +3780,35 @@ impl Sink {
                     }
                     let jr = dag.nodes[j].reach.unwrap_or(frame_rect);
                     let jg = regions.regions[jrid].grid;
+                    let kb = regions.regions[trid].k;
+                    if (regions.regions[jrid].k - kb).abs() > 1e-6 {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if std::env::var("WV_DBG_PIECES").is_ok() {
+                            eprintln!("WV_DBG_PIECES: transport {t} blit crosses density — skipped");
+                        }
+                        continue;
+                    }
                     let isect = tr.intersect(jr);
                     if !(isect.x1 > isect.x0 && isect.y1 > isect.y0) {
                         continue;
                     }
                     let src = (
-                        jg[0] + (isect.x0 - jr.x0) as u32,
-                        jg[1] - band_y0 + (isect.y0 - jr.y0) as u32,
+                        jg[0] + ((isect.x0 - jr.x0) * kb) as u32,
+                        jg[1] - band_y0 + ((isect.y0 - jr.y0) * kb) as u32,
                     );
                     let dst = (
-                        tg[0] + (isect.x0 - tr.x0) as u32,
-                        tg[1] - band_y0 + (isect.y0 - tr.y0) as u32,
+                        tg[0] + ((isect.x0 - tr.x0) * kb) as u32,
+                        tg[1] - band_y0 + ((isect.y0 - tr.y0) * kb) as u32,
                     );
                     region_blits.entry(before).or_default().push(RegionBlit {
                         src_chain: side_j,
                         dst_chain: side_t,
                         src,
                         dst,
-                        size: ((isect.x1 - isect.x0) as u32, (isect.y1 - isect.y0) as u32),
+                        size: (
+                            (((isect.x1 - isect.x0) * kb) as u32).max(1),
+                            (((isect.y1 - isect.y0) * kb) as u32).max(1),
+                        ),
                     });
                 }
             }

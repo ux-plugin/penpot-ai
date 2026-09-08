@@ -38,6 +38,7 @@ const EDITOR_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/show
 #[derive(Clone, Copy, PartialEq)]
 enum Doc {
     LensGrid,
+    LensGridK,
     Editor,
     BgblurStack,
     BgblurStackDeep,
@@ -62,6 +63,8 @@ fn cases() -> Vec<Case> {
         c("lens-left", Doc::LensGrid, 8.0, (-478.5, -53.0)),
         c("lens-right", Doc::LensGrid, 8.0, (-102.3, -53.0)),
         c("lens-strided", Doc::LensGrid, 16.0, (-500.0, -99.1)),
+        c("lens-left-k", Doc::LensGridK, 8.0, (-478.5, -53.0)),
+        c("lens-right-k", Doc::LensGridK, 8.0, (-102.3, -53.0)),
         c("ed-glass-top", Doc::Editor, 4.0, (60.0, -230.0)),
         c("ed-glass-left", Doc::Editor, 4.0, (-450.0, -165.0)),
         c("ed-bgblur-bottom", Doc::Editor, 4.0, (-530.0, -278.5)),
@@ -180,6 +183,9 @@ fn main() {
             match case.doc {
                 Doc::LensGrid => {
                     render_core::vello::abi::load_glass_grid_scene(1, 1);
+                }
+                Doc::LensGridK => {
+                    render_core::vello::abi::load_glass_grid_scene_k(1, 1, 500);
                 }
                 Doc::Editor => {
                     let rep = replay_util::replay(EDITOR_FIXTURE);
