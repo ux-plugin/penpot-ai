@@ -40,3 +40,4 @@ pub mod svg;
 /// shared compositor/effect executor + the cross-frame tile cache, never a concrete backend type.
 pub mod sink;
 pub mod text;
+pub mod walk;
