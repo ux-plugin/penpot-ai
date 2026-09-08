@@ -454,49 +454,6 @@ impl FrameDag {
             }
     }
 
-    /// Push an interest region's ground node: a folded Body rasterize into a scratch lease, drawn
-    /// from `Source::Region(idx)`. `reach` is the region's grid rect in device pixels — its marker
-    /// footprint and its lease size. Region nodes join the DAG after the scene build, so the lazy
-    /// binding index is reset here.
-    pub fn push_region(&mut self, idx: usize, reach: Rect, label: String) -> usize {
-        self.bind_idx.take();
-        self.nodes.push(Node {
-            op: UnitOp::Rasterize(crate::vello::units::RasterSource::Body { offset: [0.0; 2] }),
-            target: crate::vello::plan::Target::Atlas,
-            source: Source::Region(idx),
-            label,
-            reach: Some(reach),
-            pad: 0.0,
-            inputs: vec![],
-        });
-        self.nodes.len() - 1
-    }
-
-    /// Push a region-space chain node (a band instance: a blur, a lens head, a fold window): it
-    /// reads another region's lease and materializes into region `idx`'s lease, so escaped taps
-    /// can resolve to CHAIN-correct content (H-blurred, warped — not raw). Same bind-index reset
-    /// rules as [`Self::push_region`].
-    pub fn push_region_blur(
-        &mut self,
-        idx: usize,
-        op: UnitOp,
-        reach: Rect,
-        inputs: Vec<usize>,
-        label: String,
-    ) -> usize {
-        self.bind_idx.take();
-        self.nodes.push(Node {
-            op,
-            target: crate::vello::plan::Target::Atlas,
-            source: Source::Region(idx),
-            label,
-            reach: Some(reach),
-            pad: 0.0,
-            inputs,
-        });
-        self.nodes.len() - 1
-    }
-
     /// Wire a region value into its reader: every `Reload` node of gather `gid` gains a read edge
     /// from `region_node`, so the schedule puts the region's write strictly before any round that
     /// can sample it. Reload inputs are structural (only the scheduler walks them), so the append
