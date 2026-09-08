@@ -1174,6 +1174,141 @@ impl Sink {
                 _ => 0.0,
             };
         }
+        let frame_rect = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+        let max_grid_h: u32 = (48_000 / width.div_ceil(16)).max(16).min(512) * 16;
+        let wlk = crate::vello::walk::walk(&mut dag, frame_rect);
+        let fin = (!wlk.pieces.is_empty())
+            .then(|| crate::vello::finalize::finalize(&mut dag, &wlk, &|_| None, u64::MAX));
+        let mut rid_of: HashMap<usize, usize> = HashMap::new();
+        let mut piece_owner: HashMap<usize, u128> = HashMap::new();
+        if let Some(f) = &fin {
+            let mintable: std::collections::HashSet<usize> = wlk
+                .pieces
+                .iter()
+                .map(|p| p.node)
+                .chain(f.transports.iter().copied())
+                .collect();
+            {
+                let mut claim = |start: usize, gid: u128| {
+                    let mut stack = vec![start];
+                    while let Some(n) = stack.pop() {
+                        if piece_owner.contains_key(&n) || !mintable.contains(&n) {
+                            continue;
+                        }
+                        piece_owner.insert(n, gid);
+                        stack.extend(dag.nodes[n].inputs.iter().copied());
+                    }
+                };
+                for (reader, covers) in &wlk.coverage {
+                    if let crate::vello::frame_dag::Source::Effect { shape, .. } =
+                        dag.nodes[*reader].source
+                    {
+                        for c in covers {
+                            claim(wlk.pieces[c.piece].node, shape);
+                        }
+                    }
+                }
+                for r in &f.routes {
+                    if let crate::vello::frame_dag::Source::Effect { shape, .. } =
+                        dag.nodes[r.reader].source
+                    {
+                        claim(r.target, shape);
+                    }
+                }
+            }
+            let mut piece_nodes: Vec<usize> = mintable
+                .iter()
+                .copied()
+                .filter(|n| piece_owner.contains_key(n))
+                .collect();
+            piece_nodes.sort_unstable();
+            let mut dropped: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            let mut pending: Vec<usize> = piece_nodes;
+            while !pending.is_empty() {
+                let mut progressed = false;
+                let mut next = Vec::new();
+                for n in pending {
+                    let closure_ready = dag.nodes[n].inputs.iter().all(|j| {
+                        !mintable.contains(j) || rid_of.contains_key(j) || dropped.contains(j)
+                    });
+                    if !closure_ready {
+                        next.push(n);
+                        continue;
+                    }
+                    progressed = true;
+                    let broken = dag.nodes[n]
+                        .inputs
+                        .iter()
+                        .any(|j| mintable.contains(j) && dropped.contains(j));
+                    let Some(r) = dag.nodes[n].reach else {
+                        dropped.insert(n);
+                        continue;
+                    };
+                    if broken {
+                        dropped.insert(n);
+                        continue;
+                    }
+                    match regions.allocate([r.x0, r.y0, r.x1, r.y1], 1.0, max_grid_h) {
+                        Some(ri) => {
+                            rid_of.insert(n, ri);
+                            dag.nodes[n].source = crate::vello::frame_dag::Source::Region(ri);
+                        }
+                        None => {
+                            dropped.insert(n);
+                        }
+                    }
+                }
+                if !progressed {
+                    for n in next {
+                        dropped.insert(n);
+                    }
+                    break;
+                }
+                pending = next;
+            }
+            for p in &wlk.pieces {
+                if matches!(p.producer, crate::vello::walk::Producer::Step { .. })
+                    && rid_of.contains_key(&p.node)
+                {
+                    dag.nodes[p.node].op = crate::vello::units::UnitOp::Rasterize(
+                        crate::vello::units::RasterSource::Body { offset: [0.0; 2] },
+                    );
+                }
+            }
+            let ground_piece = |n: usize| {
+                wlk.pieces.iter().any(|p| {
+                    p.node == n
+                        && matches!(p.producer, crate::vello::walk::Producer::Ground { .. })
+                })
+            };
+            for &t in &f.transports {
+                if !rid_of.contains_key(&t) {
+                    continue;
+                }
+                let all_ground = dag.nodes[t].inputs.iter().all(|&j| ground_piece(j));
+                if dag.nodes[t].inputs.len() > 1 || all_ground {
+                    dag.nodes[t].op = crate::vello::units::UnitOp::Rasterize(
+                        crate::vello::units::RasterSource::Body { offset: [0.0; 2] },
+                    );
+                }
+            }
+            dag.reset_binding_index();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("WV_DBG_PIECES").is_ok() {
+            match &fin {
+                Some(f) => eprintln!(
+                    "WV_DBG_PIECES: pieces={} transports={} routes={} placed={} regions={} coverage={}",
+                    wlk.pieces.len(),
+                    f.transports.len(),
+                    f.routes.len(),
+                    rid_of.len(),
+                    regions.regions.len(),
+                    wlk.coverage.len(),
+                ),
+                None => eprintln!("WV_DBG_PIECES: no pieces"),
+            }
+        }
         let grid_h = regions.grid_height();
         backend.set_frame_extent(width, acc_h);
         let mut scene = backend.new_scene(width as u16, grid_h as u16);
@@ -1539,6 +1674,317 @@ impl Sink {
                 }
                 if !out.is_empty() {
                     marks.insert(gid, out);
+                }
+            }
+        }
+        let mut region_draws: HashMap<usize, (usize, usize, usize, bool)> = HashMap::new();
+        if let Some(fin) = &fin {
+            use crate::vello::bake::{blur_arm, stamp_field_anchor, Policy};
+            use crate::vello::frame_dag::Source as DagSource;
+            use crate::vello::units::{BlurAxis, BlurEdge, UnitOp as U};
+            let band_y0 = regions.band_origin_y() as f32;
+            let gi_of0: HashMap<u128, usize> =
+                gathers.iter().map(|&(gi, gid, _)| (gid, gi)).collect();
+            let piece_idx: HashMap<usize, usize> =
+                wlk.pieces.iter().enumerate().map(|(i, p)| (p.node, i)).collect();
+            let owner = &piece_owner;
+            let grid_of = |n: usize| regions.regions[rid_of[&n]].grid;
+            let dev_of = |n: usize| dag.nodes[n].reach.unwrap_or(frame_rect);
+            let route_rec = |target: usize, rect5: [f32; 4], slack: f32, rec: &mut [[f32; 4]; 7]| {
+                let g = regions.regions[rid_of[&target]].grid;
+                let chain = fin.sides.get(target).copied().unwrap_or(0) == 1;
+                let s = slack.max(1.0);
+                rec[5] = rect5;
+                rec[6] = [g[0] as f32, g[1] as f32 - band_y0, 1.0, if chain { -s } else { s }];
+            };
+            let rect_in_grid = |n: usize, j: usize| -> [f32; 4] {
+                let gn = grid_of(n);
+                let (rn, rj) = (dev_of(n), dev_of(j));
+                [
+                    gn[0] as f32 + (rj.x0 - rn.x0) as f32,
+                    gn[1] as f32 + (rj.y0 - rn.y0) as f32,
+                    gn[0] as f32 + (rj.x1 - rn.x0) as f32,
+                    gn[1] as f32 + (rj.y1 - rn.y0) as f32,
+                ]
+            };
+            let consumed_only_by_steps = |n: usize| {
+                let mut any = false;
+                for p in &wlk.pieces {
+                    if dag.nodes[p.node].inputs.contains(&n) {
+                        any = true;
+                        if !matches!(p.producer, crate::vello::walk::Producer::Step { .. }) {
+                            return false;
+                        }
+                    }
+                }
+                let routed = fin.routes.iter().any(|r| r.target == n);
+                any && !routed
+            };
+            let mut at: HashMap<u128, usize> = HashMap::new();
+            let mut nodes_in_order: Vec<usize> = rid_of.keys().copied().collect();
+            nodes_in_order.sort_unstable();
+            let mut new_marks: Vec<(u128, UnitMark)> = Vec::new();
+            for n in nodes_in_order {
+                let Some(&gid) = owner.get(&n) else { continue };
+                let rid = rid_of[&n];
+                let g = grid_of(n);
+                let grect = [g[0] as f32, g[1] as f32, g[2] as f32, g[3] as f32];
+                let below = gi_of0.get(&gid).copied().unwrap_or(0);
+                let mut rec = [[0.0f32; 4]; 7];
+                rec[4] = [1.0, 0.0, band_y0, 0.0];
+                let producer = piece_idx.get(&n).map(|&i| wlk.pieces[i].producer);
+                match (dag.nodes[n].op.clone(), producer) {
+                    (U::Copy, _) => {}
+                    (U::Rasterize(_), Some(crate::vello::walk::Producer::Step { writer })) => {
+                        let DagSource::Effect { shape: wshape, .. } = dag.nodes[writer].source
+                        else {
+                            continue;
+                        };
+                        let w_gi = gi_of0.get(&wshape).copied().unwrap_or(0);
+                        region_draws.insert(n, (rid, 0, w_gi, true));
+                        new_marks.push((gid, UnitMark {
+                            node: n,
+                            round: sched.round[n],
+                            desc: [0.0f32; 26],
+                            rec,
+                            ctl: 0,
+                            masked: false,
+                            band: false,
+                            off: 0,
+                            rect: Some(grect),
+                            mark_shape: None,
+                            after: None,
+                        }));
+                        let v = dag.nodes[writer]
+                            .inputs
+                            .iter()
+                            .rev()
+                            .copied()
+                            .find(|&j| matches!(dag.nodes[j].op, U::Blur { .. }));
+                        let Some(v) = v else {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if std::env::var("WV_DBG_PIECES").is_ok() {
+                                eprintln!(
+                                    "WV_DBG_PIECES: step {n} writer {writer} lands without a blur — ground-only window"
+                                );
+                            }
+                            continue;
+                        };
+                        let U::Blur { sigma: vs, linear: vl, .. } = dag.nodes[v].op else {
+                            continue;
+                        };
+                        let colour = dag.nodes.iter().find_map(|nd| match nd.op {
+                            U::Compose { colour, .. } if nd.inputs.contains(&v) => colour,
+                            _ => None,
+                        });
+                        let x_target = dag.nodes[n].inputs.iter().copied().find(|&c| {
+                            if !rid_of.contains_key(&c) {
+                                return false;
+                            }
+                            let mut cur = c;
+                            loop {
+                                if let Some(&pi) = piece_idx.get(&cur) {
+                                    break matches!(
+                                        wlk.pieces[pi].producer,
+                                        crate::vello::walk::Producer::Chain { .. }
+                                    );
+                                }
+                                if matches!(dag.nodes[cur].op, U::Copy) {
+                                    match dag.nodes[cur].inputs.first() {
+                                        Some(&j) => cur = j,
+                                        None => break false,
+                                    }
+                                } else {
+                                    break false;
+                                }
+                            }
+                        });
+                        let mut vrec = [[0.0f32; 4]; 7];
+                        vrec[4] = [1.0, 0.0, band_y0, 0.0];
+                        if let Some(x) = x_target {
+                            route_rec(x, rect_in_grid(n, x), 3.0 * vs + 8.0, &mut vrec);
+                        }
+                        let desc = blur_arm(
+                            vs,
+                            vl,
+                            true,
+                            Policy {
+                                colour_over: colour.is_some(),
+                                edge_coverage: colour.is_some(),
+                                ..Policy::default()
+                            },
+                            colour,
+                        );
+                        stamp_field_anchor(&desc, &mut vrec);
+                        new_marks.push((gid, UnitMark {
+                            node: n,
+                            round: sched.round[n],
+                            desc,
+                            rec: vrec,
+                            ctl: 0,
+                            masked: colour.is_none(),
+                            band: false,
+                            off: 0,
+                            rect: Some(grect),
+                            mark_shape: colour
+                                .is_none()
+                                .then(|| (wshape, regions.device_to_grid(rid) * root)),
+                            after: Some((rid, w_gi, below)),
+                        }));
+                    }
+                    (U::Rasterize(_), _) => {
+                        region_draws.insert(n, (rid, 0, below, true));
+                        new_marks.push((gid, UnitMark {
+                            node: n,
+                            round: sched.round[n],
+                            desc: [0.0f32; 26],
+                            rec,
+                            ctl: 0,
+                            masked: false,
+                            band: false,
+                            off: 0,
+                            rect: Some(grect),
+                            mark_shape: None,
+                            after: None,
+                        }));
+                    }
+                    (U::Blur { sigma, linear, axis, edge }, _) => {
+                        if consumed_only_by_steps(n) {
+                            continue;
+                        }
+                        if let Some(&j) = dag.nodes[n].inputs.first() {
+                            if rid_of.contains_key(&j) {
+                                route_rec(j, rect_in_grid(n, j), dag.nodes[n].pad, &mut rec);
+                            }
+                        }
+                        let desc = blur_arm(
+                            sigma,
+                            linear,
+                            axis == BlurAxis::Y,
+                            Policy {
+                                edge_coverage: edge == BlurEdge::Coverage,
+                                ..Policy::default()
+                            },
+                            None,
+                        );
+                        stamp_field_anchor(&desc, &mut rec);
+                        new_marks.push((gid, UnitMark {
+                            node: n,
+                            round: sched.round[n],
+                            desc,
+                            rec,
+                            ctl: 0,
+                            masked: false,
+                            band: false,
+                            off: 0,
+                            rect: Some(grect),
+                            mark_shape: None,
+                            after: None,
+                        }));
+                    }
+                    (
+                        op @ (U::Warp(_) | U::Scatter(_) | U::Shade(_) | U::MaskMix(_)
+                        | U::EraseBy(_) | U::ClipToSource(_)),
+                        _,
+                    ) => {
+                        if let Some(&j) = dag.nodes[n].inputs.first() {
+                            if rid_of.contains_key(&j) {
+                                route_rec(j, rect_in_grid(n, j), dag.nodes[n].pad, &mut rec);
+                            }
+                        }
+                        let desc = crate::vello::bake::arm_descriptor(
+                            &[op],
+                            crate::vello::bake::Policy::default(),
+                            None,
+                        );
+                        stamp_field_anchor(&desc, &mut rec);
+                        new_marks.push((gid, UnitMark {
+                            node: n,
+                            round: sched.round[n],
+                            desc,
+                            rec,
+                            ctl: 3,
+                            masked: false,
+                            band: false,
+                            off: 0,
+                            rect: Some(grect),
+                            mark_shape: None,
+                            after: None,
+                        }));
+                    }
+                    (op, _) => {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if std::env::var("WV_DBG_PIECES").is_ok() {
+                            eprintln!("WV_DBG_PIECES: piece {n} op {op:?} has no lowering arm — lease left unwritten");
+                        }
+                    }
+                }
+            }
+            for (gid, m) in new_marks {
+                let ms = marks.entry(gid).or_default();
+                let pos = at.entry(gid).or_insert(0);
+                ms.insert(*pos, m);
+                *pos += 1;
+            }
+            let routed_nodes: std::collections::HashSet<usize> =
+                fin.routes.iter().map(|r| r.reader).collect();
+            let spine_contains = |from: usize, target: usize| -> bool {
+                let mut stack = vec![from];
+                let mut seen = std::collections::HashSet::new();
+                while let Some(cur) = stack.pop() {
+                    if cur == target {
+                        return true;
+                    }
+                    if !seen.insert(cur) {
+                        continue;
+                    }
+                    if cur != from && dag.nodes[cur].op.is_structural() {
+                        continue;
+                    }
+                    stack.extend(dag.nodes[cur].inputs.iter().copied());
+                }
+                false
+            };
+            for r in &fin.routes {
+                let DagSource::Effect { shape, .. } = dag.nodes[r.reader].source else {
+                    continue;
+                };
+                let Some(&trid) = rid_of.get(&r.target) else { continue };
+                let Some(ms) = marks.get_mut(&shape) else { continue };
+                for m in ms.iter_mut() {
+                    if matches!(dag.nodes[m.node].source, DagSource::Region(_)) {
+                        continue;
+                    }
+                    let owns = m.node == r.reader;
+                    let fused = !owns
+                        && !routed_nodes.contains(&m.node)
+                        && spine_contains(m.node, r.reader);
+                    if !owns && !fused {
+                        continue;
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if std::env::var("WV_DBG_PIECES").is_ok() {
+                        eprintln!(
+                            "WV_DBG_PIECES: route gid={shape:04x} reader={} -> target={} (node {} {}) k={}",
+                            r.reader, r.target, m.node, if owns { "owns" } else { "fused" }, r.k,
+                        );
+                    }
+                    let t = &regions.regions[trid];
+                    m.rec[5] = [
+                        t.source[0] as f32,
+                        t.source[1] as f32,
+                        t.source[2] as f32,
+                        t.source[3] as f32,
+                    ];
+                    let g = t.grid;
+                    let chain = fin.sides.get(r.target).copied().unwrap_or(0) == 1;
+                    let slack = dag.nodes[r.reader].pad.max(1.0);
+                    m.rec[6] = [
+                        g[0] as f32,
+                        g[1] as f32 - band_y0,
+                        r.k as f32,
+                        if chain { -slack } else { slack },
+                    ];
                 }
             }
         }
@@ -2312,7 +2758,21 @@ impl Sink {
                 )
                 .to_path(0.1),
             );
-            if let crate::vello::units::UnitOp::Rasterize(
+            if let DagSource::Region(_) = dag.nodes[s].source {
+                if let Some(&(txri, lo, hi, seed)) = region_draws.get(&s) {
+                    if seed {
+                        backend.draw_fill_rect(
+                            scene,
+                            clip,
+                            crate::vello::abi::background().components,
+                        );
+                    }
+                    if hi > lo {
+                        let t = regions.device_to_grid(txri) * root;
+                        backend.draw_scene_range(scene, t, lo, hi);
+                    }
+                }
+            } else if let crate::vello::units::UnitOp::Rasterize(
                 crate::vello::units::RasterSource::Body { offset },
             ) = dag.nodes[s].op
             {
@@ -2585,7 +3045,8 @@ impl Sink {
                 format,
                 wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC,
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
                 "wv region atlas",
             )
         });
@@ -2602,7 +3063,8 @@ impl Sink {
                     format,
                     wgpu::TextureUsages::TEXTURE_BINDING
                         | wgpu::TextureUsages::STORAGE_BINDING
-                        | wgpu::TextureUsages::COPY_SRC,
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::COPY_DST,
                     "wv region chain",
                 )
             });
@@ -3190,6 +3652,115 @@ impl Sink {
         backend.phased_frontend_full(device, queue, &mut enc);
 
         let _tpl = crate::vello::prof::now();
+        /// One transport blit (law 2 executed as an encoder copy): a source piece's atlas window
+        /// copied into its combine/re-side lease, cross-atlas by parity construction. Keyed by the
+        /// dense round it must complete BEFORE (its first consumer's window).
+        struct RegionBlit {
+            src_chain: bool,
+            dst_chain: bool,
+            src: (u32, u32),
+            dst: (u32, u32),
+            size: (u32, u32),
+        }
+        let mut region_blits: std::collections::BTreeMap<u32, Vec<RegionBlit>> =
+            std::collections::BTreeMap::new();
+        if let Some(fin) = &fin {
+            let band_y0 = regions.band_origin_y();
+            let mut round_of_node: HashMap<usize, u32> = HashMap::new();
+            for ms in marks.values() {
+                for m in ms {
+                    let e = round_of_node.entry(m.node).or_insert(m.round);
+                    *e = (*e).min(m.round);
+                }
+            }
+            for &t in &fin.transports {
+                let Some(&trid) = rid_of.get(&t) else { continue };
+                let side_t = fin.sides.get(t).copied().unwrap_or(0) == 1;
+                let mut before = u32::MAX;
+                for (i, n) in dag.nodes.iter().enumerate() {
+                    if n.inputs.contains(&t) {
+                        if let Some(&r) = round_of_node.get(&i) {
+                            before = before.min(r);
+                        }
+                    }
+                }
+                for r in fin.routes.iter().filter(|r| r.target == t) {
+                    if let Some(&mr) = round_of_node.get(&r.reader) {
+                        before = before.min(mr);
+                    }
+                }
+                if before == u32::MAX {
+                    continue;
+                }
+                let tr = dag.nodes[t].reach.unwrap_or(frame_rect);
+                let tg = regions.regions[trid].grid;
+                let replayed = matches!(dag.nodes[t].op, crate::vello::units::UnitOp::Rasterize(_));
+                for &j in &dag.nodes[t].inputs {
+                    let Some(&jrid) = rid_of.get(&j) else { continue };
+                    if replayed
+                        && wlk.pieces.iter().any(|p| {
+                            p.node == j
+                                && matches!(
+                                    p.producer,
+                                    crate::vello::walk::Producer::Ground { .. }
+                                )
+                        })
+                    {
+                        continue;
+                    }
+                    let side_j = fin.sides.get(j).copied().unwrap_or(0) == 1;
+                    if side_j == side_t {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if std::env::var("WV_DBG_PIECES").is_ok() {
+                            eprintln!("WV_DBG_PIECES: transport {t} and source {j} co-sided — blit skipped");
+                        }
+                        continue;
+                    }
+                    let jr = dag.nodes[j].reach.unwrap_or(frame_rect);
+                    let jg = regions.regions[jrid].grid;
+                    let isect = tr.intersect(jr);
+                    if !(isect.x1 > isect.x0 && isect.y1 > isect.y0) {
+                        continue;
+                    }
+                    let src = (
+                        jg[0] + (isect.x0 - jr.x0) as u32,
+                        jg[1] - band_y0 + (isect.y0 - jr.y0) as u32,
+                    );
+                    let dst = (
+                        tg[0] + (isect.x0 - tr.x0) as u32,
+                        tg[1] - band_y0 + (isect.y0 - tr.y0) as u32,
+                    );
+                    region_blits.entry(before).or_default().push(RegionBlit {
+                        src_chain: side_j,
+                        dst_chain: side_t,
+                        src,
+                        dst,
+                        size: ((isect.x1 - isect.x0) as u32, (isect.y1 - isect.y0) as u32),
+                    });
+                }
+            }
+        }
+        let run_region_blits = |enc: &mut wgpu::CommandEncoder, bs: &[RegionBlit]| {
+            let (Some(va), Some(ch)) = (&region_atlas_tex, &region_chain_tex) else { return };
+            for b in bs {
+                let pick = |chain: bool| if chain { ch } else { va };
+                enc.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: pick(b.src_chain),
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x: b.src.0, y: b.src.1, z: 0 },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: pick(b.dst_chain),
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x: b.dst.0, y: b.dst.1, z: 0 },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d { width: b.size.0, height: b.size.1, depth_or_array_layers: 1 },
+                );
+            }
+        };
         let mut window_lo = 0u32;
         let mut seeded = false;
         // Clearing the packed accumulator: the clear value is the premultiplied background packed
@@ -3201,6 +3772,15 @@ impl Sink {
         for r in 1..=max_round + 1 {
             // The extra iteration is the FINAL window ([last, SEG_ALL)) — same dispatch, open end.
             let hi = if r > max_round { crate::vello::rasterize::SEG_ALL } else { r };
+            {
+                let due: Vec<u32> =
+                    region_blits.range(..=window_lo).map(|(&k, _)| k).collect();
+                for k in due {
+                    if let Some(bs) = region_blits.remove(&k) {
+                        run_region_blits(&mut enc, &bs);
+                    }
+                }
+            }
             if window_has_draws(window_lo, hi) {
                 // A merge FOLLOWER's tiles ride its leader's dispatch (per-entry ranges); its
                 // snapshot blits rode the leader too. Nothing left to record here.
@@ -3276,7 +3856,37 @@ impl Sink {
                         backend.phase_snap_copy(device, queue, &mut enc, &refresh, &acc, &snap);
                     }
                     if shp.to_draft {
-                        let dv = {
+                        let dv = if shp.region_out {
+                            // A region window writes the region atlas; per-mark OUTPUT records
+                            // shift grid rows onto atlas rows, and the OOB default drops any
+                            // unmarked tile's store. A GROUND (base None) rasterizes its fenced
+                            // draws; every other piece runs its arm with taps resolving through
+                            // its region route, writing whichever atlas its parity side put its
+                            // lease in (opposite its sampled inputs, so a dispatch never reads
+                            // the texture it writes).
+                            let dv = region_atlas
+                                .clone()
+                                .expect("a region round scheduled without a region atlas");
+                            backend.phase_scratch_origins([OOB, OOB], [0, 0]);
+                            let side_chain = fin
+                                .as_ref()
+                                .is_some_and(|f| f.sides.get(rep).copied().unwrap_or(0) == 1);
+                            if shp.base == Slot::None {
+                                backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &dv);
+                                dv
+                            } else if side_chain {
+                                let cv = region_chain
+                                    .clone()
+                                    .expect("a region chain round scheduled without a chain atlas");
+                                backend.phase_region_chain_write();
+                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, None, &cv);
+                                cv
+                            } else {
+                                backend.phase_region_values_write();
+                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, None, &dv);
+                                dv
+                            }
+                        } else {
                         match (shp.base, shp.input) {
                             (Slot::None, Slot::None) => {
                                 // A rasterize window: the fenced silhouette draws paint the lease;

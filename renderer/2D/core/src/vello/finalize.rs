@@ -262,30 +262,28 @@ impl Fin<'_> {
             writer_of[t] = true;
         }
         let mut parity: HashMap<usize, u8> = HashMap::new();
-        let mut i = 0;
-        while i < self.dag.nodes.len() {
-            if !writer_of[i] && !self.out.transports.contains(&i) {
-                i += 1;
-                continue;
-            }
-            if parity.contains_key(&i) {
-                i += 1;
-                continue;
-            }
+        loop {
+            let ready = (0..self.dag.nodes.len()).find(|&i| {
+                writer_of.get(i).copied().unwrap_or(false)
+                    && !parity.contains_key(&i)
+                    && self.dag.nodes[i].inputs.iter().all(|&j| {
+                        !writer_of.get(j).copied().unwrap_or(false) || parity.contains_key(&j)
+                    })
+            });
+            let Some(i) = ready else { break };
             let sampled: Vec<usize> = self.dag.nodes[i]
                 .inputs
                 .iter()
                 .copied()
-                .filter(|&j| parity.contains_key(&j) || writer_of.get(j).copied().unwrap_or(false))
+                .filter(|&j| writer_of.get(j).copied().unwrap_or(false))
                 .collect();
             let Some(&first) = sampled.first() else {
                 parity.insert(i, 0);
-                i += 1;
                 continue;
             };
-            let target = parity.get(&first).copied().unwrap_or(0);
+            let target = parity[&first];
             for &j in sampled.iter().skip(1) {
-                let pj = parity.get(&j).copied().unwrap_or(0);
+                let pj = parity[&j];
                 if pj % 2 != target % 2 {
                     let r = self.reside(i, j);
                     writer_of.resize(self.dag.nodes.len(), false);
@@ -294,7 +292,6 @@ impl Fin<'_> {
                 }
             }
             parity.insert(i, target + 1);
-            i += 1;
         }
         let sides: Vec<u8> = (0..self.dag.nodes.len())
             .map(|n| parity.get(&n).map_or(0, |p| p % 2))
@@ -361,6 +358,58 @@ pub fn finalize(
         fin.discharge(*reader, covers, kr);
     }
 
+    let piece_nodes: Vec<usize> = walk.pieces.iter().map(|p| p.node).collect();
+    let chain_producer = |j: usize| {
+        walk.pieces
+            .iter()
+            .find(|p| p.node == j)
+            .is_some_and(|p| matches!(p.producer, Producer::Chain { .. }))
+    };
+    for &n in &piece_nodes {
+        let inputs = fin.dag.nodes[n].inputs.clone();
+        let sampled: Vec<usize> = inputs
+            .iter()
+            .copied()
+            .filter(|j| piece_nodes.contains(j) || fin.out.transports.contains(j))
+            .collect();
+        let (chain_grp, base_grp): (Vec<usize>, Vec<usize>) =
+            sampled.iter().copied().partition(|&j| chain_producer(j));
+        for group in [base_grp, chain_grp] {
+            if group.len() < 2 {
+                continue;
+            }
+            let need = fin.dag.nodes[n].reach.map(|r| {
+                let p = f64::from(fin.dag.nodes[n].pad);
+                r.inflate(p, p)
+            });
+            let rect = union_rect(
+                group.iter().filter_map(|&j| fin.dag.nodes[j].reach),
+            )
+            .map(|u| need.map_or(u, |nd| u.intersect(nd)))
+            .unwrap_or_default();
+            let kg = group
+                .iter()
+                .map(|j| fin.out.k.get(j).copied().unwrap_or(1.0))
+                .fold(K_FLOOR, f64::max);
+            let c = fin.push_copy(rect, group.clone(), format!("combine input of {n}"));
+            fin.out.k.insert(c, kg);
+            let current = fin.dag.nodes[n].inputs.clone();
+            let mut placed = false;
+            let mut rewired = Vec::new();
+            for &inp in &current {
+                if group.contains(&inp) {
+                    if !placed {
+                        rewired.push(c);
+                        placed = true;
+                    }
+                } else {
+                    rewired.push(inp);
+                }
+            }
+            fin.dag.nodes[n].inputs = rewired;
+        }
+    }
+
     fin.out.sides = fin.colour_with_resides(walk);
 
     let routes: Vec<Route> = fin.out.routes.clone();
@@ -379,6 +428,37 @@ pub fn finalize(
         }
     }
 
+    fin.dag.reset_binding_index();
+    #[cfg(debug_assertions)]
+    {
+        let n = fin.dag.nodes.len();
+        let mut lv = vec![false; n];
+        loop {
+            let mut changed = false;
+            for i in (0..n).rev() {
+                if fin.dag.nodes[i].writes_accumulator() && !lv[i] {
+                    lv[i] = true;
+                    changed = true;
+                }
+                if lv[i] {
+                    for &j in &fin.dag.nodes[i].inputs {
+                        if !lv[j] {
+                            lv[j] = true;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for (i, live) in lv.iter().enumerate() {
+            if !live {
+                eprintln!("finalize: dead node {i} '{}'", fin.dag.nodes[i].label);
+            }
+        }
+    }
     let sched = fin.dag.schedule(TILE_PX, u64::MAX);
     let lives: Vec<LiveRect> = fin.dag.materialized_lives(&sched);
     let leases_packed = pack(&lives);

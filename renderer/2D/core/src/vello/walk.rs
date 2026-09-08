@@ -268,15 +268,22 @@ impl Ctx<'_> {
         covers
     }
 
-    /// Mint the off-frame instance of writer `w`'s chain over window `win`: the chain's final
-    /// value node and, transitively (each level extending by its own pad — leaves first, so
-    /// instance inputs never cite later nodes), every chain node below it down to the state read.
-    /// Returns coverage by the FINAL chain value's instance piece — the step reads the full chain
-    /// through it (X exists because Y's instance reads it).
+    /// Mint the off-frame instance of writer `w`'s chain over window `win` and return the value
+    /// the STEP actually reads: everything after the chain's last barrier fuses into the step's
+    /// own arm (a blur-landing writer's step runs V + ⊕ in one dispatch — "the step reads the
+    /// full chain" as work, not as an input), so when the final chain node is a barrier the step's
+    /// input is that barrier's OWN input instance over (win ⊕ the barrier's pad); otherwise the
+    /// final value itself is instantiated.
     fn instantiate_chain(&mut self, w: usize, win: Rect) -> Vec<Cover> {
         let Some(&value) = self.chain_value_input(w) else {
             return Vec::new();
         };
+        if self.dag.nodes[value].op.is_barrier() {
+            let pad = f64::from(self.dag.nodes[value].pad);
+            if let Some(&below) = self.dag.nodes[value].inputs.first() {
+                return self.instantiate_value(below, vec![win.inflate(pad, pad)]);
+            }
+        }
         self.instantiate_value(value, vec![win])
     }
 
@@ -291,11 +298,30 @@ impl Ctx<'_> {
         self.out.pieces.iter().any(|p| p.node == node)
     }
 
+    /// Whether `v`'s read spine reaches a `Reload` (backdrop content) rather than a `Rasterize`
+    /// (scene-rooted content — a silhouette, whose off-frame value really ends and must neither
+    /// mint instances nor route; its taps keep fading per the op's own edge policy).
+    fn reload_rooted(&self, mut v: usize) -> bool {
+        loop {
+            match self.dag.nodes[v].op {
+                UnitOp::Reload => return true,
+                UnitOp::Rasterize(_) => return false,
+                _ => match self.dag.nodes[v].inputs.first() {
+                    Some(&j) => v = j,
+                    None => return false,
+                },
+            }
+        }
+    }
+
     /// Instance coverage for chain node `v` over `rects`. A `Reload` resolves to state coverage at
     /// the reading component's z; a `Rasterize` source is scene-rooted (the executor re-draws it
     /// with the piece offset) and needs no piece; any other node mints `Chain` instance pieces
     /// whose inputs are the instance coverage of its own inputs over the pad-extended window.
     fn instantiate_value(&mut self, v: usize, rects: Vec<Rect>) -> Vec<Cover> {
+        if !self.reload_rooted(v) {
+            return Vec::new();
+        }
         match self.dag.nodes[v].op {
             UnitOp::Reload => {
                 let top = self.state_top_of(v);
@@ -369,6 +395,7 @@ pub fn walk(dag: &mut FrameDag, frame: Rect) -> Walk {
             }
         }
     }
+    ctx.dag.reset_binding_index();
     ctx.out
 }
 
@@ -581,7 +608,10 @@ mod tests {
             .iter()
             .filter(|p| matches!(p.producer, Producer::Chain { .. }))
             .count();
-        assert!(chain_pieces >= 2, "instances for BOTH blur axes (X and Y), got {chain_pieces}");
+        assert!(
+            chain_pieces >= 1,
+            "the step reads the writer's X instance (V fuses into the step arm), got {chain_pieces}"
+        );
     }
 
     #[test]

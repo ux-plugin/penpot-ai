@@ -347,6 +347,9 @@ impl FrameDag {
         if matches!(dst.op, UnitOp::Copy) || matches!(src.op, UnitOp::Copy) {
             return Some(Barrier::Materialize);
         }
+        if matches!(src.source, Source::Region(_)) && matches!(dst.source, Source::Region(_)) {
+            return Some(Barrier::Materialize);
+        }
         // A FOLDED source ([`Self::folded_source`]) is produced by an in-frame dispatch whose
         // only output is the lease, so EVERY read of it needs that dispatch complete: one round
         // later, always — including the tiny-reach on-chip fusion the JIT sources used to allow.
@@ -457,6 +460,13 @@ impl FrameDag {
             }
     }
 
+    /// Drop the lazy binding index after structural appends from outside (the walk's piece
+    /// minting, finalize's transports) so the next [`Self::binding_shape`] query rebuilds it over
+    /// the grown node vector.
+    pub fn reset_binding_index(&mut self) {
+        self.bind_idx.take();
+    }
+
     /// Wire a region value into its reader: every `Reload` node of gather `gid` gains a read edge
     /// from `region_node`, so the schedule puts the region's write strictly before any round that
     /// can sample it. Reload inputs are structural (only the scheduler walks them), so the append
@@ -519,6 +529,9 @@ impl FrameDag {
     #[must_use]
     pub fn binding_shape(&self, i: usize) -> Option<BindingShape> {
         let n = &self.nodes[i];
+        if matches!(n.op, UnitOp::Copy) {
+            return None;
+        }
         let (mat_set, _) = self.bind_idx();
         let mat = mat_set[i];
         // The chain's root decides what `base_in` holds — a rasterized source texture, or the (reloaded)
