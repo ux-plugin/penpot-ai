@@ -140,7 +140,7 @@ pub fn bits_of(run: &[UnitOp]) -> u32 {
             UnitOp::Colour(_) => bits::TINT,
             UnitOp::ClipToSource(_) => bits::CLIP,
             UnitOp::EraseBy(_) => bits::ERASE,
-            UnitOp::Rasterize(_) | UnitOp::Reload | UnitOp::Compose { .. } => 0,
+            UnitOp::Rasterize(_) | UnitOp::Reload | UnitOp::Compose { .. } | UnitOp::Copy => 0,
         }
     })
 }

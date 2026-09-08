@@ -344,6 +344,9 @@ impl FrameDag {
         if dst.op == UnitOp::Reload {
             return Some(Barrier::Reload);
         }
+        if matches!(dst.op, UnitOp::Copy) || matches!(src.op, UnitOp::Copy) {
+            return Some(Barrier::Materialize);
+        }
         // A FOLDED source ([`Self::folded_source`]) is produced by an in-frame dispatch whose
         // only output is the lease, so EVERY read of it needs that dispatch complete: one round
         // later, always — including the tiny-reach on-chip fusion the JIT sources used to allow.
@@ -826,6 +829,42 @@ impl FrameDag {
         }
         let mut corder: Vec<usize> = (0..ncomp).collect();
         corder.sort_by_key(|&c| (u8::from(!is_region[c]), first[c]));
+        let nregion = corder.iter().take_while(|&&c| is_region[c]).count();
+        if nregion > 1 {
+            let regs: Vec<usize> = corder[..nregion].to_vec();
+            let rank: HashMap<usize, usize> = regs.iter().enumerate().map(|(r, &c)| (c, r)).collect();
+            let mut indeg = vec![0usize; regs.len()];
+            let mut outs: Vec<Vec<usize>> = vec![Vec::new(); regs.len()];
+            for (i, node) in self.nodes.iter().enumerate() {
+                let Some(&ci) = rank.get(&comp[i]) else { continue };
+                for &j in &node.inputs {
+                    if let Some(&cj) = rank.get(&comp[j]) {
+                        if ci != cj {
+                            outs[cj].push(ci);
+                            indeg[ci] += 1;
+                        }
+                    }
+                }
+            }
+            let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(usize, usize)>> = (0
+                ..regs.len())
+                .filter(|&r| indeg[r] == 0)
+                .map(|r| std::cmp::Reverse((first[regs[r]], r)))
+                .collect();
+            let mut topo = Vec::with_capacity(regs.len());
+            while let Some(std::cmp::Reverse((_, r))) = heap.pop() {
+                topo.push(regs[r]);
+                for &o in &outs[r] {
+                    indeg[o] -= 1;
+                    if indeg[o] == 0 {
+                        heap.push(std::cmp::Reverse((first[regs[o]], o)));
+                    }
+                }
+            }
+            if topo.len() == regs.len() {
+                corder[..nregion].copy_from_slice(&topo);
+            }
+        }
         let mut base = vec![0u32; ncomp];
         let mut load: Vec<u64> = Vec::new();
         let mut shape_at: HashMap<u32, BindingShape> = HashMap::new();

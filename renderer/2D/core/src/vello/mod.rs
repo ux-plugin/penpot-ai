@@ -41,3 +41,4 @@ pub mod svg;
 pub mod sink;
 pub mod text;
 pub mod walk;
+pub mod finalize;

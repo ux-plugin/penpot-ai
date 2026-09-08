@@ -119,6 +119,14 @@ pub enum UnitOp {
     /// (`Coverage` = a shadow silhouette, `Backdrop` = the page) — both stamped at build so `bake`
     /// serializes the op without re-deriving them from the graph.
     Blur { sigma: f32, linear: bool, axis: BlurAxis, edge: BlurEdge },
+    /// STRUCTURAL: the ONE transport node (piece-graph law 2). Domain, side, density and address
+    /// freedom in a single op — crop, combine, re-side, resample and preserve/snapshot are its
+    /// arms, distinguished only by the node's rect/inputs/lease data, never by a kind tag. The
+    /// node's `reach` is the destination window; its inputs are the source values assembled into
+    /// one contiguous lease. The executor lowers it from the lease formats (an acc-format
+    /// snapshot blit, an atlas-to-atlas draw); a ≤2:1 density crossing rides the consumer's
+    /// bilinear taps instead of materializing a rung.
+    Copy,
 }
 
 /// A composed pass's pipeline cache key. Named fields rather than a tuple: the composition grew
@@ -393,7 +401,10 @@ impl UnitOp {
     /// treats these as nodes but they never enter a fused fragment.
     #[must_use]
     pub fn is_structural(&self) -> bool {
-        matches!(self, UnitOp::Rasterize(_) | UnitOp::Reload | UnitOp::Compose { .. })
+        matches!(
+            self,
+            UnitOp::Rasterize(_) | UnitOp::Reload | UnitOp::Compose { .. } | UnitOp::Copy
+        )
     }
 
     /// A gather reads its input at coordinates other than its own pixel (a neighbourhood or a
