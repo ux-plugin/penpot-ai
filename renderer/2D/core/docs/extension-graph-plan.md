@@ -69,18 +69,15 @@ content piece nodes and per-reader route lists — and never mutates what exists
 
 Runs once, after the walk; inserts nodes but never re-plans the walk's cuts.
 
-1. **Density.** k is an operation, not an attribute. Every reader carries an authored
-   `Wish { ask, floor }` contract (k ∈ (0,1], 1 = full res, floor ≤ ask): **ask** = the
-   density it wants, **floor** = the coarsest it consents to. Both numbers belong to the
-   effect author (`acceptable_downscale`, default ask = floor = 1 — full res, no room
-   granted; declaring one number means ask = floor = it, the second number is opt-in
-   pressure tolerance); the planner never grants coarseness on its own and has no upward
-   authority.
-   Finalize picks each piece's k, downward only: start at the finest ask among its readers
-   (the ask is a ceiling — finer than asked is waste), slide under budget pressure while
-   respecting every reader's floor, and only when all floors are hit apply the last-resort
-   uniform √ squeeze below floors (hard floor 1/64 — coarse-but-correct beats the edge
-   clamp); under unified placement that squeeze is VRAM-only. `Resample{k}` nodes go on k-crossing edges; segments
+1. **Density.** k is an operation, not an attribute. Every reader carries ONE authored
+   number, its **ask** (`acceptable_downscale`, k ∈ (0,1], default 1 = full res): the
+   density it wants, a ceiling the planner never exceeds — finer than asked is waste, and
+   the planner never grants coarseness on its own. There is no authored floor: a per-effect
+   quality bound the emergency squeeze would breach anyway is a hint dressed as a promise.
+   Finalize picks each piece's k downward only: the finest ask among its readers; when the
+   byte budget doesn't fit, one uniform √ squeeze lowers every k proportionally below the
+   asks (hard floor 1/64 — coarse-but-correct beats the edge clamp; a piece is never
+   dropped); under unified placement the squeeze is VRAM-only. `Resample{k}` nodes go on k-crossing edges; segments
    between resamples are single-k, so mixed-k reads are impossible by construction. A ≤2:1
    resample fuses into consumer taps exactly (bilinear at the 2×2 block center is the box
    filter); deeper ratios materialize a halving ladder whose last rung fuses. The one
