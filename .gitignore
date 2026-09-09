@@ -100,3 +100,4 @@ renderer/2D/webgl-vello/dev/pkg/
 /zoetrope-editor/public/wasm-vello-gpu/
 
 /vello-gpu-renderer/target
+renderer/2D/webgpu-vello/.vello-proofs/
