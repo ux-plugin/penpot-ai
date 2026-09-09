@@ -133,6 +133,11 @@ fn helper_library(ps: &[FineProgram]) -> String {
 /// The texel stores `0.5 + d / decode`. This is `fine`'s [`FieldSource::Sampled`] — record 3 names
 /// the input register as the distance source, so it is one function, never a per-program fact.
 const SAMPLED_DISTANCE: &str = r#"#ifdef have_input
+#ifdef input_u32
+fn fx_fieldDistance_sampled(fc: vec2<f32>, decode: f32) -> f32 {
+    return 0.0;
+}
+#else
 fn fx_fieldDistance_sampled(fc: vec2<f32>, decode: f32) -> f32 {
     let fp = fc - vec2<f32>(0.5, 0.5);
     let fl = floor(fp);
@@ -145,6 +150,7 @@ fn fx_fieldDistance_sampled(fc: vec2<f32>, decode: f32) -> f32 {
     let texel = mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
     return (texel - 0.5) * decode;
 }
+#endif
 #endif
 "#;
 
@@ -256,13 +262,13 @@ mod tests {
     fn the_generated_section_is_valid_wgsl() {
         let body: String = fine_field_wgsl()
             .lines()
-            .scan(false, |skipping, l| {
-                let take = !*skipping && !l.starts_with("#ifdef");
-                if l.starts_with("#ifdef") {
-                    *skipping = true;
+            .scan(0usize, |depth, l| {
+                let take = *depth == 0 && !l.starts_with('#');
+                if l.starts_with("#ifdef") || l.starts_with("#ifndef") {
+                    *depth += 1;
                 }
                 if l.starts_with("#endif") {
-                    *skipping = false;
+                    *depth = depth.saturating_sub(1);
                 }
                 Some(take.then(|| format!("{l}\n")))
             })

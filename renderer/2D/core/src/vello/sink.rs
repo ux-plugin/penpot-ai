@@ -1326,7 +1326,7 @@ impl Sink {
             dag.reset_binding_index();
         }
         backend.set_frame_extent(width, acc_h);
-        let mut dag = dag;
+        let dag = dag;
         let scratch_budget = std::env::var("WV_SCRATCH_BUDGET_MB")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -1653,144 +1653,7 @@ impl Sink {
                 }
             }
         }
-        let mut store_layer: HashMap<usize, u8> = HashMap::new();
-        let mut store_rect: HashMap<usize, [f32; 4]> = HashMap::new();
-        {
-            let to_draft = |n: usize| {
-                dag.binding_shape(n).is_some_and(|sh| sh.to_draft && !sh.region_out)
-            };
-            let read_target = |node: usize| -> Option<usize> {
-                use crate::vello::units::UnitOp;
-                let mut cur = if matches!(dag.nodes[node].op, UnitOp::EraseBy(_)) {
-                    dag.nodes[node].inputs.get(1).copied()?
-                } else {
-                    dag.nodes[node].inputs.first().copied()?
-                };
-                loop {
-                    if to_draft(cur) {
-                        return Some(cur);
-                    }
-                    if matches!(dag.nodes[cur].op, UnitOp::Rasterize(_) | UnitOp::Reload)
-                        || dag.nodes[cur].writes_accumulator()
-                    {
-                        return None;
-                    }
-                    cur = dag.nodes[cur].inputs.first().copied()?;
-                }
-            };
-            let mat_reader = |n: usize| {
-                dag.binding_shape(n).is_some_and(|sh| sh.to_draft)
-            };
-            let mut readset: std::collections::HashSet<usize> = std::collections::HashSet::new();
-            for ms in marks.values() {
-                for m in ms {
-                    if !mat_reader(m.node) {
-                        continue;
-                    }
-                    if !matches!(dag.nodes[m.node].op, crate::vello::units::UnitOp::Rasterize(_)) {
-                        if let Some(e) = read_target(m.node) {
-                            readset.insert(e);
-                        }
-                    }
-                    if let Some(rz) = dag_base_rasterize(&dag, m.node).filter(|&rz| rz != m.node && to_draft(rz)) {
-                        readset.insert(rz);
-                    }
-                    if dag.nodes[m.node].op.is_head() {
-                        if let Some(&sd) = dag.nodes[m.node].inputs.get(1) {
-                            if to_draft(sd) {
-                                readset.insert(sd);
-                            }
-                        }
-                    }
-                }
-            }
-            let reach_of: HashMap<u128, [f32; 4]> =
-                gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
-            let mut draft_writers: Vec<(u128, usize, u32, [f32; 4])> = Vec::new();
-            for (&gid, ms) in &marks {
-                for m in ms {
-                    if rid_of.contains_key(&m.node) || store_of.contains_key(&m.node) {
-                        continue;
-                    }
-                    if readset.contains(&m.node) && to_draft(m.node) {
-                        draft_writers.push((gid, m.node, m.round, m.rect.unwrap_or(reach_of[&gid])));
-                    }
-                }
-            }
-            draft_writers.sort_unstable_by_key(|&(g, n, r, _)| (g, n, r));
-            draft_writers.dedup_by_key(|&mut (g, n, _, _)| (g, n));
-            #[cfg(not(target_arch = "wasm32"))]
-            if std::env::var("WV_DBG_STORES").is_ok() {
-                let all = marks
-                    .values()
-                    .flatten()
-                    .filter(|m| {
-                        !rid_of.contains_key(&m.node) && to_draft(m.node)
-                    })
-                    .map(|m| m.node)
-                    .collect::<std::collections::HashSet<_>>()
-                    .len();
-                eprintln!("WV_DBG_STORES: {} stores of {} draft writers", draft_writers.len(), all);
-            }
-            let mut by_round: std::collections::BTreeMap<u32, Vec<usize>> =
-                std::collections::BTreeMap::new();
-            for (i, &(_, _, round, _)) in draft_writers.iter().enumerate() {
-                by_round.entry(round).or_default().push(i);
-            }
-            let overlaps = |a: [f32; 4], b: [f32; 4]| {
-                a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
-            };
-            let mut layer_of: Vec<u8> = vec![0; draft_writers.len()];
-            for idxs in by_round.values() {
-                let mut layers: Vec<Vec<[f32; 4]>> = Vec::new();
-                for &i in idxs {
-                    let r = draft_writers[i].3;
-                    let l = layers
-                        .iter()
-                        .position(|rs| rs.iter().all(|&q| !overlaps(r, q)))
-                        .unwrap_or(layers.len());
-                    if l == layers.len() {
-                        layers.push(Vec::new());
-                    }
-                    layers[l].push(r);
-                    layer_of[i] = l.min(250) as u8;
-                }
-            }
-            for (i, (gid, w, round, _)) in draft_writers.iter().copied().enumerate() {
-                let sn = dag.nodes.len();
-                store_layer.insert(sn, layer_of[i]);
-                store_rect.insert(sn, draft_writers[i].3);
-                dag.nodes.push(crate::vello::frame_dag::Node {
-                    op: crate::vello::units::UnitOp::Copy,
-                    target: crate::vello::plan::Target::Store,
-                    source: dag.nodes[w].source.clone(),
-                    label: format!("store of {w}"),
-                    reach: None,
-                    pad: 0.0,
-                    inputs: vec![w],
-                });
-                store_of.insert(w, sn);
-                let mut desc = [0.0f32; 26];
-                desc[0] = crate::vello::bake::bits::RAW as f32;
-                marks.get_mut(&gid).expect("writer's gid holds marks").push(UnitMark {
-                    node: sn,
-                    round,
-                    desc,
-                    rec: [[0.0f32; 4]; 12],
-                    ctl: 0,
-                    masked: false,
-                    band: false,
-                    off: 0,
-                    rect: None,
-                    mark_shape: None,
-                    after: None,
-                });
-            }
-            dag.reset_binding_index();
-        }
         let dag = dag;
-        let writer_of: HashMap<usize, usize> =
-            store_of.iter().map(|(&w, &s)| (s, w)).collect();
         if let Some(f) = &fin {
             if !rid_of.is_empty() {
                 use crate::vello::region::{interval_shelf, IntervalRect};
@@ -2350,8 +2213,7 @@ impl Sink {
             let shape_front = |n: usize| {
                 dag.binding_shape(n).is_some_and(|s| {
                     s.to_draft
-                        && (!s.region_out
-                            || (writer_of.contains_key(&n) && !rid_of.contains_key(&n)))
+                        && !s.region_out
                         && s.base != Slot::Backdrop
                         && s.input != Slot::Backdrop
                 })
@@ -2395,24 +2257,17 @@ impl Sink {
                             } else {
                                 dag.nodes[m.node].inputs.first().copied()
                             };
-                            let bump = |c: usize, d: u8| {
-                                d.saturating_add(u8::from(
-                                    store_of.contains_key(&c)
-                                        && !rid_of.contains_key(&c)
-                                        && store_of.get(&c) != Some(&m.node),
-                                ))
-                            };
                             let dep = loop {
                                 let Some(c) = cur else { break None };
                                 if let Some(&k) = mark_at.get(&c) {
                                     if !is_fence(&ms[k])
                                         && dag.binding_shape(c).is_some_and(|s| s.to_draft)
                                     {
-                                        break depth_of.get(&c).map(|&d| bump(c, d));
+                                        break depth_of.get(&c).copied();
                                     }
                                 }
                                 if matches!(dag.nodes[c].op, crate::vello::units::UnitOp::Rasterize(_)) {
-                                    break if depth_of.contains_key(&c) { Some(bump(c, 0)) } else { None };
+                                    break if depth_of.contains_key(&c) { Some(0) } else { None };
                                 }
                                 if matches!(dag.nodes[c].op, crate::vello::units::UnitOp::Reload)
                                     || dag.nodes[c].writes_accumulator()
@@ -2489,42 +2344,13 @@ impl Sink {
                 let s = dag.binding_shape(n).expect("admitted marks have a shape");
                 (sk(s.base), sk(s.input), u8::from(s.draft_taps) | (u8::from(s.region_out) << 1))
             };
-            let overlaps = |a: [f32; 4], b: [f32; 4]| {
-                a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
-            };
-            let mut front_layer: HashMap<usize, u8> = HashMap::new();
-            {
-                let mut groups: std::collections::BTreeMap<(u8, (u8, u8, u8)), Vec<usize>> =
-                    std::collections::BTreeMap::new();
-                for &(n, d) in &admitted {
-                    if store_rect.contains_key(&n) {
-                        groups.entry((d, class_of(n))).or_default().push(n);
-                    }
-                }
-                for ns in groups.values() {
-                    let mut layers: Vec<Vec<[f32; 4]>> = Vec::new();
-                    for &n in ns {
-                        let r = store_rect[&n];
-                        let l = layers
-                            .iter()
-                            .position(|rs| rs.iter().all(|&q| !overlaps(r, q)))
-                            .unwrap_or(layers.len());
-                        if l == layers.len() {
-                            layers.push(Vec::new());
-                        }
-                        layers[l].push(r);
-                        front_layer.insert(n, l.min(250) as u8);
-                    }
-                }
-            }
-            let lay = |n: usize| front_layer.get(&n).copied().unwrap_or(0);
-            let mut keys: Vec<(u8, (u8, u8, u8), u8)> =
-                admitted.iter().map(|&(n, d)| (d, class_of(n), lay(n))).collect();
+            let mut keys: Vec<(u8, (u8, u8, u8))> =
+                admitted.iter().map(|&(n, d)| (d, class_of(n))).collect();
             keys.sort_unstable();
             keys.dedup();
-            let rank: HashMap<(u8, (u8, u8, u8), u8), u32> =
+            let rank: HashMap<(u8, (u8, u8, u8)), u32> =
                 keys.iter().enumerate().map(|(i, &k)| (k, i as u32)).collect();
-            admitted.into_iter().map(|(n, d)| (n, rank[&(d, class_of(n), lay(n))])).collect()
+            admitted.into_iter().map(|(n, d)| (n, rank[&(d, class_of(n))])).collect()
         } else {
             HashMap::new()
         };
@@ -2547,9 +2373,6 @@ impl Sink {
         let mark_key = |m: &UnitMark, ms: &[UnitMark]| -> (i64, u8) {
             if let Some(&r) = front.get(&m.node) {
                 return (i64::MIN + i64::from(r), 0);
-            }
-            if writer_of.contains_key(&m.node) && !rid_of.contains_key(&m.node) {
-                return (i64::from(m.round), 3 + store_layer.get(&m.node).copied().unwrap_or(0));
             }
             if dag.binding_shape(m.node).is_some_and(|s| s.region_out) {
                 return (i64::from(m.round), 2);
@@ -2750,6 +2573,84 @@ impl Sink {
                     draft_placed.insert(node);
                     draft_atlas_h = draft_atlas_h.max(ay + items[k].h);
                 }
+                let reads_of = |r: usize| -> Vec<usize> {
+                    let mut out = Vec::new();
+                    if let Some(e) = read_input(r) {
+                        out.push(e);
+                    }
+                    if let Some(e) = dag_base_rasterize(&dag, r).filter(|e| leased.contains(e) && *e != r) {
+                        out.push(e);
+                    }
+                    if dag.nodes[r].op.is_head() {
+                        if let Some(&sd) = dag.nodes[r].inputs.get(1) {
+                            if leased.contains(&sd) {
+                                out.push(sd);
+                            }
+                        }
+                    }
+                    out
+                };
+                let round_of: HashMap<usize, u32> = lives
+                    .iter()
+                    .zip(&jobs)
+                    .map(|(l, &(node, _, _))| (node, l.birth))
+                    .collect();
+                let draft_readers: Vec<usize> = {
+                    let mut v: Vec<usize> = marks
+                        .values()
+                        .flatten()
+                        .map(|m| m.node)
+                        .filter(|&n| {
+                            dag.binding_shape(n).is_some_and(|s| s.to_draft && !s.region_out)
+                        })
+                        .collect();
+                    v.sort_unstable();
+                    v.dedup();
+                    v
+                };
+                loop {
+                    let mut evict: Vec<usize> = Vec::new();
+                    for &r in &draft_readers {
+                        let r_placed = draft_placed.contains(&r);
+                        for e in reads_of(r) {
+                            if draft_placed.contains(&e) && !r_placed && leased.contains(&r) {
+                                evict.push(e);
+                            }
+                            if r_placed && leased.contains(&e) && !draft_placed.contains(&e) {
+                                evict.push(r);
+                            }
+                        }
+                    }
+                    evict.sort_unstable();
+                    evict.dedup();
+                    evict.retain(|n| draft_placed.contains(n));
+                    if evict.is_empty() {
+                        break;
+                    }
+                    let rounds: std::collections::HashSet<u32> =
+                        evict.iter().filter_map(|n| round_of.get(n).copied()).collect();
+                    let group: Vec<usize> = draft_placed
+                        .iter()
+                        .copied()
+                        .filter(|n| round_of.get(n).is_some_and(|r| rounds.contains(r)))
+                        .collect();
+                    for n in group {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if std::env::var("WV_DBG_ALLOC").is_ok() {
+                            eprintln!("WV_DBG_ALLOC evict: node={n} (capacity cascade, whole round)");
+                        }
+                        draft_placed.remove(&n);
+                        origin.remove(&n);
+                    }
+                }
+                draft_atlas_h = 0;
+                for (k, pos) in placed.iter().enumerate() {
+                    if let Some([_, ly]) = *pos {
+                        if draft_placed.contains(&jobs[k].0) {
+                            draft_atlas_h = draft_atlas_h.max(base_h + ly + items[k].h);
+                        }
+                    }
+                }
                 let lease_rect: HashMap<usize, [f32; 4]> = lives
                     .iter()
                     .zip(&jobs)
@@ -2778,9 +2679,12 @@ impl Sink {
                             m.rec[0][2] = oy;
                             m.rec[0][3] = extent[&e].0;
                             m.rec[2][3] = extent[&e].1;
+                            let lr = lease_rect[&e];
+                            m.rec[1] = [lr[0] - ox, lr[1] - oy, lr[2] - ox, lr[3] - oy];
                             if m.rec[2][0] == 2.0 {
                                 m.rec[2][1] = ox;
                                 m.rec[2][2] = oy;
+                                m.rec[3] = m.rec[1];
                             }
                         }
                         if (m.desc[0] as u32) & crate::vello::bake::bits::FLOOD_ERASE != 0 {
@@ -2789,17 +2693,6 @@ impl Sink {
                             {
                                 m.desc[10] -= ox;
                                 m.desc[11] -= oy;
-                            }
-                        }
-                        if let Some(&w) = writer_of.get(&m.node).filter(|_| !rid_of.contains_key(&m.node)) {
-                            match origin.get(&w) {
-                                Some(&(ox, oy)) => {
-                                    m.rec[8] = [1.0, ox, oy, 0.0];
-                                    m.rect = lease_rect.get(&w).copied();
-                                }
-                                None => {
-                                    m.rec[8] = [1.0, 1.0e9, 1.0e9, 0.0];
-                                }
                             }
                         }
                     }
@@ -3118,10 +3011,11 @@ impl Sink {
                 device,
                 8192,
                 h,
-                format,
+                wgpu::TextureFormat::R32Uint,
                 wgpu::TextureUsages::STORAGE_BINDING
                     | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC,
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
                 "wv region back",
             )
         });
@@ -3367,7 +3261,6 @@ impl Sink {
                     && round_nodes.get(&lo).is_none_or(|nodes| {
                         !dag.binding_shape(nodes[0]).is_some_and(|shp| shp.to_draft)
                             || draft_placed.contains(&nodes[0])
-                            || writer_of.get(&nodes[0]).is_some_and(|w| draft_placed.contains(w))
                     });
                 let mut tiles: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
                 let mut tbits: Vec<u64> = vec![0; words];
@@ -3403,7 +3296,7 @@ impl Sink {
                                         let kind = if shp.draft_taps { 2u8 } else { 1u8 };
                                         read_edge_of(&dag, shp, rep)
                                             .filter(|e| draft_placed.contains(e))
-                                            .map(|e| (kind, i64::from(!store_of.contains_key(&e))))
+                                            .map(|_| (kind, 0i64))
                                     }
                                     Slot::Backdrop => None,
                                 },
@@ -3632,11 +3525,7 @@ impl Sink {
                 if round_nodes.get(&window_lo).is_some_and(|nodes| {
                     dag.binding_shape(nodes[0]).is_some_and(|shp| {
                         shp.region_out && shp.base == crate::vello::frame_dag::Slot::Source
-                    }) && (region_atlas.is_none()
-                        || nodes.iter().all(|n| {
-                            !rid_of.contains_key(n)
-                                && writer_of.get(n).is_some_and(|w| !draft_placed.contains(w))
-                        }))
+                    }) && region_atlas.is_none()
                 }) {
                     window_lo = r;
                     continue;
@@ -3697,7 +3586,7 @@ impl Sink {
                             if shp.base == Slot::Source {
                                 match (region_atlas.clone(), region_back.clone()) {
                                     (Some(av), Some(bv)) => {
-                                        backend.phased_fine_segment(device, queue, &mut enc, window_lo, hi, Some(&bv), &av);
+                                        backend.phased_fine_segment_loadu_store(device, queue, &mut enc, window_lo, hi, &bv, &av);
                                         av
                                     }
                                     _ => acquire(),
@@ -3707,22 +3596,31 @@ impl Sink {
                                     .clone()
                                     .expect("a region round scheduled without a region atlas");
                                 if shp.base == Slot::None {
-                                    backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &bv);
+                                    backend.phased_fine_segment_stg(device, queue, &mut enc, window_lo, hi, &bv);
                                 } else {
-                                    backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, None, &bv);
+                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, None, &bv);
                                 }
                                 bv
                             }
                         } else {
+                        let placed = draft_placed.contains(&rep);
                         match (shp.base, shp.input) {
                             (Slot::None, Slot::None) => {
                                 let dv = draft_target(backend, rep);
-                                backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &dv);
+                                if placed {
+                                    backend.phased_fine_segment_stg(device, queue, &mut enc, window_lo, hi, &dv);
+                                } else {
+                                    backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &dv);
+                                }
                                 dv
                             }
                             (Slot::Backdrop, Slot::None) => {
                                 let dv = draft_target(backend, rep);
-                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, None, &dv);
+                                if placed {
+                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, None, &dv);
+                                } else {
+                                    backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, None, &dv);
+                                }
                                 dv
                             }
                             (Slot::Backdrop, Slot::Source) => {
@@ -3731,38 +3629,50 @@ impl Sink {
                                     .expect("SDF baked for the round")
                                     .clone();
                                 let dv = draft_target(backend, rep);
-                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, Some((false, &src)), &dv);
+                                if placed {
+                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, Some(&src), &dv);
+                                } else {
+                                    backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, Some((false, &src)), &dv);
+                                }
                                 dv
                             }
                             (Slot::Source, Slot::Source) => {
-                                let sil = read_edge(rep)
-                                    .and_then(|e| node_scratch.get(&e))
-                                    .expect("source co-located for the round")
-                                    .clone();
                                 let dv = draft_target(backend, rep);
-                                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &sil, &sil, &dv);
+                                if placed {
+                                    backend.phased_fine_segment_stg_chain(device, queue, &mut enc, window_lo, hi, false, &acc, &dv);
+                                } else {
+                                    let sil = read_edge(rep)
+                                        .and_then(|e| node_scratch.get(&e))
+                                        .expect("source co-located for the round")
+                                        .clone();
+                                    backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &sil, &sil, &dv);
+                                }
                                 dv
                             }
                             (_, Slot::Draft(_)) => {
-                                let src = read_edge(rep)
-                                    .and_then(|e| node_scratch.get(&e))
-                                    .expect("draft aliased for the round")
-                                    .clone();
                                 let dv = draft_target(backend, rep);
-                                match shp.base {
-                                    Slot::Source | Slot::Draft(2) => {
-                                        let base = dag_base_rasterize(&dag, rep)
-                                            .and_then(|rz| node_scratch.get(&rz))
-                                            .cloned()
-                                            .expect("materialize base bound");
-                                        if shp.draft_taps {
-                                            backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, hi, &base, &src, &dv);
-                                        } else {
-                                            backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &base, &src, &dv);
+                                if placed {
+                                    backend.phased_fine_segment_stg_chain(device, queue, &mut enc, window_lo, hi, shp.draft_taps, &acc, &dv);
+                                } else {
+                                    let src = read_edge(rep)
+                                        .and_then(|e| node_scratch.get(&e))
+                                        .expect("draft aliased for the round")
+                                        .clone();
+                                    match shp.base {
+                                        Slot::Source | Slot::Draft(2) => {
+                                            let base = dag_base_rasterize(&dag, rep)
+                                                .and_then(|rz| node_scratch.get(&rz))
+                                                .cloned()
+                                                .expect("materialize base bound");
+                                            if shp.draft_taps {
+                                                backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, hi, &base, &src, &dv);
+                                            } else {
+                                                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &base, &src, &dv);
+                                            }
                                         }
-                                    }
-                                    _ => {
-                                        backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, Some((shp.draft_taps, &src)), &dv);
+                                        _ => {
+                                            backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, Some((shp.draft_taps, &src)), &dv);
+                                        }
                                     }
                                 }
                                 dv
@@ -3772,29 +3682,20 @@ impl Sink {
                         };
                         for &n in unit_nodes {
                             node_scratch.insert(n, dv.clone());
-                            if let Some(&w) = writer_of.get(&n).filter(|_| !rid_of.contains_key(&n)) {
-                                if draft_placed.contains(&w) {
-                                    node_scratch.insert(w, dv.clone());
-                                }
-                            }
                         }
                     } else {
                         debug_assert!(seeded, "a composite window runs after the base window seeded the accumulator");
                         let src;
                         let slot10 = match shp.input {
                             Slot::Draft(_) if shp.draft_taps => {
-                                src = read_edge(rep)
-                                    .and_then(|e| node_scratch.get(&e))
-                                    .expect("draft aliased for the round")
-                                    .clone();
-                                Some((true, &src))
+                                let e = read_edge(rep).expect("draft aliased for the round");
+                                src = node_scratch.get(&e).expect("draft aliased for the round").clone();
+                                Some((true, draft_placed.contains(&e), &src))
                             }
                             Slot::Draft(_) | Slot::Source => {
-                                src = read_edge(rep)
-                                    .and_then(|e| node_scratch.get(&e))
-                                    .expect("slot-10 source bound")
-                                    .clone();
-                                Some((false, &src))
+                                let e = read_edge(rep).expect("slot-10 source bound");
+                                src = node_scratch.get(&e).expect("slot-10 source bound").clone();
+                                Some((false, draft_placed.contains(&e), &src))
                             }
                             Slot::None => None,
                             other => panic!("unit dispatch: unexpected composite input {other:?}"),

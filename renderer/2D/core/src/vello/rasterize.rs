@@ -312,7 +312,8 @@ pub trait RasterBackend {
     /// `target` is read-modified-written per own pixel — an untouched tile keeps its pixels, so a
     /// sparse window costs only its listed tiles. `snap` is the round's packed backdrop SNAPSHOT
     /// (the accumulator is never bound readable — see the sink's snapshot blits); `slot10` is
-    /// `Some((is_draft, view))` for a chained input or blur draft. Classic-only; default panics.
+    /// `Some((is_draft, packed, view))` for a chained input or blur draft — `packed` marks an
+    /// r32uint staging lease instead of an rgba8 draft. Classic-only; default panics.
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
     fn phased_fine_segment_rwu(
         &mut self,
@@ -322,7 +323,7 @@ pub trait RasterBackend {
         _seg_lo: u32,
         _seg_target: u32,
         _snap: &wgpu::TextureView,
-        _slot10: Option<(bool, &wgpu::TextureView)>,
+        _slot10: Option<(bool, bool, &wgpu::TextureView)>,
         _target: &wgpu::TextureView,
     ) {
         unimplemented!("phased session is classic-only")
@@ -341,6 +342,74 @@ pub trait RasterBackend {
         _seg_target: u32,
         _snap: &wgpu::TextureView,
         _slot10: Option<(bool, &wgpu::TextureView)>,
+        _out: &wgpu::TextureView,
+    ) {
+        unimplemented!("phased session is classic-only")
+    }
+
+    /// Dispatch the region STORE window (`fine_area_loadu_store`): `base` is the packed staging
+    /// store read at the store mark's lease, `out` the region atlas — the atlas is never bound as
+    /// the route atlas in this window. Classic-only; default panics.
+    fn phased_fine_segment_loadu_store(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _enc: &mut wgpu::CommandEncoder,
+        _seg_lo: u32,
+        _seg_target: u32,
+        _base: &wgpu::TextureView,
+        _out: &wgpu::TextureView,
+    ) {
+        unimplemented!("phased session is classic-only")
+    }
+
+    /// Dispatch a RASTERIZE window into the packed r32uint staging store (`fine_area_stg`):
+    /// transparent init, stores land packed at their OUTPUT-record leases. Classic-only; default
+    /// panics.
+    fn phased_fine_segment_stg(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _enc: &mut wgpu::CommandEncoder,
+        _seg_lo: u32,
+        _seg_target: u32,
+        _out: &wgpu::TextureView,
+    ) {
+        unimplemented!("phased session is classic-only")
+    }
+
+    /// Dispatch a backdrop MATERIALIZE window into the packed staging store (`fine_area_stg_load*`):
+    /// `base` is the packed accumulator bound read-only (no snapshot needed — the window never
+    /// writes it), `sdf` an optional sampled field texture, `out` the r32uint staging store that
+    /// also serves the window's value reads. Classic-only; default panics.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    fn phased_fine_segment_stg_load(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _enc: &mut wgpu::CommandEncoder,
+        _seg_lo: u32,
+        _seg_target: u32,
+        _base: &wgpu::TextureView,
+        _sdf: Option<&wgpu::TextureView>,
+        _out: &wgpu::TextureView,
+    ) {
+        unimplemented!("phased session is classic-only")
+    }
+
+    /// Dispatch a CHAIN materialize window (`fine_area_stg_chain*`): taps and output ride the
+    /// packed staging store, `base` is the packed accumulator bound read-only (backdrop-edge taps
+    /// and orig) — `is_draft` selects the separable-blur tap arm. Classic-only; default panics.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    fn phased_fine_segment_stg_chain(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _enc: &mut wgpu::CommandEncoder,
+        _seg_lo: u32,
+        _seg_target: u32,
+        _is_draft: bool,
+        _base: &wgpu::TextureView,
         _out: &wgpu::TextureView,
     ) {
         unimplemented!("phased session is classic-only")
