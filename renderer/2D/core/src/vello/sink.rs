@@ -2211,13 +2211,16 @@ impl Sink {
             use crate::vello::frame_dag::Slot;
             let shape_front = |n: usize| {
                 dag.binding_shape(n).is_some_and(|s| {
-                    s.to_draft && s.base != Slot::Backdrop && s.input != Slot::Backdrop
+                    s.to_draft && !s.region_out && s.base != Slot::Backdrop && s.input != Slot::Backdrop
                 })
             };
             let mut depth_of: HashMap<usize, u8> = HashMap::new();
             for ms in marks.values() {
                 for m in ms {
-                    if is_fence(m) && dag.nodes[m.node].inputs.is_empty() {
+                    if is_fence(m)
+                        && dag.nodes[m.node].inputs.is_empty()
+                        && !dag.binding_shape(m.node).is_some_and(|s| s.region_out)
+                    {
                         depth_of.insert(m.node, 0);
                     }
                 }
@@ -2367,6 +2370,9 @@ impl Sink {
             if let Some(&r) = front.get(&m.node) {
                 return (i64::MIN + i64::from(r), 0);
             }
+            if dag.binding_shape(m.node).is_some_and(|s| s.region_out) {
+                return (i64::from(m.round), 2);
+            }
             if is_body(m) { body_key(m, ms) } else { (i64::from(m.round), 0) }
         };
         let mut round_keys: std::collections::BTreeSet<(i64, u8)> = std::collections::BTreeSet::new();
@@ -2385,6 +2391,7 @@ impl Sink {
                     m.round += 1;
                 }
             }
+            ms.sort_by_key(|m| m.round);
         }
         let front_end: u32 = marks
             .values()
