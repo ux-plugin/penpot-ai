@@ -57,8 +57,6 @@ fn main() {
     let glasses = if every > 0 { (effects + 4) / 5 } else { 0 };
     println!("wv motion bench: {n} shapes, {effects} effects (~{glasses} stack glasses), {w}x{h}, {frames} frames/config");
 
-    // A smooth zoom/pan path: the view breathes (zoom in and out) while panning in a small orbit, so
-    // every frame presents a different viewport → the DAG re-fills its device uniforms each frame.
     let view_at = |i: u32| {
         let t = i as f32 / frames.max(1) as f32 * std::f32::consts::TAU;
         let zoom = base_zoom * (1.0 + 0.35 * (t).sin());
@@ -83,9 +81,6 @@ fn main() {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        // Warm up (pipeline/atlas creation + pool growth to steady state), excluded from the timing.
-        // The first few frames allocate every scratch/atlas the frame needs; 3 was too few (the first
-        // TIMED frame was a >1s outlier that skewed the mean), so warm generously.
         for i in 0..10 {
             let (z, px, py) = view_at(i);
             render_core::vello::abi::set_view(z, px, py);

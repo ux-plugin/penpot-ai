@@ -856,8 +856,6 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
                 return;
             }
             scene.set_transform(matrix);
-            // Untinted, the silhouette is pure coverage — a Tint unit colours it later, so shadows
-            // that differ only in colour can share one rasterisation.
             scene.set_paint(if tinted { s.color } else { vello_common::color::palette::css::WHITE });
             let path = if s.spread > 0.0 {
                 render_core::geometry::spread_outline(node, f64::from(s.spread))
@@ -895,12 +893,6 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
             return;
         }
         let params = [f32::from_bits(seg_after), f32::from_bits(round), f32::from_bits(p2), f32::from_bits(atomic_ctl)];
-        // An INLINE effect (effects-in-fine) encodes the node's real silhouette as its shape, so
-        // coarse emits that coverage into `area[i]` and fine confines the effect to it. A barrier
-        // effect encodes the reach rect: it only needs to bin the z-boundary into its reach tiles.
-        // A DILATED inline effect (101) is still inline in the shader (>= 100) but rasterises its
-        // coverage over the reach rect — the separable blur's H pass, which must write its draft past
-        // the silhouette so the V pass's taps stay on H-blurred pixels.
         if effect_id == 101 {
             scene.draw_effect(Affine::IDENTITY, &r, effect_id, params);
         } else if effect_id >= 100 {
@@ -908,11 +900,6 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
                 if let Some(node) = model.get(id) {
                     let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
                     let matrix = transform * viewport * modifier * node.effective_transform();
-                    // A masked marker's silhouette may overhang below the frame into region
-                    // grid rows — harmlessly: region windows run the EARLIEST rounds (front,
-                    // class-separated), so a stray frame marker on a band tile is out of every
-                    // region window (no execution, no store claim), and it sits later in the
-                    // stream than the region's own fence + draws (no walk break before them).
                     scene.draw_effect(matrix, &render_core::geometry::outline(node), effect_id, params);
                 }
             });

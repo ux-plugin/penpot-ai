@@ -133,8 +133,6 @@ impl VelloTileStore {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: self.format,
-            // RENDER_ATTACHMENT to render into it, TEXTURE_BINDING so the Compositor can sample its
-            // centre when *drawing* it onto the surface (WebGL2 has no copy-to-surface path).
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -160,22 +158,9 @@ impl VelloTileStore {
         width: u32,
         height: u32,
     ) {
-        // The scene applies the host viewport on top of the `root` we pass (`root * viewport`), so
-        // when the app drives, `root` is identity and the real pan/zoom lives in the viewport. Tile
-        // geometry must use that full page→device transform, not the bare `root`.
-        // Slice 1 tiles plain content only. Spatial effects (blur/shadow) are grid-sensitive under
-        // the fork's decimated blur and seam when run per-tile, so they are gated off here and will
-        // return through their own `extrect`-anchored composited surfaces.
-        // The scheduler path: render-core builds the schedule from the live model; the sink
-        // executes it on the GPU. Falls through to the whole-scene path when off or when there is no
-        // live model (the demo scenes).
         if crate::abi::scheduler() {
             let has_scene = crate::abi::with_scene(|live, _, _| !live.is_empty());
             if has_scene {
-                // The sink owns the cross-frame tile cache, so bring it up first, then let it plan
-                // which visible tiles are dirty this frame (a pan → only the newly-exposed strip; an
-                // edit/zoom → all of them). Build the schedule for *just* those, execute, and the sink
-                // blits the reused tiles from cache.
                 if self.sink.is_none() {
                     self.sink = Some(crate::sink::Sink::new(device, self.format));
                 }
@@ -187,14 +172,10 @@ impl VelloTileStore {
 
                 let _tb = crate::prof::now();
                 let schedule = crate::abi::with_scene(|live, viewport, modifiers| {
-                    // `None` = no spatial-index fast path (this hybrid path predates it); the walk falls
-                    // back to visiting every root, which is correct — just O(shapes) instead of O(k).
                     render_core::schedule::build_visible(live, root * viewport, modifiers, &dirty_set, None)
                 });
                 crate::prof::add_build(crate::prof::now() - _tb);
 
-                // Wrap the frame's concrete renderer + scene source as the hybrid `RasterBackend`; the
-                // sink itself is generic over the backend seam (build + rasterize) and holds neither.
                 let mut backend =
                     crate::hybrid_backend::HybridBackend { renderer, scene_source };
                 sink.execute(
@@ -206,8 +187,6 @@ impl VelloTileStore {
 
         crate::scene::set_effects_enabled(crate::abi::tile_effects());
 
-        // Diagnostic bypass: draw the whole scene in one pass to the surface, no tiling. Lets the
-        // harness compare an artifact with and without the tile buffer path.
         if crate::abi::tiling_bypass() {
             let mut whole = Scene::new(width as u16, height as u16);
             scene_source.render(&mut whole, root);
@@ -238,10 +217,6 @@ impl VelloTileStore {
             return;
         }
 
-        // A scale change invalidates every cached tile — the 1:1 composite is only correct at the
-        // scale a tile was rendered at (see the module doc). Recycle the buffers rather than drop
-        // them: a zoom re-renders a whole screen next, so reusing the freed textures avoids
-        // reallocating. A pure pan leaves `scale` bit-identical, so this keeps the cache intact.
         if self.cached_scale != Some(scale) {
             for (_, tile) in self.cache.drain() {
                 self.free.push(tile.buffer);
@@ -257,14 +232,6 @@ impl VelloTileStore {
             height: TILE_BUFFER,
         };
 
-        // Pass 1: reuse cached tiles, rasterize only the misses. Each miss renders into its own
-        // buffer, placed by `offset * root` (the scene re-appends the viewport, so the effective
-        // transform is `offset * full_view`), on its **own** encoder submitted before the next.
-        // `Renderer` uploads a frame's strip/alpha/paint data into shared GPU buffers
-        // (`programs.prepare` via the queue), so batching several tile renders onto one submit
-        // would let each tile's upload overwrite the previous before the GPU ran its draws — every
-        // tile would then sample the last tile's buffers (the stroke-teeth corruption the harness
-        // reproduced). One submit per tile keeps each render's uploads paired with its own draws.
         let mut rendered = 0u32;
         let mut reused = 0u32;
         for &key in &tiles {
@@ -296,16 +263,8 @@ impl VelloTileStore {
             self.cache.insert(key, CachedTile { buffer, last_used: frame });
             rendered += 1;
         }
-        // A hard, machine-readable proof of reuse: on a pan `rendered` is just the new strip and
-        // `reused` is the rest; on a zoom every tile is a miss. Read via `_last_tile_stats`.
         crate::abi::set_tile_stats(rendered, reused);
 
-        // Pass 2: composite each visible tile's centre [`TILE_SIZE`] square onto the surface at its
-        // device origin, clipped to the surface, with a premultiplied-SrcOver *draw* (the Compositor)
-        // rather than a texture copy — WebGL2 surfaces are COLOR_TARGET only and reject a copy.
-        // The centres tile the viewport contiguously (every pixel covered by exactly one tile), so we
-        // clear once to transparent then blit each: over a zero destination `SrcOver` reduces to
-        // `out = src`, making this pixel-identical to the old copy.
         if self.compositor.is_none() {
             self.compositor = Some(crate::blend::Compositor::new(device, self.format));
         }
@@ -340,7 +299,6 @@ impl VelloTileStore {
         }
         queue.submit([encoder.finish()]);
 
-        // Evict LRU tiles beyond the budget, always keeping the currently-visible ones.
         self.evict(&tiles);
     }
 
@@ -403,7 +361,6 @@ impl TileBlit {
             return None;
         }
         Some(Self {
-            // The centre square starts at (margin, margin) in the buffer; shift by the clip amount.
             src_x: (margin + (dst_x0 - ox)) as u32,
             src_y: (margin + (dst_y0 - oy)) as u32,
             dst_x: dst_x0 as u32,

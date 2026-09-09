@@ -221,14 +221,14 @@ pub fn blur_arm(sigma: f32, linear: bool, axis_y: bool, policy: Policy, tint: Op
         | if policy.raw { bits::RAW } else { 0 }
         | if policy.colour_over { bits::COLOUR_OVER } else { 0 }
         | if policy.value_over { bits::VALUE_OVER } else { 0 }) as f32;
-    d[2] = f32::from(!axis_y); // u[0].x
-    d[3] = f32::from(axis_y); // u[0].y
-    d[4] = sigma; // u[0].z = device sigma
+    d[2] = f32::from(!axis_y);
+    d[3] = f32::from(axis_y);
+    d[4] = sigma;
     d[5] = if sigma > BLUR_STRIDE_SIGMA { (sigma / BLUR_STRIDE_DIV).floor().max(1.0) } else { 1.0 };
     d[PAYLOAD_BLUR_SRGB_SLOT] = f32::from(!linear);
     d[PAYLOAD_BLUR_EDGE_SLOT] = f32::from(policy.edge_coverage);
     if let Some([r, g, b, a]) = tint {
-        d[14] = r; // u[3] = straight spread colour
+        d[14] = r;
         d[15] = g;
         d[16] = b;
         d[17] = a;
@@ -381,14 +381,11 @@ mod tests {
     /// baked soft-drop shadow arms (`wv_shadow_plan`'s H = 2624, V = 2240 + straight colour).
     #[test]
     fn blur_arm_reproduces_both_conventions() {
-        // fx_fine background blur: two plain-BLUR axis passes, linear, no policy, no colour.
         let h = blur_arm(3.0, true, false, Policy::default(), None);
         let v = blur_arm(3.0, true, true, Policy::default(), None);
         assert_eq!([h[0], h[2], h[3], h[4]], [64.0, 1.0, 0.0, 3.0], "H = BLUR, axis X, sigma");
         assert_eq!([v[0], v[2], v[3], v[4]], [64.0, 0.0, 1.0, 3.0], "V = BLUR, axis Y, sigma");
 
-        // Soft-drop shadow: linear silhouette blur, H materializes a draft, V spreads the colour under
-        // the body — both SHADOW_EDGE. Byte-identical to wv_shadow_plan's hand-built descriptors.
         let colour = [0.1, 0.2, 0.3, 0.8];
         let sh = blur_arm(6.0, true, false, Policy { raw: true, edge_coverage: true, ..Policy::default() }, None);
         let sv = blur_arm(6.0, true, true, Policy { colour_over: true, edge_coverage: true, ..Policy::default() }, Some(colour));
@@ -459,17 +456,14 @@ mod tests {
                 })
                 .expect("the lens chain has this unit")
         };
-        // Sharp glass drops the identity scatter, so the fused arm is warp + shade + mask-mix.
         let run = vec![UnitOp::Warp(u_of(UnitKind::Warp)), UnitOp::Shade(u_of(UnitKind::Shade)), UnitOp::MaskMix(u_of(UnitKind::MaskMix))];
         let d = arm_descriptor(&run, Policy::default(), None);
 
-        // The exact bytes the current path builds: d[0]=56, d[1]=1 (lens), d[2..26]=units_uniform.
         let mut want = [0.0f32; 26];
         want[0] = 56.0;
         want[1] = PROGRAM_ROUNDED_BOX;
         want[2..26].copy_from_slice(&crate::vello::units::units_uniform(&run));
         assert_eq!(d, want, "arm_descriptor reproduces the shipping sharp-glass descriptor");
-        // And the uniform is real geometry, not zeros — the device field made it through.
         assert!(d[2] > 0.0 && d[3] > 0.0, "backdrop resolution in slots 0/1 of the uniform");
     }
 }

@@ -34,13 +34,6 @@ impl RasterBackend for HybridBackend<'_> {
         Scene::new(width, height)
     }
 
-    // Layer blur goes through the sink's `run_graph` Gaussian for BOTH backends now (`false` = "let
-    // the sink blur it"). Hybrid used to blur inline via vello_hybrid's filter, but that filter is
-    // *decimated* (downsample → blur → upsample) and spreads ~2x wider than the sink's
-    // full-resolution Gaussian at the same sigma, so the two backends disagreed (a #3b82f6 layer
-    // blur measured ~13px falloff on hybrid vs ~6px on classic). `scene.rs` no longer pushes an
-    // inline blur filter for `node.blur`, so the effect surface arrives sharp and the sink blurs it
-    // once — identically to classic.
     fn blurs_layer_inline(&self) -> bool {
         false
     }
@@ -68,14 +61,10 @@ impl RasterBackend for HybridBackend<'_> {
         target: &wgpu::TextureView,
         width: u32,
         height: u32,
-        // Hybrid's `render` always clears to transparent, which is exactly what every sink surface
-        // wants; the neutral `base_color` is honored by the classic backend, not needed here.
         _base_color: Color,
     ) {
         let size = RenderSize { width, height };
         let _trd = crate::prof::now();
-        // Already encoder-taking, so recording into the sink's frame encoder is the whole change —
-        // the submit that used to follow now happens once per frame, in the sink.
         let res = self.renderer.render(
             scene,
             self.scene_source.resources_mut(),

@@ -273,12 +273,8 @@ fn round_up_pow2(n: u32) -> u32 {
 #[must_use]
 pub fn pack(items: &[LiveRect]) -> Vec<Lease> {
     use std::collections::HashMap;
-    // Process births in order so a slot's stored occupant is always the latest-born; a slot is free for
-    // a new value iff that occupant died STRICTLY before this birth (equal rounds share a dispatch — no
-    // barrier between them, so no safe reuse).
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_by_key(|&i| (items[i].birth, items[i].node));
-    // Per class: each slot's occupied-until (its current occupant's death). One slab id per class.
     let mut slots_of: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
     let mut slab_of: HashMap<(u32, u32), u32> = HashMap::new();
     let mut next_slab = 0u32;
@@ -350,33 +346,19 @@ impl FrameDag {
         if matches!(src.source, Source::Region(_)) && matches!(dst.source, Source::Region(_)) {
             return Some(Barrier::Materialize);
         }
-        // A FOLDED source ([`Self::folded_source`]) is produced by an in-frame dispatch whose
-        // only output is the lease, so EVERY read of it needs that dispatch complete: one round
-        // later, always — including the tiny-reach on-chip fusion the JIT sources used to allow.
         if self.folded_source(from) {
             return Some(Barrier::Materialize);
         }
         if dst.op.is_gather() && src.op != UnitOp::Reload {
-            // On-chip fusion (a gather sharing its source's round) is only real when the source is
-            // a RASTERIZED texture the taps can read directly. A gather over another gather's value
-            // has nothing to tap in the same dispatch — the value lives in a register — so it always
-            // materialises, whatever its reach; tiny-reach chains once fused here and the second
-            // gather silently tapped the wrong surface.
             let on_chip = src.reach.is_some_and(|r| r.width() <= tile && r.height() <= tile)
                 && matches!(src.op, UnitOp::Rasterize(_));
             if !on_chip {
                 return Some(Barrier::Materialize);
             }
         }
-        // A barrier op's output is a materialized draft. Its SINGLE-input consumer chains in the same
-        // dispatch's register (the blur's tap loop feeds the fused pointwise tail); but a MULTI-input
-        // consumer (an erase reading the punch beside its flood) binds that draft as a texture, and a
-        // texture read needs the producing dispatch complete — one round later.
         if src.op.is_barrier() && dst.inputs.len() >= 2 {
             return Some(Barrier::Materialize);
         }
-        // A Shade seeded from a materialized head (the scatter/blur draft it reads through slot 10)
-        // binds that draft as a texture, so the producing dispatch must complete one round earlier.
         if matches!(dst.op, UnitOp::Shade(_)) && matches!(src.op, UnitOp::Scatter(_) | UnitOp::Blur { .. }) {
             return Some(Barrier::Materialize);
         }
@@ -554,11 +536,6 @@ impl FrameDag {
         }
         let (mat_set, _) = self.bind_idx();
         let mat = mat_set[i];
-        // The chain's root decides what `base_in` holds — a rasterized source texture, or the (reloaded)
-        // accumulator — and, for a draft input, which pool that draft physically lives in today.
-        // A FOLDED source ([`Self::folded_source`]) physically lives in the dedicated side-2
-        // atlas, so reads of it class as `Slot::Draft(2)` — co-location then holds for any two
-        // folded readers sharing a round.
         let folded = |j: usize| self.folded_source(j);
         let root = |mut j: usize| loop {
             match self.nodes[j].op {
@@ -574,10 +551,6 @@ impl FrameDag {
             Some(BindingShape { base, input, to_draft, draft_taps, region_out: false })
         };
         if matches!(n.source, Source::Region(_)) {
-            // A region GROUND (input-free Rasterize) rasterizes fenced draws — nothing bound but
-            // the atlas. A region CHAIN node — a band blur/head instance, or the fold window's
-            // Rasterize that composites a writer's V over redrawn content — taps leases through the region-route
-            // records; its dispatch rides the loadu shape (base = the snapshot binding, unused).
             let base = if matches!(n.op, UnitOp::Rasterize(_)) && n.inputs.is_empty() {
                 Slot::None
             } else {
@@ -599,10 +572,6 @@ impl FrameDag {
                 UnitOp::Rasterize(_) => shape(Slot::Source, Slot::Source, mat, false),
                 UnitOp::Reload => shape(Slot::Backdrop, Slot::None, mat, false),
                 _ => {
-                    // A materialize reads its chain's root as `base_in`; a composite always reads the
-                    // accumulator. The slot-10 permutation follows the PRODUCER: a blur tapping another
-                    // BLUR's draft rides the draft permutation; one tapping a head's draft (a frost H
-                    // over the warp scratch) rides the input permutation.
                     let r = root(n.inputs[0]);
                     let base = if mat { r } else { Slot::Backdrop };
                     let taps = matches!(self.nodes[n.inputs[0]].op, UnitOp::Blur { .. });
@@ -634,29 +603,15 @@ impl FrameDag {
                 r @ (Slot::Source | Slot::Draft(2)) => shape(Slot::Backdrop, r, mat, false),
                 _ => None,
             },
-            // A FOLDED source ([`Self::folded_source`] — any texture-read drawable rasterize)
-            // rides fine: its round's window rasterizes the fenced draws into a packed lease —
-            // transparent init, no input bindings, OOB store default overridden by the mark's
-            // OUTPUT record. An erase's FLOOD input is read analytically (the marker's own area)
-            // and never folds — its mark would share the punch window's tiles and hijack the
-            // store origin.
             UnitOp::Rasterize(_) if self.folded_source(i) => {
                 shape(Slot::None, Slot::None, true, false)
             }
-            // A body rasterize that carries its OWN mark has no texture: the mark is a boundary
-            // marker followed by the body's inline draws, and its shape is the plain accumulator
-            // window (no input) — the class keeps its round off every materialize round in the
-            // scheduler while letting bodies share rounds with each other.
             UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. })
                 if !mat && n.inputs.iter().all(|&j| self.nodes[j].writes_accumulator()) =>
             {
                 shape(Slot::Backdrop, Slot::None, false, false)
             }
-            // A scatter always materializes: its consumer is a Shade head that reads it as a draft.
             UnitOp::Scatter(_) => shape(Slot::Backdrop, Slot::Draft(1), true, false),
-            // A Shade whose input is a MATERIALIZED link (a scatter or blur draft) heads a new chain in
-            // its own dispatch, seeded from that draft; one reading its head's in-register value
-            // (a warp) chains inside the head's dispatch. MaskMix always chains.
             UnitOp::Shade(_) if matches!(self.nodes[n.inputs[0]].op, UnitOp::Scatter(_) | UnitOp::Blur { .. }) => {
                 shape(Slot::Backdrop, Slot::Draft(1), false, false)
             }
@@ -779,9 +734,6 @@ impl FrameDag {
         );
         let n = self.nodes.len();
 
-        // ── Components: the accumulator factored out. One effect's nodes group by `(shape, slot)`; every
-        // plain paint node is its own singleton. Inside a component is the effect's build-tree; between
-        // components is the region-scoped accumulator spine.
         let mut comp = vec![0usize; n];
         let mut of: HashMap<(u128, usize), usize> = HashMap::new();
         let mut ncomp = 0usize;
@@ -800,8 +752,6 @@ impl FrameDag {
             };
         }
 
-        // Per-component: emission rank (first node index), page-space reach (union), whether it emits a
-        // marker (an effect occupies its own round range on its tiles), and its peak draft footprint.
         let mut first = vec![usize::MAX; ncomp];
         let mut reach: Vec<Option<Rect>> = vec![None; ncomp];
         let mut is_effect = vec![false; ncomp];
@@ -820,9 +770,6 @@ impl FrameDag {
             }
         }
 
-        // Level 2 — intra-component barrier depth (only within-component edges; cross-component edges are
-        // the spine, handled by `base`). A separable blur's Y is one materialize past its X; a pointwise
-        // chain shares its head's offset so it fuses.
         let mut off = vec![0u32; n];
         for (i, node) in self.nodes.iter().enumerate() {
             for &j in &node.inputs {
@@ -836,14 +783,6 @@ impl FrameDag {
             span[comp[i]] = span[comp[i]].max(off[i]);
         }
 
-        // Level 1 — the spine: base round per component, in paint (emission) order. A component starts
-        // after every earlier reach-overlapping component ends; budget defers it further until its span
-        // fits. Processing in emission order means a later component always reads its predecessors' FINAL
-        // base, so region-z holds and the budget only ever adds separation.
-        // Per-component dispatch signature: the (local round, binding class) of every dispatch-owning
-        // node. One dispatch binds one input and one output, so a round accepts only ONE class — two
-        // disjoint components share a round's dispatch iff their classes there agree (their bindings are
-        // then physically shared via co-location/aliasing).
         let mut sig: Vec<Vec<(u32, BindingShape)>> = vec![Vec::new(); ncomp];
         for i in 0..n {
             if let Some(cl) = self.binding_shape(i) {
@@ -851,9 +790,6 @@ impl FrameDag {
             }
         }
 
-        // A region component is a pure source consumers read cross-barrier: it processes FIRST (so
-        // its base is known when a consumer's push needs it) and packs into the earliest rounds its
-        // binding class admits.
         let mut is_region = vec![false; ncomp];
         for (i, node) in self.nodes.iter().enumerate() {
             if matches!(node.source, Source::Region(_)) {
@@ -905,16 +841,6 @@ impl FrameDag {
             let c = corder[idx];
             let mut b = 0u32;
             for &d in &corder[..idx] {
-                // Plain paint never pushes an EFFECT: a plain draw carries no marker, so its
-                // executed segment on any tile is set by the last marker before it in the stream —
-                // per-tile z order holds wherever the effect lands, and its backdrop reads see the
-                // draw through the running register (same window) or the accumulator (an earlier
-                // one). Without this, the plain grid's transitive overlap chain relayed every
-                // effect's base to every later effect — disjoint effects that pack into a handful
-                // of rounds alone were smeared across hundreds when interleaved with plain shapes.
-                // Effects still push plain (a draw above an effect must land in or after the
-                // composite's round) and effects push effects (two markers sharing a tile need a
-                // fresh round between them; plain co-exists in a round, ordered by PTCL position).
                 if is_effect[c] && !is_effect[d] {
                     continue;
                 }
@@ -923,10 +849,6 @@ impl FrameDag {
                     b = b.max(base[d] + span[d] + gap);
                 }
             }
-            // A read edge OUT of a region component is a true write-before-read on a lease, and the
-            // region's grid rect never overlaps its consumer's reach — the spine push above cannot
-            // see it. Regions process first (corder), so their rounds are final here: push this
-            // component's base until every such read lands strictly after its region's write.
             for i in 0..n {
                 if comp[i] != c {
                     continue;
@@ -948,9 +870,6 @@ impl FrameDag {
                     while load.len() <= hi {
                         load.push(0);
                     }
-                    // Defer only while something else is already resident in c's span — never past an
-                    // EMPTY round. A single effect whose own footprint exceeds the budget then simply takes
-                    // its own rounds (a requirements problem, not a hang): feasibility stays guaranteed.
                     let empty = (lo..=hi).all(|r| load[r] == 0);
                     let fits = (lo..=hi).all(|r| load[r] + foot[c] <= budget);
                     if !(fits || empty) {
@@ -979,9 +898,6 @@ impl FrameDag {
         for i in 0..n {
             round[i] = base[comp[i]] + off[i];
         }
-        // Two accumulator writers are ordered per tile by the PTCL stream (segments), not by
-        // rounds — a nominal round inversion between them is harmless. Every VALUE edge (a draft
-        // or region lease read) must respect rounds: the texture is only whole after its round.
         #[cfg(debug_assertions)]
         for (i, node) in self.nodes.iter().enumerate() {
             for &j in &node.inputs {
@@ -999,7 +915,6 @@ impl FrameDag {
             }
         }
 
-        // Per-node barrier tag (display + executor): the strongest incoming edge barrier.
         let mut barrier = vec![None; n];
         for (i, node) in self.nodes.iter().enumerate() {
             for &j in &node.inputs {
@@ -1012,7 +927,6 @@ impl FrameDag {
             }
         }
 
-        // Death — the last round any consumer reads a node's output (its live-interval end).
         let mut death = round.clone();
         for (i, node) in self.nodes.iter().enumerate() {
             for &j in &node.inputs {
@@ -1024,7 +938,6 @@ impl FrameDag {
 
         let mut sched = Schedule { round, barrier, death, desc: Vec::new(), lease: Vec::new(), ctl: Vec::new() };
 
-        // The SSA half: colour the live intervals into leases, then bake each node's descriptor + ctl.
         let lives = self.materialized_lives(&sched);
         let leases = pack(&lives);
         let mut lease = vec![None; n];
@@ -1259,10 +1172,6 @@ impl FrameDag {
     /// Liveness per node: reached from an accumulator write by following `inputs`. One reverse pass
     /// suffices — the node vec is topological, so every consumer sits after its inputs.
     fn liveness(&self) -> Vec<bool> {
-        // To fixpoint, not one pass: a Reload's read edge into a region value points at a LATER
-        // index (regions join after the scene build), so a single reverse sweep marks the value
-        // but never its own chain (a fold writer's H and ground). Region graphs are shallow —
-        // this converges in two or three sweeps.
         let mut lv = vec![false; self.nodes.len()];
         loop {
             let mut changed = false;
@@ -1527,10 +1436,6 @@ impl Builder {
     /// reads `cur`, Y reads X. The schedule puts Y one barrier after X (it gathers a fresh draft); `bake`
     /// assigns the axis from position. Returns the Y tail.
     fn blur(&mut self, radius: f32, linear: bool, cur: usize, reach: Option<Rect>, name: &str, tag: &str) -> usize {
-        // The OOB behaviour is fixed by what the blur reads: a chain rooted at its own `Rasterize`
-        // (a shadow silhouette, a warped body) fades to transparent; one rooted at a `Reload` (the
-        // backdrop, a frost source) is the page. Stamp it here, once, from the chain root — not
-        // re-traced at bake.
         let mut r = cur;
         let edge = loop {
             match self.dag.nodes[r].op {
@@ -1573,19 +1478,10 @@ impl Builder {
             cur = match op {
                 EffectOp::Blur { radius } => self.blur(*radius, linear, cur, reach, name, tag),
                 EffectOp::EraseBy { blur, .. } => {
-                    // The punch is a blurred copy of the silhouette; the erase is the pointwise dst-out
-                    // of `cur` by it. Two units, not one bundled `Erase` — the same Blur every effect uses.
                     let punch = self.blur(*blur, linear, cur, reach, name, "punch");
                     self.pointwise(UnitOp::EraseBy(Vec::new()), format!("{name} {tag} erase"), reach, vec![cur, punch])
                 }
                 EffectOp::Lens(g) => {
-                    // Lens is warp (+ blur → scatter for frost) then the pointwise shade + mask-mix, all
-                    // explicit. `fuse` folds sharp glass to one arm ([Warp,Shade,MaskMix]) and frost to
-                    // four ([Warp][BlurH][BlurV][Scatter,Shade,MaskMix]). A SHAPE-FOLLOWING (sampled) lens
-                    // reads a baked signed-distance field of the outline for its `fieldDistance` — that SDF
-                    // is its OWN source node (a `Rasterize` bake, the distance-field analogue of a
-                    // silhouette), the warp's second input. The executor bakes the SDF (not coverage)
-                    // because a `Warp` reads it; an analytic box lens has no such node.
                     let warp_inputs = if sampled {
                         let sdf = self.draft(UnitOp::Rasterize(RasterSource::Distance { decode: 0.0 }), format!("{name} lens sdf"), reach, vec![]);
                         vec![cur, sdf]
@@ -1628,7 +1524,7 @@ impl Builder {
                     let warp = self.draft(UnitOp::Warp(u), format!("{name} {tag} noise-warp"), reach, vec![cur]);
                     self.pointwise(UnitOp::ClipToSource(Vec::new()), format!("{name} {tag} clip"), reach, vec![warp])
                 }
-                EffectOp::Offset(_) => cur, // geometry — baked into which silhouette is rasterized, no unit
+                EffectOp::Offset(_) => cur,
             };
         }
         cur
@@ -1644,12 +1540,6 @@ impl Builder {
         let stack = effect_stack(node);
         let has_replace = stack.iter().any(|e| e.compose == Compose::Replace);
         let has_paint = !node.fills.is_empty() || node.text.is_some() || !node.strokes.is_empty();
-        // A box shape's shadows are native scene primitives (the blurred-rounded-rect encoding) —
-        // no chain to run, so none lowers. A silhouette shape (path/text) has no native encoding,
-        // and a replaced body pulls the WHOLE stack through the chains (the shape leaves the scene
-        // walk, so nothing would draw its native shadows). This is THE stack/gather decision: it
-        // lives here, in the lowering, and the executor derives it back from the chains' roots
-        // ([`FrameDag::effect_shapes`]) instead of re-asking the model.
         let native_coverage = !matches!(
             node.kind,
             crate::model::ShapeKind::Path | crate::model::ShapeKind::Text
@@ -1666,18 +1556,11 @@ impl Builder {
             }
             let reach = Some(e.footprint(base));
             self.cur = Source::Effect { shape, slot };
-            // The Compose unit carries HOW the chain lands, straight from the authored compose:
-            // a shadow / replaced body lays its coverage-rooted value source-over; a backdrop
-            // gather mixes in masked. Downstream reads the unit, never re-derives.
             let mode = match e.compose {
                 Compose::Over | Compose::Under | Compose::Replace => ComposeMode::Over,
                 Compose::ThroughCoverage => ComposeMode::MaskedMix,
             };
             let tail = match e.compose {
-                // An inner shadow is a two-coverage op — flood MINUS an offset+blurred punch. Both are
-                // plain `Rasterize` nodes (the flood is the shape's UNOFFSET coverage — for a Text that
-                // is its glyphs, drawn by the silhouette rasterizer), so there is no back-sampling
-                // special case: the erase reads the flood and the blurred punch directly.
                 Compose::Over => {
                     let analytic = node.text.is_none();
                     let poff = e
@@ -1730,11 +1613,6 @@ impl Builder {
                     self.lower_ops(&e.ops, sil, reach, &name, "drop", false, false)
                 }
                 Compose::Replace => {
-                    // A replaced body rides fine only when every op lowered faithfully. Any other op
-                    // leaves the chain unit-less, which the emitter reads as "the painter renders
-                    // this". `Offset` is geometry: it sums into the body rasterization's own
-                    // translation (it commutes with the blur), exactly as a drop's offset rides its
-                    // `Coverage` payload.
                     let offset = e.ops.iter().fold([0.0f32; 2], |a, o| match o {
                         EffectOp::Offset(v) => [a[0] + v.x as f32, a[1] + v.y as f32],
                         _ => a,
@@ -1755,9 +1633,7 @@ impl Builder {
                 Compose::ThroughCoverage => {
                     let reads = self.acc.readers(reach);
                     let reload = self.draft(UnitOp::Reload, format!("{name} read backdrop"), reach, reads);
-                    // A background blur mixes in linear light; a lens (its own Blur) mixes in sRGB.
                     let linear = e.ops.iter().any(|o| matches!(o, EffectOp::Blur { .. }));
-                    // A path outline → a shape-following (sampled SDF) lens; a box shape → the analytic field.
                     let sampled = node.path.is_some();
                     self.lower_ops(&e.ops, reload, reach, &name, "gather", linear, sampled)
                 }
@@ -1801,21 +1677,17 @@ impl Builder {
         let has_effects = !effect_stack(node).is_empty();
         let has_paint = !node.fills.is_empty() || node.text.is_some() || !node.strokes.is_empty();
         if !has_effects && node.kind.is_container() {
-            // A plain group: its children carry the real paints — recurse.
             for &child in &node.children {
                 self.walk(scene, child, band);
             }
             return;
         }
         if !has_effects {
-            // A plain leaf shape → coalesce into the pending rasterize band (id + bounds).
             if has_paint {
                 band.push(id, node.bounds);
             }
             return;
         }
-        // An effect-bearing node breaks the band: flush it, then lower the effects. (v1 treats an
-        // effect node as a leaf — nested children of an effect node are a follow-up.)
         self.flush_band(band);
         self.lower_effect_node(id, node);
     }
@@ -1868,15 +1740,12 @@ mod tests {
         let dag = build_frame_dag_installed();
 
         assert_topological(&dag);
-        // Exactly one background, node 0, no inputs — the spine root.
         assert_eq!(count(&dag, Category::Background), 1);
         assert_eq!(dag.nodes[0].category(), Category::Background);
         assert!(dag.nodes[0].inputs.is_empty());
-        // The scene has effects → drafts and composites, and no backdrop gather → no reloads.
         assert!(count(&dag, Category::Draft) > 0, "expected effect drafts");
         assert!(count(&dag, Category::Compose) > 0, "expected effect composites");
         assert_eq!(count(&dag, Category::Reload), 0);
-        // Every compose reads the accumulator + the effect tail (>= 2 inputs).
         for n in dag.nodes.iter().filter(|n| n.category() == Category::Compose) {
             assert!(n.inputs.len() >= 2, "compose '{}' must read acc + tail", n.label);
         }
@@ -1895,9 +1764,6 @@ mod tests {
 
     #[test]
     fn normalize_elides_and_prunes_sharp_blurs() {
-        // A blur whose DEVICE sigma lands under threshold (a zoomed-out soft shadow) elides: its
-        // consumer rewires to the blur's own input, the orphan prunes away, indices compact, and
-        // what remains is fully live (schedule's precondition) and topological.
         crate::vello::abi::load_combined_scene();
         let mut dag = build_frame_dag_installed();
         let before = dag.nodes.len();
@@ -1934,8 +1800,6 @@ mod tests {
             dag.nodes.iter().all(|n| !matches!(n.op, UnitOp::Colour(_))),
             "no Tint node survives normalize"
         );
-        // A backdrop tint carries its colour at lowering (shadow tints are filled by the sink), so
-        // the fold must land it on the slot's compose.
         crate::vello::abi::load_backdrop_tint_grid_scene(1);
         let mut tinted = build_frame_dag_installed();
         tinted.normalize();
@@ -1963,9 +1827,6 @@ mod tests {
 
     #[test]
     fn schedule_serializes_overlapping_effects_and_keeps_the_blur_barrier() {
-        // Two effects on ONE shape (a drop UNDER + an inner OVER) share every tile, so the strictly-
-        // increasing marker law forces them into DISJOINT round ranges — the inner cannot begin until the
-        // drop has finished. And inside the drop, its separable blur is one materialize apart (X then Y).
         crate::vello::abi::load_combined_scene();
         let dag = build_frame_dag_installed();
         let sched = dag.schedule(TILE_PX, u64::MAX);
@@ -2008,10 +1869,6 @@ mod tests {
 
     #[test]
     fn classes_separate_rounds_and_same_class_shares() {
-        // The one-dispatch-one-binding law, as a scheduler rule: two DISJOINT effects may share a round
-        // only when their dispatch-owning nodes there carry the SAME binding class. The matrix mixes 20
-        // heterogeneous effect cells on a disjoint grid — every scheduled round must hold ONE class, and
-        // the same-kind cells (several pure soft drops) must still share.
         use std::collections::HashMap;
         crate::vello::abi::load_matrix_scene();
         let dag = build_frame_dag_installed();
@@ -2035,15 +1892,9 @@ mod tests {
 
     #[test]
     fn budget_defers_effects_batch_then_flush() {
-        // The memory lever: with an unbounded budget every disjoint cell batches into the same rounds; a
-        // tight budget can hold only a few drafts at once, so it DEFERS the rest to later rounds (flush).
-        // `N` — effects in flight — slides with the budget, and feasibility never fails (one draft fits any
-        // real budget), so the tight schedule is finite, just deeper.
         crate::vello::abi::load_matrix_scene();
         let dag = build_frame_dag_installed();
         let roomy = dag.schedule(TILE_PX, u64::MAX).rounds();
-        // ~256 KB holds a couple of cell drafts at once but not all of them, so it batches a few then
-        // flushes — deeper than unbounded, nowhere near fully serial.
         let tight = dag.schedule(TILE_PX, 256 * 1024).rounds();
         assert!(tight > roomy, "a tight budget defers effects into more rounds ({tight} > {roomy})");
         assert!(tight < 100_000, "the schedule stays finite under any budget (got {tight})");
@@ -2051,10 +1902,6 @@ mod tests {
 
     #[test]
     fn disjoint_cells_do_not_serialise() {
-        // 20-cell grid, each cell a shape with its own effect stack. Region-scoping the spine lets cells
-        // that do not share a tile occupy the SAME rounds, so the total stays far below one round-range per
-        // effect (full serialization). It is set by the deepest cell plus the few edge-neighbours whose
-        // blur halos actually touch — NOT by the effect count.
         use std::collections::HashSet;
         crate::vello::abi::load_matrix_scene();
         let dag = build_frame_dag_installed();
@@ -2067,8 +1914,6 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // Heterogeneous cells fragment sharing (one class per round), so the honest upper bound is the
-        // fully-serial one — one round per dispatch-owning node — which region-scoping must still beat.
         let dispatches = (0..dag.nodes.len()).filter(|&i| dag.binding_shape(i).is_some()).count() as u32;
         assert!(
             rounds < dispatches,
@@ -2080,8 +1925,6 @@ mod tests {
 
     #[test]
     fn every_node_resolves_to_real_scene_work() {
-        // The executor follows `source` back to the scene; every node must point at work that exists —
-        // a band's shape ids, a body's shape, or an effect slot that indexes a real effect stack.
         crate::vello::abi::load_combined_scene();
         let dag = build_frame_dag_installed();
 
@@ -2116,9 +1959,6 @@ mod tests {
 
     #[test]
     fn a_sharp_glass_dag_fills_and_serializes_to_the_descriptor() {
-        // The whole scheduler→serialize pipeline on the real DAG: build the sharp-glass graph, let the
-        // scheduler fill the lens units' device uniforms, and serialize the arm. It must produce the
-        // shipping sharp-glass descriptor shape — bits 56, lens program, real (non-zero) device field.
         use crate::vello::bake::{arm_descriptor, Policy, PROGRAM_ROUNDED_BOX};
         crate::vello::abi::load_stack_glass_scene(1, 0);
         let mut dag = build_frame_dag_installed();
@@ -2129,7 +1969,6 @@ mod tests {
                 crate::effect_graph::lens_geometry(n, m)
             });
         });
-        // Sharp glass drops the scatter, so the fused arm is warp + shade + mask-mix, in order.
         let run: Vec<UnitOp> = dag
             .nodes
             .iter()
@@ -2152,11 +1991,8 @@ mod tests {
 
         assert_eq!(specs.len(), dag.nodes.len());
         let colours = colour_stages(&specs);
-        // A3/A4: a blur reads its silhouette so it takes a different atlas, but disjoint drafts reuse
-        // atlases — the frame-wide count stays a small constant, not one-per-draft.
         let atlases = atlases_needed(&colours);
         assert!((2..=4).contains(&atlases), "disjoint drafts must reuse atlases (got {atlases})");
-        // Every spine node writes the accumulator and takes no atlas colour.
         for (i, n) in dag.nodes.iter().enumerate() {
             if n.writes_accumulator() {
                 assert_eq!(specs[i].target, Target::Accumulator);
@@ -2172,7 +2008,7 @@ mod tests {
             for b in (a + 1)..items.len() {
                 let (ia, ib) = (items[a], items[b]);
                 if ia.death < ib.birth || ib.death < ia.birth {
-                    continue; // disjoint in time — sharing a slot is legal
+                    continue;
                 }
                 let (la, lb) = (leases[a], leases[b]);
                 if la.slab != lb.slab {
@@ -2215,8 +2051,8 @@ mod tests {
     fn pack_reuses_a_freed_slot_and_keeps_live_rects_apart() {
         let items = vec![
             LiveRect { node: 0, w: 16, h: 16, birth: 0, death: 2 },
-            LiveRect { node: 1, w: 16, h: 16, birth: 0, death: 2 }, // live WITH 0
-            LiveRect { node: 2, w: 16, h: 16, birth: 3, death: 4 }, // born after 0 and 1 die
+            LiveRect { node: 1, w: 16, h: 16, birth: 0, death: 2 },
+            LiveRect { node: 2, w: 16, h: 16, birth: 3, death: 4 },
         ];
         let leases = pack(&items);
         assert_eq!(leases[0].slab, leases[1].slab, "same size class shares a slab");
@@ -2231,7 +2067,6 @@ mod tests {
 
     #[test]
     fn pack_uses_exactly_max_concurrency_slots() {
-        // Peak of three live at once (rounds 0-1: 0,1,2 — rounds 2-3: 0,3,4) → exactly three slots.
         let items = vec![
             LiveRect { node: 0, w: 8, h: 8, birth: 0, death: 5 },
             LiveRect { node: 1, w: 8, h: 8, birth: 0, death: 1 },
@@ -2249,7 +2084,7 @@ mod tests {
     fn pack_segregates_size_classes_into_distinct_slabs() {
         let items = vec![
             LiveRect { node: 0, w: 16, h: 16, birth: 0, death: 1 },
-            LiveRect { node: 1, w: 40, h: 40, birth: 0, death: 1 }, // rounds up to the 64 class
+            LiveRect { node: 1, w: 40, h: 40, birth: 0, death: 1 },
         ];
         let leases = pack(&items);
         assert_ne!(leases[0].slab, leases[1].slab, "different size classes live in different slabs");
@@ -2258,9 +2093,6 @@ mod tests {
 
     #[test]
     fn schedule_death_tracks_the_last_reader_on_a_real_shadow() {
-        // A drop shadow is silhouette → blur-H (draft) → blur-V: the H draft is a gather source that
-        // spans tiles, so V reads it across a MATERIALIZE barrier one round later. That draft's death is
-        // therefore strictly past its birth — the proof death propagates from a later-round consumer.
         crate::vello::abi::load_path_shadow_scene();
         let dag = build_frame_dag_installed();
         let sched = dag.schedule(TILE_PX, u64::MAX);
@@ -2274,7 +2106,6 @@ mod tests {
             lives.iter().any(|l| l.death > l.birth),
             "the blur H draft must be read a round later than it is written",
         );
-        // The real drafts pack to valid, non-overlapping leases.
         let leases = pack(&lives);
         assert_no_live_overlap(&lives, &leases);
     }
@@ -2289,14 +2120,11 @@ mod tests {
         assert_eq!(sched.desc.len(), n);
         assert_eq!(sched.lease.len(), n);
         assert_eq!(sched.ctl.len(), n);
-        // A lease sits on exactly the materialized nodes — the same set `materialized_lives` reports.
         let want: std::collections::HashSet<usize> =
             dag.materialized_lives(&dag.schedule(TILE_PX, u64::MAX)).iter().map(|l| l.node).collect();
         for i in 0..n {
             assert_eq!(sched.lease[i].is_some(), want.contains(&i), "lease presence wrong at node {i}");
         }
-        // Every Blur is a materialize axis pass (ctl 0, blur bit set); every pointwise unit chains
-        // (ATOMIC); the composite that lays the shadow closes a chain (BOUNDARY).
         let (mut saw_blur, mut saw_boundary) = (false, false);
         for (i, node) in dag.nodes.iter().enumerate() {
             if !matches!(node.source, Source::Effect { .. }) || node.op.is_structural() {
@@ -2326,15 +2154,12 @@ mod tests {
         let dag = build_frame_dag_installed();
         let sched = dag.schedule(TILE_PX, u64::MAX);
         assert!(sched.lease.iter().any(Option::is_some), "a drop+inner frame has materialized drafts");
-        // A leased node is read across a barrier (a later round). A same-round register chain — e.g. the
-        // Y-blur's output flowing into its Tint — takes no lease.
         for (i, l) in sched.lease.iter().enumerate() {
             if l.is_some() {
                 let later = dag.nodes.iter().enumerate().any(|(ci, c)| c.inputs.contains(&i) && sched.round[ci] > sched.round[i]);
                 assert!(later, "leased node {i} must be read in a later round");
             }
         }
-        // Every Blur's INPUT is a leased texture (a neighbourhood tap needs a real surface).
         for (i, node) in dag.nodes.iter().enumerate() {
             if matches!(node.op, UnitOp::Blur { .. }) {
                 let src = node.inputs[0];
@@ -2344,7 +2169,6 @@ mod tests {
                 );
             }
         }
-        // No two nodes sharing a rect have overlapping live intervals.
         let mut by_rect: HashMap<(u32, u32, u32), Vec<usize>> = HashMap::new();
         for (i, l) in sched.lease.iter().enumerate() {
             if let Some(le) = l {
@@ -2440,8 +2264,6 @@ mod tests {
 
     #[test]
     fn demands_reach_forward_references() {
-        // A Reload's read edge can cite a LATER index (region values wire in after the scene
-        // build); the fixpoint must carry demand across it — the same lesson liveness learned.
         use crate::vello::plan::Target;
         let dag = FrameDag {
             nodes: vec![

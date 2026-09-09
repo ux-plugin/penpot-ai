@@ -1676,9 +1676,6 @@ pub fn build_scale_scene_sized(
                 3 => {
                     node.shadows = vec![Shadow { color: cola(0, 0, 0, 150), blur: 8.0, spread: 3.0, offset: Vec2::new(5.0, 6.0), inset: false }];
                 }
-                // A STACK GLASS: a shape-following lens + a light drop shadow (the non-box shadow is what
-                // makes it FX_STACK, where the SDF lens lives). The refracted/magnified backdrop shows
-                // through, so the effect reads over the neighbouring blobs.
                 _ => {
                     node.fills = vec![];
                     node.shadows = vec![Shadow { color: cola(0, 0, 0, 90), blur: 6.0, spread: 0.0, offset: Vec2::new(4.0, 6.0), inset: false }];
@@ -1807,9 +1804,6 @@ pub fn build_blur_grid_scene(n: usize, radius: f32) -> (Scene, Vec<(usize, &'sta
     let (cw, ch) = canvas_size(cols * rows);
     let (pitch_x, pitch_y) = (f64::from(cw) / cols as f64, f64::from(ch) / rows as f64);
     let (lw, lh) = (pitch_x / 3.0, pitch_y / 3.0);
-    // A high-frequency checkerboard backdrop: a flat colour hides blur defects (a blurred flat is the
-    // same flat), but a chequer smears to grey under a correct blur and leaks its hard edges through a
-    // broken one — so holes and edge steps show up plainly.
     let cell = 24.0_f64;
     let (nx, ny) = ((f64::from(cw) / cell).ceil() as i64, (f64::from(ch) / cell).ceil() as i64);
     for gy in 0..ny {
@@ -2018,8 +2012,6 @@ pub fn build_glass_grid_scene(n: usize, frost: bool, downscale: f32) -> (Scene, 
     }
     let (cw, ch) = canvas_size(cols * rows);
     let (pitch_x, pitch_y) = (f64::from(cw) / cols as f64, f64::from(ch) / rows as f64);
-    // The lens occupies the middle third of its pitch, so neighbours stay a full lens-width apart
-    // and no reach can bridge the gap.
     let (lw, lh) = (pitch_x / 3.0, pitch_y / 3.0);
     for i in 0..(n * 4) {
         let (gx, gy) = ((i % (cols * 2)) as f64, (i / (cols * 2)) as f64);
@@ -2086,15 +2078,9 @@ pub fn build_stack_glass_scene(n: usize, frost: bool) -> (Scene, Vec<(usize, &'s
         let mut node = Node::new(b.id(), ShapeKind::Path);
         node.bounds = r;
         node.path = Some(blob_path(r));
-        // No body fill: the shape is pure glass, so the magnified/refracted backdrop shows THROUGH the
-        // outline. A light drop shadow keeps the node on the STACK path (a non-box silhouette shadow is
-        // what makes it FX_STACK, where the shape-following SDF lens lives) without darkening the lens the
-        // way the original heavy shadow did.
         node.fills = vec![];
         node.shadows = vec![Shadow { color: cola(0, 0, 0, 90), blur: 6.0, spread: 0.0, offset: Vec2::new(4.0, 6.0), inset: false }];
         let mut g = glass_lens(TileMode::Decal);
-        // 2× magnification through the lens so the effect reads clearly over the checker (the shared
-        // `glass_lens` uses zoom = 1.0, i.e. no magnification): zoomFactor = 1/zoom − 1 = 1 at zoom 0.5.
         g.zoom = 0.5;
         if !frost {
             g.blur = 0.0;

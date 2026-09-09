@@ -68,8 +68,6 @@ pub struct NeutralModelScene {
 
 impl std::fmt::Debug for NeutralModelScene {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `TextEngine` wraps Parley contexts that are not `Debug`; the scene's identity is the
-        // fallback model, so that is all this prints.
         f.debug_struct("NeutralModelScene")
             .field("fallback", &self.fallback)
             .finish_non_exhaustive()
@@ -132,10 +130,6 @@ impl TextEngine {
                     axes: None,
                 }),
             );
-            // An emoji face also joins Parley's `Emoji` generic family. Parley appends that generic
-            // to the font query for any cluster it detects as emoji, so an emoji the primary font
-            // lacks falls through to this face — and glifo's glyph cascade (COLR > bitmap > outline)
-            // draws its colour layers. `append` (not `set`) so multiple emoji faces accumulate.
             if font.is_emoji {
                 let ids = registered.iter().map(|(family_id, _)| *family_id);
                 self.font_cx
@@ -165,8 +159,6 @@ impl TextEngine {
             return;
         };
 
-        // (Re)build when focus moves to a different shape. `RichEditor::build` lays it out once, so
-        // geometry is valid even before the first pointer event.
         if *editor_for != Some(id) {
             *editor = scene.get(id).and_then(|node| node.text.as_ref()).map(|block| {
                 let width = scene.get(id).map_or(0.0, |n| n.bounds.width() as f32);
@@ -202,7 +194,6 @@ impl TextEngine {
         }
 
         let (start, end) = ed.selection_range();
-        // The caret in shape-local space, for `get_cursor_rect` (IME candidate placement).
         let caret = Some(ed.caret_rect(CARET_WIDTH));
         crate::editor::set_snapshot(
             ed.text().to_string(),
@@ -226,13 +217,8 @@ impl ExampleScene for NeutralModelScene {
         resources: &mut T::Resources,
         root: Affine,
     ) {
-        // Register any faces uploaded since the last frame before laying text out against them.
         self.text.sync_fonts();
 
-        // Scheduler production sink: when set, this render draws exactly one node's *body* into the
-        // target (no background, no tree), at the matrix the caller baked into `root`. This is how
-        // the sink executes a `Paint` step — reusing the whole draw path (model, text, modifiers)
-        // without a per-node bridge on the scene trait.
         let batch = paint_batch();
         if !batch.is_empty() {
             let fallback = &self.fallback;
@@ -243,10 +229,6 @@ impl ExampleScene for NeutralModelScene {
                 } else {
                     (live, root * viewport)
                 };
-                // The batch is already in z-order (builder emission order); execute each op in turn
-                // into this one scene so a run of plain shapes becomes a single `renderer.render`. A
-                // `PushLayer`/`PopLayer` pair isolates a plain opacity/blend group as an in-scene
-                // layer — no separate surface, still one submission.
                 for op in &batch {
                     match *op {
                         PaintOp::Body(only) => {
@@ -258,17 +240,11 @@ impl ExampleScene for NeutralModelScene {
                         }
                         PaintOp::PushLayer(id) => {
                             if let Some(node) = model.get(id) {
-                                // Group opacity/blend, applied to the whole subtree drawn until the
-                                // matching pop. Clip is left to the node's own draw path (frame
-                                // clipping is not yet isolating here), matching the `ScopeOf` path.
                                 let alpha = (node.opacity < 1.0).then_some(node.opacity);
                                 let blend = (node.blend != DEFAULT_BLEND).then_some(node.blend);
                                 ctx.push_layer(None, blend, alpha, None, None);
                             }
                         }
-                        // A masked group's `DstIn` sub-layer: the next `Body` (the mask child)
-                        // composites onto the content already in the isolation layer with `DstIn`, so
-                        // the content survives only where the mask has alpha — a soft alpha mask.
                         PaintOp::PushMaskLayer => {
                             use render_core::peniko::{BlendMode, Compose, Mix};
                             ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
@@ -280,9 +256,6 @@ impl ExampleScene for NeutralModelScene {
             return;
         }
 
-        // Mask render: fill exactly one node's silhouette in solid white — the coverage the sink
-        // multiplies into a gather's blurred backdrop so it shows through the shape's outline, not
-        // its bounding box. No paints, no children, no effects; the anti-aliased edge is the mask.
         if let Some(only) = mask_only() {
             let fallback = &self.fallback;
             crate::abi::with_scene(|live, viewport, modifiers| {
@@ -302,7 +275,6 @@ impl ExampleScene for NeutralModelScene {
             return;
         }
 
-        // The page background, if the host set one. Drawn in canvas space, under everything.
         let background = crate::abi::background();
         if background.components[3] > 0.0 {
             ctx.set_transform(Affine::IDENTITY);
@@ -315,16 +287,10 @@ impl ExampleScene for NeutralModelScene {
             ));
         }
 
-        // Pre-borrow the disjoint fields so the closure can hold the fallback model and the text
-        // engine at once (a whole-`self` capture would alias them).
         let fallback = &self.fallback;
         let text = &mut self.text;
         crate::abi::with_scene(|live, viewport, modifiers| {
-            // Fold the queued editor commands into the live editor before drawing, so the caret and
-            // selection this frame paints are up to date. Only the live scene is editable.
             text.sync_editor(live);
-            // `root` is the harness's own pan/zoom; `viewport` is what the host set through
-            // `set_view`. They compose — the harness stays at identity when a host is driving.
             let (model, view) = if live.is_empty() {
                 (fallback, root)
             } else {
@@ -419,54 +385,24 @@ fn draw_node<T: RenderingContext>(
         return;
     }
     let Some(node) = scene.get(id) else {
-        // A container can list a child the host has not sent yet; that is normal mid-sync.
         return;
     };
     if node.hidden {
         return;
     }
     if node.kind == m::ShapeKind::Unsupported {
-        // A kind this backend does not draw yet (Text, Bool, SVGRaw). Skip it and its subtree,
-        // matching the digest's reachability so the picture and the hash count the same nodes.
         return;
     }
 
-    // The gesture transform sits between the viewport and the shape's own matrix: it is
-    // expressed in page space, so it must be applied to the shape's page-space geometry and
-    // then viewed, not folded into the shape's centred transform.
-    //
-    // It is *not* inherited down the tree. The host propagates a container's gesture to each
-    // descendant explicitly (`propagate_modifiers`), exactly as it does for the committed
-    // transforms, which are absolute per shape — inheriting here would apply a group's drag
-    // twice to everything inside it.
     let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
     let matrix = root * modifier * node.effective_transform();
 
-    // Clip and the composite layer cannot share one layer, because they cover different things.
-    //
-    // Opacity and blend both wrap this node's own paint *and* its children — a half-transparent
-    // or multiplied group must composite as one image against the backdrop, not per child, so
-    // they ride the *same* outer layer. Clipping covers only the children: render-wasm builds the
-    // clip in `get_children_clip_bounds`, and a frame is not clipped by itself (which matters once
-    // strokes land, since a stroke straddles the boundary).
-    // Drop shadows sit behind the shape, and *outside* the layer-blur/opacity/blend layer — a
-    // layer blur blurs the shape, not its shadow. Each is its own soft, offset, coloured
-    // silhouette; multiple shadows are just multiple passes (no multi-primitive filter needed).
-    // Spatially-spreading effects (drop/inner shadow, layer blur, filter graph) are gated off while
-    // tiling: the fork's decimated Gaussian is grid-sensitive, so running it independently inside
-    // each tile buffer seams and flickers under pan/zoom. They will be re-introduced through their
-    // own `extrect`-anchored surfaces, composited once (the render-wasm model), not per-tile. Plain
-    // paint, opacity, blend and clip are translation-invariant and tile cleanly, so they stay.
     let effects = effects_enabled();
 
     if effects {
         draw_drop_shadows(ctx, node, matrix);
     }
 
-    // A filter graph wraps this node's composited paint *and* its children as one image — the
-    // outermost of this node's layers, so it filters the finished shape rather than each child, and
-    // it sits outside the drop shadow (which is drawn behind). A linear chain lowers to nested filter
-    // layers; the shape draws inside all of them and we pop the same count afterward.
     let filter_layers = if effects {
         push_filter_graph(ctx, node, matrix)
     } else {
@@ -475,9 +411,6 @@ fn draw_node<T: RenderingContext>(
 
     let alpha = (node.opacity < 1.0).then_some(node.opacity);
     let blend = (node.blend != DEFAULT_BLEND).then_some(node.blend);
-    // Layer blur rides the same outer layer as opacity/blend, via `push_layer`'s filter slot, so
-    // it covers this node's paint and its children as one image. (This is the whole-scene walk, which
-    // does not go through the sink — the sink-batch path `paint_node_body` defers blur to the sink.)
     let blur = effects
         .then(|| {
             node.blur
@@ -490,21 +423,14 @@ fn draw_node<T: RenderingContext>(
         ctx.push_layer(None, blend, alpha, None, blur);
     }
 
-    // Text carries no `fills`/geometry — its paint is the glyph colour inside its spans — so it
-    // takes its own draw path rather than `paint_self`.
     if node.kind == m::ShapeKind::Text {
         draw_text(ctx, resources, text, node, matrix);
     } else {
-        // Inner shadows enclose the shape's own paint (they darken inside its edges), so they wrap
-        // `paint_self` — inside the composite/filter layers, but tighter than the drop shadow, which
-        // sits behind. Gated with the other effects while tiling.
         let inner_shadows = if effects {
             push_inner_shadows(ctx, node, matrix)
         } else {
             0
         };
-        // Whole-scene walk: no composite step, so this node's own opacity/blend (pushed at
-        // `composite` above) already isolates it — the leaf paint stays raw here to avoid doubling.
         paint_self(ctx, node, matrix, false);
         for _ in 0..inner_shadows {
             ctx.pop_layer();
@@ -513,8 +439,6 @@ fn draw_node<T: RenderingContext>(
 
     let clip = (node.clip && !node.children.is_empty()).then(|| outline(node));
     if clip.is_some() {
-        // The clip path is captured in the transform current at push time, which is this
-        // node's — matching render-wasm, where each clip entry carries its own matrix.
         ctx.set_transform(matrix);
         ctx.push_layer(clip.as_ref(), None, None, None, None);
     }
@@ -549,14 +473,8 @@ pub(crate) fn paint_node_body<T: RenderingContext>(
     if node.hidden || node.kind == m::ShapeKind::Unsupported {
         return;
     }
-    // Drop shadows sit behind the body.
     draw_drop_shadows(ctx, node, matrix);
     let filter_layers = push_filter_graph(ctx, node, matrix);
-    // Layer blur is NOT applied here. The sink blurs this shape's `RasterEffectOutput` surface with
-    // its full-resolution `run_graph` Gaussian (`hybrid_backend::blurs_layer_inline() == false`),
-    // exactly as the classic backend does — so both backends blur identically. vello_hybrid's inline
-    // filter is *decimated* (downsample → blur → upsample) and spreads ~2x wider at the same sigma,
-    // which made hybrid's layer blur visibly stronger. The body therefore renders sharp here.
     if node.kind == m::ShapeKind::Text {
         draw_text(ctx, resources, text, node, matrix);
     } else if node.kind == m::ShapeKind::Svg {
@@ -565,7 +483,6 @@ pub(crate) fn paint_node_body<T: RenderingContext>(
         }
     } else {
         let inner = push_inner_shadows(ctx, node, matrix);
-        // Sink path: opacity/blend is applied by the scheduler's `Composite` step, so paint raw.
         paint_self(ctx, node, matrix, false);
         for _ in 0..inner {
             ctx.pop_layer();
@@ -635,8 +552,6 @@ fn draw_children<T: RenderingContext>(
     modifiers: &crate::abi::Modifiers,
     depth: u32,
 ) {
-    // The mask is the first child, the content the rest. A masked group with no children has
-    // nothing to mask; one with only the mask draws nothing at all (the content is empty).
     let mask_id = (node.masked && node.kind == m::ShapeKind::Group)
         .then(|| node.children.first().copied())
         .flatten();
@@ -648,10 +563,6 @@ fn draw_children<T: RenderingContext>(
         return;
     };
 
-    // Clip to the mask child's silhouette, captured in that child's own page-space matrix — the
-    // same way a frame's clip carries the matrix current at push time. If the mask child has not
-    // arrived yet, draw the content unclipped rather than hiding it, matching how a not-yet-sent
-    // child is tolerated elsewhere.
     let clipped = scene.get(mask_id).map(|mask| {
         let modifier = modifiers.get(&mask_id).copied().unwrap_or(Affine::IDENTITY);
         ctx.set_transform(root * modifier * mask.effective_transform());
@@ -680,31 +591,16 @@ fn draw_children<T: RenderingContext>(
 /// shape's own space (`matrix · translate(offset)`), so it rotates with the shape; that composition
 /// is not yet pixel-checked against render-wasm.
 fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: Affine) {
-    // A text shadow is glyph-shaped, not a box around the bounds; drawing `outline(node)` (the
-    // bounds rect) would be wrong, so text shadows are deferred with the rest of the text effects.
     if node.shadows.is_empty()
         || node.kind == m::ShapeKind::Group
         || node.kind == m::ShapeKind::Text
     {
         return;
     }
-    // The un-spread silhouette, reused for every zero-spread shadow so the common case allocates
-    // no extra path.
     let base = outline(node);
-    // Only *drop* shadows are drawn behind the shape here; inner shadows are drawn *inside* it by
-    // `push_inner_shadows`, wrapping the shape's own paint.
     for shadow in node.shadows.iter().filter(|s| !s.inset) {
-        // Cap the device-space blur so it never enters the fork's lossy many-decimation regime —
-        // parity with render-wasm, which caps the shadow blur the same way. The offset shrinks by
-        // the same factor when the blur is clamped, so the shadow keeps its shape past the cap.
         let (sigma, offset_ratio) = cap_shadow_blur(radius_to_sigma(shadow.blur), matrix);
         let softened = sigma > 0.0;
-        // Set the (zoom-scaled) transform *before* pushing the blur layer. `push_filter_layer`
-        // captures the transform current at push time and scales the blur's sigma and expansion by
-        // it, so a stale transform here would fix the shadow's softness at a device-pixel size — it
-        // would stop growing as you zoom in, reading as the blur collapsing to a hard edge that
-        // "narrows to fit the viewport". The offset rides in the same matrix, so it too scales and
-        // rotates with the shape.
         ctx.set_transform(
             matrix * Affine::translate((shadow.offset.x * offset_ratio, shadow.offset.y * offset_ratio)),
         );
@@ -752,8 +648,6 @@ fn push_inner_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: 
 /// pre-capped (as a user-space value) the same way the drop shadow is. Inner shadows ignore
 /// `spread`, matching render-wasm.
 fn inner_shadow_filter(shadow: &m::Shadow, matrix: Affine) -> Filter {
-    // The offset shrinks with the blur past the cap so the inner shadow's dark band — whose
-    // thickness is the offset — keeps its proportion under zoom instead of drifting.
     let (std_deviation, offset_ratio) = cap_shadow_blur(radius_to_sigma(shadow.blur), matrix);
     let offset_ratio = offset_ratio as f32;
     Filter::from_primitive(FilterPrimitive::InnerShadow {
@@ -786,15 +680,11 @@ fn draw_text<T: RenderingContext>(
         return;
     }
 
-    // While this shape is the focused editor, its text comes from the editor's own layout — so the
-    // caret and selection (computed from that same layout) always align with the drawn glyphs.
     if engine.editor_for == Some(node.id) && engine.editor.is_some() {
         draw_focused_editor(ctx, resources, engine, node, matrix);
         return;
     }
 
-    // The layout + glyph drawing is the backend-neutral path shared with the classic backend; font
-    // aliases resolve through the ABI collection via [`AbiEnv`].
     render_core::vello::text::draw_text_block(
         ctx,
         resources,
@@ -819,10 +709,8 @@ fn draw_focused_editor<T: RenderingContext>(
     let Some(editor) = engine.editor.as_ref() else {
         return;
     };
-    // Top-aligned for now; a vertical-align offset (as `draw_text` computes) is a later refinement.
     let (ox, oy) = (node.bounds.x0, node.bounds.y0);
 
-    // Selection highlights, behind the glyphs.
     ctx.set_transform(matrix);
     ctx.set_paint_transform(Affine::IDENTITY);
     ctx.set_paint(crate::abi::argb_to_color(crate::editor::selection_color()));
@@ -830,8 +718,6 @@ fn draw_focused_editor<T: RenderingContext>(
         ctx.fill_rect(&Rect::new(ox + bbox.x0, oy + bbox.y0, ox + bbox.x1, oy + bbox.y1));
     }
 
-    // The text itself, from the editor's multi-style layout (already rebuilt by `sync_editor`),
-    // through the shared neutral glyph-run drawer.
     render_core::vello::text::draw_layout(
         ctx,
         resources,
@@ -844,7 +730,6 @@ fn draw_focused_editor<T: RenderingContext>(
         None,
     );
 
-    // The caret on top, in its visible blink phase.
     if crate::editor::blink_on() {
         let [cx, cy, cw, ch] = editor.caret_rect(CARET_WIDTH);
         ctx.set_transform(matrix);
@@ -859,9 +744,6 @@ fn draw_focused_editor<T: RenderingContext>(
     }
 }
 
-// The paragraph layout + glyph-run drawing (`layout_paragraph`, `alignment_of`, `draw_layout`,
-// `draw_glyph_run`) now live in the backend-neutral `render_core::vello::text`, shared with the
-// classic backend. `draw_text` and `draw_focused_editor` above delegate to it.
 
 /// Paint a node's own geometry, ignoring its children.
 ///
@@ -909,8 +791,6 @@ fn demo_model() -> m::Scene {
         72.0, 12.0, 72.0, 12.0,
     ));
     frame.fills = vec![m::Paint::plain(Brush::Solid(Color::from_rgba8(56, 152, 236, 255)))];
-    // A dashed stroke, straddling the frame's edge. It must *not* be clipped by the frame's own
-    // clip — that is why clip and opacity take separate layers — so half of it sits outside.
     let mut frame_stroke = render_core::kurbo::Stroke::new(12.0);
     render_core::model::apply_stroke_style(
         &mut frame_stroke,
@@ -929,9 +809,6 @@ fn demo_model() -> m::Scene {
 
     let mut circle = m::Node::new(2, m::ShapeKind::Circle);
     circle.bounds = Rect::new(540.0, 420.0, 870.0, 750.0);
-    // A radial gradient, deliberately squashed and rotated: the ellipse ratio and the angle
-    // both live in the paint transform, so a circle filled with a plain circular gradient would
-    // prove nothing about that path.
     let (radial, radial_transform) = render_core::gradient::gradient_paint(
         render_core::gradient::GradientShape::Radial,
         render_core::gradient::GradientGeometry {
@@ -961,8 +838,6 @@ fn demo_model() -> m::Scene {
     rect.bounds = Rect::new(180.0, 240.0, 420.0, 360.0);
     rect.transform = Affine::rotate(0.3);
     rect.fills = vec![m::Paint::plain(Brush::Solid(Color::from_rgba8(250, 250, 250, 255)))];
-    // A dotted stroke: kurbo has no `path_1d` equivalent, so it is a zero-length dash with
-    // round caps, which draws dots of diameter equal to the width — the same as Skia's circles.
     let mut dots = render_core::kurbo::Stroke::new(6.0);
     render_core::model::apply_stroke_style(
         &mut dots,

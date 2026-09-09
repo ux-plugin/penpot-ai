@@ -42,7 +42,6 @@ fn main() {
 
     let (hx, hy) = (45.0, 35.0);
     let decode = 2.0 * hx as f32;
-    // Device-space segments: the blob is centred on the RES×RES texture.
     let centre = render_core::kurbo::Affine::translate((f64::from(RES) * 0.5, f64::from(RES) * 0.5));
     let segs = flatten_segments(&(centre * blob(hx, hy)), 0.3);
     println!("blob flattened to {} segments", segs.len());

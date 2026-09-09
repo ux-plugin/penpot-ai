@@ -215,7 +215,6 @@ pub fn effect_stack(node: &Node) -> Vec<Effect> {
             compose: Compose::ThroughCoverage,
         });
     } else if let Some(color) = node.background_tint {
-        // A pointwise backdrop gather (no neighbourhood) — runs inline in `fine` at the shape's z.
         out.push(Effect {
             source: Source::Backdrop,
             ops: vec![Op::Tint(color)],

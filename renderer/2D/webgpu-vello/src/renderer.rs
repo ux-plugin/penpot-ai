@@ -61,10 +61,6 @@ impl Gpu {
         log::info!("vello-gpu backend = {:?} | adapter = {} ({:?})", info.backend, info.name, info.device_type);
 
         let timestamps = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
-        // Adapter-specific format features unlock rgba8unorm READ-WRITE storage — the single
-        // whole-viewport accumulator. On the browser the (patched) wgpu maps this bit to the
-        // `texture-formats-tier2` feature; on native it surfaces the real per-format caps. Optional:
-        // absent, the driver keeps the two-texture ping-pong.
         let format_caps =
             adapter.features() & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
         let (device, queue) = adapter

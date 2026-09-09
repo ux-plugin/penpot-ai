@@ -453,15 +453,11 @@ pub fn fuse(units: Vec<UnitOp>) -> Vec<Vec<UnitOp>> {
 pub(crate) fn units_uniform(ops: &[UnitOp]) -> [f32; 24] {
     let mut out = [0.0_f32; 24];
     for op in ops {
-        // Blur/Custom are barrier units — they never appear inside a fused run, so they carry no
-        // field uniform to merge here.
         let (UnitOp::Warp(u) | UnitOp::Scatter(u) | UnitOp::Shade(u) | UnitOp::MaskMix(u)
         | UnitOp::ClipToSource(u) | UnitOp::EraseBy(u) | UnitOp::Colour(u)) = op
         else {
             continue;
         };
-        // Every unit of a run carries the same field geometry; each contributes only the trailing
-        // slots its own kind uses, so merging them is a per-slot max of what was actually set.
         for (i, v) in u.iter().enumerate().take(24) {
             if out[i] == 0.0 {
                 out[i] = *v;
@@ -579,16 +575,11 @@ pub(crate) fn generic_field_pack(p: &crate::field::FieldProgram) -> String {
 /// early-out sits immediately after the distance so nothing beyond the shape is evaluated, which is
 /// why the program is emitted in two runs rather than one.
 pub(crate) fn field_prelude(p: &crate::field::FieldProgram) -> String {
-    // A lens declares `refracted`, and only a lens wants the bezel/zoom/specular assembly. Any
-    // other program — a procedural displacement, a stroke, a bevel — is packed straight from
-    // whatever it says it produces, defaulting to no displacement and full coverage. This is the
-    // seam that lets `computeField` serve a field with no shape at all.
     let tail = if p.declares("refracted") {
         LENS_ASSEMBLY.to_string()
     } else {
         generic_field_pack(p)
     };
-    // The outside-the-shape early-out only exists for a program measuring distance from a shape.
     let (guard, distance, rest) = if p.declares("dist") {
         (
             "    if (n0 > 0.0) { return vec4<f32>(0.0, 0.0, 0.0, 0.0); }\n".to_string(),
@@ -600,7 +591,6 @@ pub(crate) fn field_prelude(p: &crate::field::FieldProgram) -> String {
     };
     format!(
         "{helpers}{band}{spec}\n\
-// The field at device pixel `fc`, packed as (displacement.x, displacement.y, specular, mask).\n\
 fn computeField(gi: u32, fc: vec2<f32>) -> vec4<f32> {{\n\
     let scale = fieldU(gi, 4u).x;\n\
 {prologue}{distance}{guard}{rest}{outputs}{tail}}}\n",
@@ -887,9 +877,6 @@ mod fuse_tests {
         assert!(!analytic.contains("textureSampleLevel(fieldTex"), "analytic reads no texture");
         assert!(sampled.contains("textureSampleLevel(fieldTex"), "sampled reads the baked field");
         assert!(!sampled.contains("sdfRoundedBox"), "sampled has no rounded-box formula");
-        // `fn fieldRamp` is the first shared helper after the distance source; everything from there on
-        // — the ramp, refraction, specular, coverage, and the whole `computeField` body (which calls
-        // `fieldDistance` identically in both) — must be byte-for-byte the same.
         let tail = |w: &str| w.split("fn fieldRamp").nth(1).expect("prelude has fieldRamp").to_string();
         assert_eq!(tail(&analytic), tail(&sampled), "everything below the distance source is identical");
     }

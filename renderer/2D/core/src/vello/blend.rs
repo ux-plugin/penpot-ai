@@ -1216,8 +1216,6 @@ struct Params {
     uv_min: vec2<f32>,
     uv_max: vec2<f32>,
     alpha: f32,
-    // Pad to 48 bytes (a multiple of 16): WebGL2 requires uniform bindings to be 16-byte aligned,
-    // and the type is 40 without this. The Rust `Params` already carries `_pad: [f32; 3]` to match.
     _pad0: f32,
     _pad1: f32,
     _pad2: f32,
@@ -1233,7 +1231,6 @@ struct VSOut {
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
-    // Corners of a triangle strip: (0,0), (1,0), (0,1), (1,1).
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
     var out: VSOut;
     out.pos = vec4<f32>(mix(p.dst_min, p.dst_max, corner), 0.0, 1.0);
@@ -1243,7 +1240,6 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
 
 @fragment
 fn fs(in: VSOut) -> @location(0) vec4<f32> {
-    // Premultiplied source; scaling the whole RGBA by the layer opacity is the correct group fade.
     return textureSample(tex, samp, in.uv) * p.alpha;
 }
 "#;
@@ -1314,9 +1310,6 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
     return out;
 }
 
-// Catmull-Rom via 9 bilinear taps, then clamp to the nearest-2x2 min/max (kills the negative-lobe
-// ringing) and a mild neighborhood sharpen re-clamped to the same bounds (halo-free). Operates on
-// premultiplied RGBA, which combines linearly.
 fn sample_sharp(uv: vec2<f32>) -> vec4<f32> {
     let dims = vec2<f32>(textureDimensions(tex));
     let sp = uv * dims;
@@ -1387,8 +1380,6 @@ fn lin_to_srgb(c: f32) -> f32 {
     if (c <= 0.0031308) { return c * 12.92; }
     return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
 }
-// Decode a premultiplied-sRGB sample to premultiplied-linear (unpremultiply → decode → re-premultiply),
-// so the Gaussian averages in linear light. Alpha is already linear and passes through.
 fn premul_srgb_to_lin(s: vec4<f32>) -> vec4<f32> {
     let a = max(s.a, 1e-5);
     let straight = s.rgb / a;
@@ -1407,11 +1398,9 @@ struct VSOut {
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
-    // Fullscreen quad: corners (0,0),(1,0),(0,1),(1,1) → NDC, with matching UVs.
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
     var out: VSOut;
     out.pos = vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
-    // NDC y-up vs texture y-down: flip v so the pass samples the right row.
     out.uv = vec2<f32>(corner.x, 1.0 - corner.y);
     return out;
 }
@@ -1432,7 +1421,6 @@ fn fs(in: VSOut) -> @location(0) vec4<f32> {
         sum = sum + s * w;
         wsum = wsum + w;
     }
-    // Premultiplied colours combine linearly, so a normalised weighted sum is the correct blur.
     var outc = sum / wsum;
     if (lin) { outc = premul_lin_to_srgb(outc); }
     return outc;
@@ -1446,8 +1434,6 @@ struct Params {
     uv_min: vec2<f32>,
     uv_max: vec2<f32>,
     alpha: f32,
-    // Pad to 48 bytes (a multiple of 16): WebGL2 requires uniform bindings to be 16-byte aligned,
-    // and the type is 40 without this. The Rust `Params` already carries `_pad: [f32; 3]` to match.
     _pad0: f32,
     _pad1: f32,
     _pad2: f32,
@@ -1473,7 +1459,6 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
 
 @fragment
 fn fs(in: VSOut) -> @location(0) vec4<f32> {
-    // Premultiplied source clipped by the mask's (anti-aliased) coverage, then layer opacity.
     let cover = textureSample(mask, samp, in.uv).a;
     return textureSample(tex, samp, in.uv) * cover * p.alpha;
 }
@@ -1496,7 +1481,6 @@ struct P {
 @group(0) @binding(2) var samp: sampler;
 @group(0) @binding(3) var bg_tex: texture_2d<f32>;
 
-// --- W3C separable blend functions, componentwise over RGB (non-premultiplied) ---
 fn f_overlay(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
     let lo = 2.0 * cb * cs;
     let hi = 1.0 - 2.0 * (1.0 - cb) * (1.0 - cs);
@@ -1524,7 +1508,6 @@ fn f_softlight(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, cs <= vec3<f32>(0.5));
 }
 
-// --- W3C non-separable helpers ---
 fn lum(c: vec3<f32>) -> f32 { return dot(c, vec3<f32>(0.3, 0.59, 0.11)); }
 fn clip_color(c: vec3<f32>) -> vec3<f32> {
     let l = lum(c);
@@ -1537,7 +1520,6 @@ fn clip_color(c: vec3<f32>) -> vec3<f32> {
 }
 fn set_lum(c: vec3<f32>, l: f32) -> vec3<f32> { return clip_color(c + (l - lum(c))); }
 fn sat(c: vec3<f32>) -> f32 { return max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b)); }
-// Scale so the max channel becomes `s`, the mid proportional, the min 0 (matches W3C SetSat).
 fn set_sat(c: vec3<f32>, s: f32) -> vec3<f32> {
     let mn = min(c.r, min(c.g, c.b));
     let mx = max(c.r, max(c.g, c.b));
@@ -1584,7 +1566,6 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
 
 @fragment
 fn fs(in: VSOut) -> @location(0) vec4<f32> {
-    // Premultiplied source (with layer opacity folded in) and premultiplied backdrop copy.
     let sp = textureSample(src_tex, samp, in.src_uv) * p.alpha;
     let bp = textureSample(bg_tex, samp, in.bg_uv);
     let sa = sp.a;
@@ -1592,7 +1573,6 @@ fn fs(in: VSOut) -> @location(0) vec4<f32> {
     let cs = select(vec3<f32>(0.0), sp.rgb / sa, sa > 0.0);
     let cb = select(vec3<f32>(0.0), bp.rgb / ba, ba > 0.0);
     let b = mix_blend(cb, cs, p.mix);
-    // W3C source-over with blend: premultiplied result color + output alpha.
     let co = sa * ((1.0 - ba) * cs + ba * b) + (1.0 - sa) * ba * cb;
     let ao = sa + ba * (1.0 - sa);
     return vec4<f32>(co, ao);

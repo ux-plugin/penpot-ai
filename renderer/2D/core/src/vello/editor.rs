@@ -95,7 +95,6 @@ static RESULT_STR: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new())
 
 static EDITOR: std::sync::Mutex<EditorState> = std::sync::Mutex::new(EditorState {
     focused: None,
-    // A translucent blue selection and an opaque black caret, until the host sets its theme.
     selection_color: 0x6633_99ff,
     cursor_color: 0xff00_0000,
     commands: Vec::new(),
@@ -175,7 +174,6 @@ pub fn blink_on() -> bool {
     with_editor(|e| e.blink_on)
 }
 
-// --- ABI --------------------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
 pub extern "C" fn text_editor_apply_theme(selection_color: u32, cursor_color: u32) {
@@ -339,7 +337,6 @@ pub extern "C" fn text_editor_select_all() -> bool {
 /// wasm; here the host owns the clock and this only records the current on/off phase.
 #[unsafe(no_mangle)]
 pub extern "C" fn text_editor_update_blink(timestamp_ms: f32) {
-    // ~530ms half-period, the platform default. Even half-periods are the visible phase.
     let on = ((timestamp_ms / 530.0) as i64) % 2 == 0;
     with_editor(|e| {
         if e.blink_on != on {
@@ -368,7 +365,6 @@ pub extern "C" fn text_editor_poll_event() -> u8 {
     })
 }
 
-// --- input (stage 2) --------------------------------------------------------------------------
 
 /// Queue a command if a shape is focused, and nudge a frame.
 fn enqueue(command: EditorCommand) {
@@ -430,7 +426,6 @@ pub extern "C" fn text_editor_toggle_overtype_mode() {
     crate::vello::abi::request_frame();
 }
 
-// --- export (stage 2) -------------------------------------------------------------------------
 
 /// Split a flat byte offset in `text` into a `(paragraph, offset-in-paragraph)` pair, paragraphs
 /// being the newline-separated lines — the shape render-wasm's selection uses.
@@ -473,7 +468,7 @@ pub extern "C" fn text_editor_export_content() -> *mut u8 {
         return std::ptr::null_mut();
     };
     let mut bytes = json.into_bytes();
-    bytes.push(0); // null terminator, as the host reads a C string
+    bytes.push(0);
     let mut guard = RESULT_STR.lock().expect("result string poisoned");
     *guard = bytes;
     guard.as_mut_ptr()
@@ -503,7 +498,6 @@ pub extern "C" fn text_editor_get_selection(buffer_ptr: *mut u32) -> bool {
     })
 }
 
-// --- IME (stage 3) ----------------------------------------------------------------------------
 
 /// Begin an IME composition. PlainEditor starts composing on the first `set_compose`, so this only
 /// nudges a frame; the caret stays where it is until pre-edit text arrives.

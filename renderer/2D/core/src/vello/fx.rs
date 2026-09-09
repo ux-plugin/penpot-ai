@@ -92,8 +92,6 @@ impl Op {
         for u in &self.units {
             std::mem::discriminant(u).hash(&mut h);
         }
-        // The field program has no Hash; its Debug form is the stable identity the batch cache
-        // already keys on (`batch::program_key`).
         format!("{:?}", self.field).hash(&mut h);
         self.blend.hash(&mut h);
         h.finish()

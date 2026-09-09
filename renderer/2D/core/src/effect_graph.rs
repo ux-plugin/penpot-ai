@@ -137,7 +137,6 @@ fn apply_chain_scales(passes: &mut [GraphPass], w: u32, h: u32) {
                 for i in [2, 3, 4, 5, 6, 8, 16] {
                     u[i] *= sc;
                 }
-                // The reach is in this pass's own pixels, so it shrinks with the pass.
                 *reach *= sc;
             }
         }
@@ -279,7 +278,6 @@ pub fn texture_graph(w: f32, h: f32, magnitude: f32, grain_div: f32, clip_to_sha
     u[1] = h;
     u[2] = magnitude;
     u[3] = grain_div;
-    // Slot 21, not one of the slots the scale solver multiplies — a flag is not a length.
     u[21] = f32::from(u8::from(clip_to_shape));
     u[16] = 1.0;
     let unit = |op: UnitKind, reach: f32| EffectPass::Unit {
@@ -459,8 +457,6 @@ pub fn lens_graph(
 ) -> Vec<GraphPass> {
     let base_arr = lens_device_field(g, geom, backdrop_size, backdrop_origin, view, k);
     let s = base_arr[16];
-    // One field program, shared by every unit of this lens; only the numbers differ per pass,
-    // because the chain solver rewrites each pass into its own texel space.
     let program = std::rc::Rc::new(crate::vello::units::lens_field_program());
     let unit = |op: UnitKind, u: Vec<f32>, reach: f32| EffectPass::Unit {
         op,
@@ -563,8 +559,6 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, vec![UnitKind::Warp, UnitKind::Scatter, UnitKind::Shade, UnitKind::MaskMix]);
-        // Every unit of the lens shares ONE field program — the structure is scale-free, so only
-        // the numbers differ per pass.
         let progs: Vec<*const crate::field::FieldProgram> = sharp
             .iter()
             .filter_map(|p| match &p.pass {
@@ -617,7 +611,6 @@ mod tests {
     #[test]
     fn the_texture_field_is_shapeless_and_declares_a_displacement() {
         let p = texture_field_program();
-        // No source: a shapeless program emits no localPos prologue.
         assert!(!p.wgsl_prologue().contains("localPos"));
         assert!(p.declares("displacement"));
         assert!(!p.declares("refracted"), "a texture warp is not a lens");

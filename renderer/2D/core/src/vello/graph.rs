@@ -75,8 +75,6 @@ pub fn lower_graph(graph: &[GraphPass]) -> Vec<Pass> {
                             field.get_or_insert_with(|| f.clone());
                             match op {
                                 UnitKind::Warp => ops.push(UnitOp::Warp(u.clone())),
-                                // A scatter that reaches nowhere is the identity: the run's head
-                                // sample already reads its input, so it lowers to nothing.
                                 UnitKind::Scatter => {
                                     if *reach > 0.0 {
                                         ops.push(UnitOp::Scatter(u.clone()));
@@ -85,7 +83,6 @@ pub fn lower_graph(graph: &[GraphPass]) -> Vec<Pass> {
                                 UnitKind::Shade => ops.push(UnitOp::Shade(u.clone())),
                                 UnitKind::ClipToSource => ops.push(UnitOp::ClipToSource(u.clone())),
                                 UnitKind::Colour => ops.push(UnitOp::Colour(u.clone())),
-                                // The punch is a second texture, exactly like a mask-mix backdrop.
                                 UnitKind::EraseBy => {
                                     ops.push(UnitOp::EraseBy(u.clone()));
                                     if let Some(other) = graph[i].inputs.get(1) {
@@ -165,7 +162,7 @@ pub fn run_graph_into(
     prof: Option<&mut crate::vello::gputime::PassProfiler>,
 ) -> Option<(wgpu::Texture, wgpu::TextureView)> {
     crate::vello::prof::inc_graph();
-    let _ = prof; // per-pass profiler stamps are not threaded on the unit path
+    let _ = prof;
     run_unit_chain(compositor, unit_pipeline, device, enc, inputs, passes, w, h, format, pool, keep_tex, keep_views)
 }
 

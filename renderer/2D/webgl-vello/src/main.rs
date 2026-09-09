@@ -1,5 +1,3 @@
-// Copyright 2026 the Vello Authors
-// SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Mock host for the embeddable [`render_vello::FocusRenderer`].
 //!
@@ -8,10 +6,6 @@
 //! input — calling the module's `render()` / `resize()` / `key()` from the outside.
 //! The renderer itself owns none of this; that separation is the Phase-0 point.
 
-// The whole file is wasm-only. A host `cargo build` therefore fails on this bin target for want
-// of a `main` — a fallback cannot live here, because this attribute strips the file before it
-// would be seen. `cargo test` is unaffected (the harness supplies its own entry point), so the
-// host-side `abi` tests run regardless.
 #![cfg(target_arch = "wasm32")]
 
 use std::cell::RefCell;
@@ -47,7 +41,6 @@ async fn host() {
     let css_w = window.inner_width().unwrap().as_f64().unwrap();
     let css_h = window.inner_height().unwrap().as_f64().unwrap();
 
-    // The HOST creates the canvas — the renderer only mounts onto it.
     let canvas = document
         .create_element("canvas")
         .unwrap()
@@ -60,7 +53,6 @@ async fn host() {
     canvas.style().set_property("display", "block").unwrap();
     body.append_child(&canvas).unwrap();
 
-    // Status overlay (host chrome, not part of the module).
     let status = document.create_element("div").unwrap();
     status.set_id("focus-status");
     status.set_text_content(Some("Vello focus module (Phase 0) — starting…"));
@@ -92,13 +84,10 @@ async fn host() {
     hs.set_property("pointer-events", "none").unwrap();
     body.append_child(&hint).unwrap();
 
-    // The host constructs the module and holds it.
     let renderer = Rc::new(RefCell::new(create_focus_renderer(canvas).await));
 
-    // A tiny rotation angle so ←/→/Q/E feel alive; the host owns the transform.
     let rot: Rc<RefCell<f64>> = Rc::new(RefCell::new(0.0));
 
-    // Keyboard: the host routes input into the module.
     {
         let renderer = renderer.clone();
         let rot = rot.clone();
@@ -128,7 +117,6 @@ async fn host() {
                     apply_rot(&mut r, *rot.borrow());
                 }
                 other => {
-                    // ArrowUp / ArrowDown etc. go to the scene.
                     r.key(other);
                 }
             }
@@ -139,7 +127,6 @@ async fn host() {
         closure.forget();
     }
 
-    // Resize: the host tells the module its new backing size.
     {
         let renderer = renderer.clone();
         let window2 = window.clone();
@@ -157,7 +144,6 @@ async fn host() {
         closure.forget();
     }
 
-    // The HOST owns the animation-frame loop and calls render() each frame.
     let f = Rc::new(RefCell::new(None));
     let g = f.clone();
     let status_el = status;
@@ -177,8 +163,6 @@ async fn host() {
 /// Host-side scene index stepping without duplicating the module's counter:
 /// we just ask the module for its scene count and rotate through.
 fn next_index(_r: &FocusRenderer, _dir: i32) -> usize {
-    // The module owns `current`; for the mock host we simply advance by 1 each press
-    // using a static counter kept here.
     thread_local! {
         static IDX: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
@@ -195,11 +179,8 @@ fn next_index(_r: &FocusRenderer, _dir: i32) -> usize {
 }
 
 fn apply_rot(r: &mut FocusRenderer, angle: f64) {
-    // Rotate about a rough canvas center via a column-major affine.
     let (sin, cos) = angle.sin_cos();
-    // Pivot ~ (400, 300) device px; good enough for the mock host.
     let (px, py) = (400.0_f64, 300.0_f64);
-    // T(p) * R * T(-p) composed into (a,b,c,d,e,f).
     let a = cos;
     let b = sin;
     let c = -sin;

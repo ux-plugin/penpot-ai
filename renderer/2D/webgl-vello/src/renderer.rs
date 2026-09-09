@@ -1,5 +1,3 @@
-// Copyright 2026 the Vello Authors
-// SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Phase 0 of the "Vello as a second render-wasm backend" plan: an **embeddable**
 //! wasm-bindgen + wgpu Vello renderer.
@@ -51,10 +49,6 @@ impl RendererWrapper {
         let width = canvas.width();
         let height = canvas.height();
 
-        // Hybrid is the WebGL2 backend, full stop. Real WebGPU is owned by the classic
-        // (vello-gpu-renderer) backend, which capability routing selects ahead of this one;
-        // by the time we reach here WebGL2 is the target, so request the GL backend directly
-        // with no WebGPU attempt or fallback ladder.
         async fn request_gl(
             canvas: &HtmlCanvasElement,
         ) -> Option<(wgpu::Instance, wgpu::Surface<'static>, wgpu::Adapter)> {
@@ -97,12 +91,6 @@ impl RendererWrapper {
             .await
             .expect("Device to be valid");
 
-        // Present to a NON-sRGB (Unorm) surface, matching vello_hybrid's own examples and the classic
-        // backend (both target Rgba8Unorm). On this ANGLE/WebGL2 the surface offered an sRGB format
-        // first, which double-encoded vello's already-sRGB output and washed the image out
-        // (#3B82F6@85% came out 158,201,252 = srgb_encode of the correct 88,149,247). Choosing a
-        // non-sRGB format removes that double-encode. Verified on real WebGL2: opaque and translucent
-        // fills now match the classic backend exactly (e.g. #3B82F6@85% over white → 88,149,247).
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
             .formats
@@ -113,9 +101,6 @@ impl RendererWrapper {
             .unwrap_or(wgpu::TextureFormat::Rgba8Unorm);
 
         let surface_config = wgpu::SurfaceConfiguration {
-            // RENDER_ATTACHMENT only: the tile store composites each tile's centre onto the
-            // swapchain with a Compositor *draw*, not a copy — WebGL2 surfaces advertise
-            // COLOR_TARGET only and reject COPY_DST at configure time.
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width,
@@ -137,8 +122,6 @@ impl RendererWrapper {
             RenderSettings {
                 level: vello_common::fearless_simd::Level::try_detect()
                     .unwrap_or(vello_common::fearless_simd::Level::baseline()),
-                // Give the filter atlas headroom so the effect-heavy focus scenes can push far
-                // before hitting Vello's hard cap (auto-clamped to the backend's real limit).
                 filter_atlas_config: vello_common::multi_atlas::AtlasConfig {
                     initial_atlas_count: 0,
                     max_atlases: 32,
@@ -159,9 +142,6 @@ impl RendererWrapper {
 
     fn reconfigure(&self, width: u32, height: u32) {
         let surface_config = wgpu::SurfaceConfiguration {
-            // RENDER_ATTACHMENT only: the tile store composites each tile's centre onto the
-            // swapchain with a Compositor *draw*, not a copy — WebGL2 surfaces advertise
-            // COLOR_TARGET only and reject COPY_DST at configure time.
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: self.surface_format,
             width,
@@ -202,8 +182,6 @@ fn ensure_logging() {
     static START: Once = Once::new();
     START.call_once(|| {
         console_error_panic_hook::set_once();
-        // Warn, not Debug: this ships in the library path, so keep it to real problems
-        // (frame skips, surface loss) rather than per-frame chatter.
         let _ = console_log::init_with_level(log::Level::Warn);
     });
 }
@@ -215,10 +193,7 @@ pub async fn create_focus_renderer(canvas: HtmlCanvasElement) -> FocusRenderer {
     let height = canvas.height();
     let wrapper = RendererWrapper::new(canvas.clone()).await;
 
-    // The "focus scenes": stand-ins for what focus mode would hand off. These are
-    // self-contained (no image resources) so the module needs only a minimal handoff.
     let scenes: Vec<AnyScene<Scene>> = vec![
-        // The end-to-end proof: a neutral render_core::model scene, drawn by Vello.
         AnyScene::new(crate::scene::NeutralModelScene::new()),
         AnyScene::new(nested_ui::NestedUiScene::new()),
         AnyScene::new(custom_filter::CustomFilterScene::new()),
@@ -248,7 +223,6 @@ impl FocusRenderer {
     /// its own submitted encoder, before the draw, so the atlas is populated when the frame reads
     /// it.
     fn upload_pending_images(&mut self) {
-        // Bake any new diamonds first, so they ride the same upload as real images.
         crate::abi::stage_diamond_bakes();
         let pending = crate::abi::take_pending_images();
         if pending.is_empty() {
@@ -322,8 +296,6 @@ impl FocusRenderer {
         self.width = width;
         self.height = height;
         self.wrapper.reconfigure(width, height);
-        // The tile store recreates its surface-sized composite scene on the next frame when it
-        // notices the dimensions changed; the tile buffers are fixed-size and need no resize.
     }
 
     /// Forward a key press to the active scene (e.g. ArrowUp grows the nested-UI scene).
@@ -377,8 +349,6 @@ fn pixmap_from_rgba(image: &crate::abi::PendingImage) -> Option<vello_common::pi
     if image.rgba.len() != expected {
         return None;
     }
-    // Premultiply: `c · a / 255`, rounded. `+ 127` is the standard round-to-nearest for an
-    // integer divide by 255; plain truncation darkens edges by up to a level.
     let mul = |c: u8, a: u8| ((u16::from(c) * u16::from(a) + 127) / 255) as u8;
     let pixels: Vec<vello_common::color::PremulRgba8> = image
         .rgba

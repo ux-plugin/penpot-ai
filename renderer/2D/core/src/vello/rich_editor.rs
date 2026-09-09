@@ -123,8 +123,6 @@ impl StyledText {
 
         for (pi, paragraph) in block.paragraphs.iter().enumerate() {
             if pi > 0 {
-                // Attach the paragraph-break newline to the previous segment (or a seed one if the
-                // first paragraph was empty), so every byte is covered by a styled segment.
                 if segments.is_empty() {
                     segments.push(Segment { len: 0, style: default_style.clone() });
                 }
@@ -137,7 +135,6 @@ impl StyledText {
             }
         }
 
-        // An empty box still needs a segment to carry the style the first typed character inherits.
         if segments.is_empty() {
             segments.push(Segment { len: 0, style: default_style });
         }
@@ -152,8 +149,6 @@ impl StyledText {
         let mut start = 0;
         for seg in &self.segments {
             let end = start + seg.len;
-            // `probe < end` finds the covering run; for `pos == 0` (probe 0) this is the first
-            // non-empty run. `<=` on the last boundary lets a caret at end-of-text inherit the last.
             if probe < end || end == self.text.len() {
                 return seg.style.clone();
             }
@@ -189,7 +184,6 @@ impl StyledText {
             segs.push(Segment { len, style: style.clone() });
         };
 
-        // Content kept from before the cut.
         let mut pos = 0;
         for seg in &self.segments {
             let (s, e) = (pos, pos + seg.len);
@@ -198,9 +192,7 @@ impl StyledText {
                 push(&mut segs, e.min(a) - s, &seg.style);
             }
         }
-        // The inserted run.
         push(&mut segs, insert.len(), &style);
-        // Content kept from after the cut.
         let mut pos = 0;
         for seg in &self.segments {
             let (s, e) = (pos, pos + seg.len);
@@ -211,7 +203,6 @@ impl StyledText {
         }
 
         if segs.is_empty() {
-            // Everything was deleted: keep the just-used style so the next keystroke inherits it.
             segs.push(Segment { len: 0, style });
         }
         debug_assert_eq!(segs.iter().map(|s| s.len).sum::<usize>(), new_text.len());
@@ -351,7 +342,6 @@ impl RichEditor {
             Some(r) => (r.start, r.end),
             None => {
                 let (a, b) = self.sel_range();
-                // Drop any selected text the composition replaces, then compose at that point.
                 (a, b)
             }
         };
@@ -426,7 +416,6 @@ impl RichEditor {
             .index()
     }
 
-    // --- read-back for the render pass / ABI ---------------------------------------------------
 
     pub fn text(&self) -> &str {
         &self.model.text
@@ -571,7 +560,6 @@ mod tests {
 
     #[test]
     fn flattens_spans_and_coalesces() {
-        // Two spans, same style → one coalesced segment; different size → two segments.
         let same = StyledText::from_block(&block(vec![paragraph(vec![span("ab", 16.0), span("cd", 16.0)])]));
         assert_eq!(same.text, "abcd");
         assert_eq!(seg_lens(&same), vec![4]);
@@ -588,7 +576,6 @@ mod tests {
             paragraph(vec![span("cd", 24.0)]),
         ]));
         assert_eq!(t.text, "ab\ncd");
-        // The '\n' rides on the first paragraph's segment.
         assert_eq!(seg_lens(&t), vec![3, 2]);
         assert_eq!(seg_lens(&t).iter().sum::<usize>(), t.text.len());
     }
@@ -603,8 +590,6 @@ mod tests {
 
     #[test]
     fn insert_inherits_style_to_the_left() {
-        // "AA" (16) + "BB" (24). Insert at byte 2 (the AA|BB boundary) inherits the *left* run (16),
-        // extending the first segment.
         let mut t = StyledText::from_block(&block(vec![paragraph(vec![span("AA", 16.0), span("BB", 24.0)])]));
         let style = t.style_left(2);
         assert_eq!(style.size, 16.0);
@@ -619,12 +604,11 @@ mod tests {
         let style = t.style_left(2);
         t.replace_range(2, 2, "x", style);
         assert_eq!(t.text, "AAxBB");
-        assert_eq!(seg_lens(&t), vec![5]); // all one style → coalesced
+        assert_eq!(seg_lens(&t), vec![5]);
     }
 
     #[test]
     fn delete_across_segments_clips_both() {
-        // "AA"(16) "BB"(24) "CC"(16): delete bytes [1,5) leaves "A" + "C" — first and last runs.
         let mut t = StyledText::from_block(&block(vec![paragraph(vec![
             span("AA", 16.0),
             span("BB", 24.0),
@@ -633,18 +617,16 @@ mod tests {
         assert_eq!(seg_lens(&t), vec![2, 2, 2]);
         t.replace_range(1, 5, "", SegStyle::default());
         assert_eq!(t.text, "AC");
-        // "A" (16) then "C" (16) — same style, coalesced.
         assert_eq!(seg_lens(&t), vec![2]);
     }
 
     #[test]
     fn replace_selection_takes_left_style() {
         let mut t = StyledText::from_block(&block(vec![paragraph(vec![span("AA", 16.0), span("BB", 24.0)])]));
-        // Select "AB" (bytes 1..3), replace with "z" — inherits left of byte 1 (the 16 run).
         let style = t.style_left(1);
         assert_eq!(style.size, 16.0);
         t.replace_range(1, 3, "z", style);
         assert_eq!(t.text, "AzB");
-        assert_eq!(seg_lens(&t), vec![2, 1]); // "Az"(16) + "B"(24)
+        assert_eq!(seg_lens(&t), vec![2, 1]);
     }
 }

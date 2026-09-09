@@ -163,15 +163,11 @@ fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
     use crate::vello::units::UnitOp;
     use crate::vello::graph::BLUR_MAX_SIGMA;
 
-    // A lens: sampling head, optionally a blur, then the pointwise tail. The head's and the blur's
-    // scales must agree — the batch packs one cell that serves both resolutions.
     if let Some(head) = passes.first().and_then(units_head) {
         return match passes {
             [one] => (one.scale >= 0.999)
                 .then(|| BatchShape::Lens { head: head.clone(), tail: one.units[1..].to_vec(), sigma: 0.0 }),
             [w, b, t] => {
-                // The middle pass must be a single unblurred-in-gamma-space `Blur` barrier, and the
-                // tail a fused units run (not a lone barrier).
                 let [UnitOp::Blur { sigma, linear: false, .. }] = b.units.as_slice() else { return None };
                 if t.units.len() == 1 && t.units[0].is_barrier() {
                     return None;
@@ -185,9 +181,6 @@ fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
         };
     }
 
-    // Otherwise a stamp: at most one blur, and a pointwise tail. The tail is not filtered by NAME.
-    // A unit declines for one of two structural reasons only — it samples (a head belongs to a lens,
-    // not a stamp), or it reads a field the batch module did not compile.
     let (mut sigma, mut linear, mut blurs) = (0.0_f32, false, 0usize);
     let mut tail: Vec<UnitOp> = Vec::new();
     for p in passes {
@@ -206,15 +199,8 @@ fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
             ops => {
                 for op in ops {
                     match op {
-                        // A sampling head this far into the chain is a lens that did not lead with
-                        // one; the stamp arms have no head to run it as.
                         UnitOp::Warp(_) | UnitOp::Scatter(_) => return None,
-                        // Both measure a field. The batch compiles ONE field program, so a chain
-                        // measuring its own cannot be evaluated by these arms until the program
-                        // travels per cell the way the uniform does.
                         UnitOp::Shade(_) | UnitOp::MaskMix(_) => return None,
-                        // A barrier inside a fused run cannot occur (fuse cuts at one), but a stamp
-                        // arm could not run it regardless.
                         UnitOp::Blur { .. } => return None,
                         _ => tail.push(op.clone()),
                     }
@@ -895,9 +881,6 @@ impl Sink {
         self.last_view = Some(full_view);
 
         let _tgd = crate::vello::prof::now();
-        // THE scheduler's front half: build the whole-frame DAG first — the gathers list and each
-        // shape's kind DERIVE from what the lowering produced ([`FrameDag::effect_shapes`]), never
-        // from re-asking the model which fields it set.
         let mut dag = crate::vello::frame_dag::build_frame_dag_installed();
         let classes = dag.effect_shapes();
         let (gathers, root_count) = crate::vello::abi::with_scene(|live, _, _| {
@@ -957,8 +940,6 @@ impl Sink {
                 wv_clamp_reach(self.wv_marker_reach(gid, kind, full_view, width, height), width, height)
             })
             .collect();
-        // Fill the DAG's view-dependent uniforms, stamp each effect's DEVICE reach onto its
-        // nodes (the marker contract lives on device tiles), and let `schedule()` decide every round.
         crate::vello::abi::with_scene(|scene, _viewport, modifiers| {
             dag.fill_lens_uniforms(full_view, width, height, |id| {
                 let n = scene.get(id)?;
@@ -1038,8 +1019,6 @@ impl Sink {
         }
         for i in 0..dag.nodes.len() {
             if let crate::vello::units::UnitOp::MaskMix(ref mut u) = dag.nodes[i].op {
-                // A radial field-tint's centre and radius are view-dependent: flat 2/3 (`u[0].zw`,
-                // the field anchor the emitter copies into record 3) and flat 4 (`u[1].x`).
                 if u.get(crate::vello::bake::PAYLOAD_PROGRAM_SLOT).copied()
                     == Some(crate::vello::bake::PROGRAM_RADIAL)
                 {
@@ -1090,12 +1069,6 @@ impl Sink {
                     }
                 }
             }
-            // A frost blur (a backdrop-rooted chain fed by the lens Warp) carries the glass's PAGE
-            // sigma from the lowering — already a sigma, never a radius — and must scale to device
-            // pixels here like every other consumer of `total_blur_sigma` does, or the frost
-            // sharpens as the view zooms. Backdrop-rooted blurs without a warp (the fx_fine
-            // background blur) arrive device-ready from their own emitter and are left alone; a
-            // body-rooted warp-fed blur (texture + layer blur) is a RADIUS and takes the body arm.
             if warp_fed && matches!(dag.nodes[r].op, crate::vello::units::UnitOp::Reload) {
                 if let crate::vello::units::UnitOp::Blur { ref mut sigma, .. } = dag.nodes[i].op {
                     *sigma *= view_scale;
@@ -1108,10 +1081,6 @@ impl Sink {
             else {
                 continue;
             };
-            // Every authorable `Offset` sits AFTER the warp in the chain (`effect_stack` orders
-            // texture → blur → filter ops), but the fold rasterizes the body pre-translated. The
-            // grain must ride with the shape — `warp(p) then move` samples the field at `p - o` —
-            // so the field origin shifts by the offset's device vector.
             let origin = match dag.nodes[i].source {
                 crate::vello::frame_dag::Source::Effect { shape, .. } => {
                     crate::vello::abi::with_scene(|live, _, modifiers| {
@@ -1142,10 +1111,6 @@ impl Sink {
                 _ => {}
             }
         }
-        // Tap pads: how far each node's input taps stray from its output pixel, in device pixels,
-        // stamped AFTER the loop above so every sigma is view-final. Keyed on the op alone — a
-        // blur's kernel extent, a displacing head's slack bound from its authored parameters;
-        // pointwise ops tap in place. This is the only per-op reach knowledge the planner holds.
         for i in 0..dag.nodes.len() {
             dag.nodes[i].pad = match dag.nodes[i].op {
                 crate::vello::units::UnitOp::Blur { sigma, .. } => {
@@ -1362,11 +1327,6 @@ impl Sink {
         }
         backend.set_frame_extent(width, acc_h);
         let dag = dag;
-        // The scratch BUDGET — the upstream capacity valve. The scheduler defers whole effects to
-        // later rounds until their concurrent draft footprint fits, so the lease planner below is
-        // handed a working set that always packs; capacity pressure trades rounds for memory here,
-        // never cropping for full-viewport drafts downstream. Tunable while the per-draft
-        // render-scale (downscale) lever is unwired; u64::MAX restores the old unbounded plan.
         let scratch_budget = std::env::var("WV_SCRATCH_BUDGET_MB")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -1425,9 +1385,6 @@ impl Sink {
                     let over = mode == crate::vello::units::ComposeMode::Over;
                     let frags: Vec<usize> =
                         nodes.iter().copied().filter(|&i| !op(i).is_structural()).collect();
-                    // The chain's root source: walk the composite's input spine down to the node that
-                    // produced the first value. A backdrop chain roots at a `Reload`; a coverage/body
-                    // chain roots at a `Rasterize`.
                     let root_of = |mut i: usize| loop {
                         match op(i) {
                             UnitOp::Rasterize(_) | UnitOp::Reload => break i,
@@ -1437,18 +1394,11 @@ impl Sink {
                             },
                         }
                     };
-                    // The composite ANCHOR: the chain's tail — normalization has already folded
-                    // the slot's Tint into the compose's colour, so the tail is a real fragment
-                    // or the structural root.
                     let anchor = *dag.nodes[compose_idx]
                         .inputs
                         .last()
                         .expect("a compose reads its chain tail");
                     if frags.is_empty() || op(anchor).is_structural() {
-                        // A chain with NO fragment units. Backdrop-rooted it is a pointwise
-                        // backdrop tint — one fused mark, colour in u[3], running inline at the
-                        // shape's z. Body-rooted it is a body replaced by pure geometry — one
-                        // bare source-over mark.
                         let root = root_of(anchor);
                         if matches!(op(root), UnitOp::Reload) {
                             if let Some(c) = colour {
@@ -1479,8 +1429,6 @@ impl Sink {
                                 )
                             )
                         {
-                            // A body replaced by pure geometry rides inline: a zero-desc body
-                            // mark — boundary marker + the body's draws at its round, no texture.
                             out.push(UnitMark {
                                 node: root,
                                 round: sched.round[root],
@@ -1500,14 +1448,8 @@ impl Sink {
                     let root = root_of(anchor);
                     let backdrop_rooted = matches!(op(root), UnitOp::Reload);
                     let coverage_rooted = matches!(op(root), UnitOp::Rasterize(_));
-                    // A chain with no gather unit is pointwise end to end: backdrop-rooted it runs
-                    // inline off the plain marker (no unit marks); coverage-rooted its one composite
-                    // arm still marks below.
                     let has_gather = frags.iter().any(|&i| op(i).is_gather());
                     if !has_gather && backdrop_rooted {
-                        // A pointwise backdrop chain (backdrop tint, field tint) is ONE fused mark
-                        // running inline at the shape's z: the compose carries the folded colour,
-                        // the run bakes as-is.
                         let run: Vec<crate::vello::units::UnitOp> =
                             frags.iter().map(|&i| op(i).clone()).collect();
                         let mut desc = if run.is_empty() {
@@ -1540,9 +1482,6 @@ impl Sink {
                         *op(root),
                         UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. })
                     );
-                    // A spread composite lays a straight colour; a coverage chain that reached the
-                    // composite without one has nothing to lay — no marks, the painter path renders
-                    // it. A BODY chain's value IS the layer, so it needs no colour.
                     if over && colour.is_none() && !body_rooted {
                         continue;
                     }
@@ -1550,9 +1489,6 @@ impl Sink {
                         .nodes
                         .iter()
                         .position(|n| n.source == crate::vello::frame_dag::Source::Body(gid));
-                    // The arm partition and each arm's fused run are the PLANNER's decisions
-                    // ([`crate::vello::frame_dag::FrameDag::arm_style`] / [`arm_run`]); the emitter
-                    // only serializes them.
                     let arm_style = dag.arm_style(&frags, coverage_rooted);
                     let walk_back = |i: usize| dag.arm_run(i, &arm_style);
                     let sampled = frags.iter().find_map(|&i| {
@@ -1573,11 +1509,6 @@ impl Sink {
                             r[6][3] = decode;
                         }
                     };
-                    // Fold-eligible silhouette sources (shape (None, None, to_draft) — analytic
-                    // coverage consumed by a gather) get their OWN zero-bit mark: the marker fences
-                    // the silhouette draws to the source's round and its OUTPUT record shifts the
-                    // window's stores into the packed lease. Emitted BEFORE the consumers so marker
-                    // rounds stay per-tile monotone.
                     if sil_fold {
                         for &sn in nodes {
                             if dag.folded_source(sn) {
@@ -1683,10 +1614,6 @@ impl Sink {
                         crate::vello::bake::stamp_field_anchor(&desc, &mut rec);
                         out.push(UnitMark { node: i, round: sched.round[i], desc, rec, ctl, masked, band, off: 0, rect: None, mark_shape: None, after: None });
                     }
-                    // A band whose flood coverage the marker's own area cannot reproduce (`analytic:
-                    // false` — glyph coverage) folds the flood recovery into its punch V pass: the V
-                    // erases the offset silhouette back out at the punch's own offset, and the band
-                    // reads that scratch coverage instead of `area[i]`.
                     if let Some(er) = frags
                         .iter()
                         .copied()
@@ -2207,23 +2134,11 @@ impl Sink {
                 }
             }
         }
-        // A mark that COMPOSES the accumulator when it runs — not an inner band (over the body) and
-        // not a materialize into draft scratch. These are the marks the body must land after: drops
-        // (under → before the body in z), a glass/backdrop composite, a backdrop tint. Punch/blur
-        // materializes never touch the accumulator, so they impose no ordering on the body.
         let composes_acc = |m: &UnitMark| {
             !m.band
                 && !matches!(dag.nodes[m.node].source, crate::vello::frame_dag::Source::Body(_))
                 && !dag.binding_shape(m.node).is_some_and(|s| s.to_draft)
         };
-        // A plain stack body still owns a ROUND (its composite must land between the under-marks
-        // and the bands, in an accumulator window — never inside a materialize window's draft),
-        // but no longer a TEXTURE: its zero-desc mark emits as a boundary marker followed by the
-        // body's draws inline, and its window is a plain rw window that composites them in PTCL
-        // order. No VALUE_OVER, no JIT render, no lease. A stack whose Replace chain already
-        // emitted a VALUE_OVER mark has its body in fine; a body-less stack has nothing to
-        // composite. The body lands after the last accumulator-composing pre-body mark; with none
-        // (an inner-only stack), before every mark.
         {
             use crate::vello::bake::bits;
             use crate::vello::frame_dag::Source as DagSource;
@@ -2279,11 +2194,6 @@ impl Sink {
                 "gid {gid:x}: every gather chain lowers to unit marks — a gather with none is a planner bug"
             );
         }
-        // Dense renumbering: scheduler order → executor rounds, gap-free from 1 (the window walk stalls
-        // on an empty round). Keys order as (round, class): a stack's BODY mark (class 1) takes its own
-        // key AFTER the last accumulator-composing pre-body mark and BEFORE its bands; a body with no
-        // such mark (an inner-only stack) keys one raw round early, ahead of every mark. Everything
-        // else is class 0 at its raw round.
         let body_key = |m: &UnitMark, ms: &[UnitMark]| -> (i64, u8) {
             if ms.iter().any(&composes_acc) {
                 (i64::from(m.round), 1)
@@ -2294,22 +2204,9 @@ impl Sink {
         let is_body = |m: &UnitMark| {
             matches!(dag.nodes[m.node].source, crate::vello::frame_dag::Source::Body(_))
         };
-        // A FENCE mark: the zero-desc mark a folded silhouette source owns (the only Rasterize
-        // Coverage mark ever pushed).
         let is_fence = |m: &UnitMark| m.desc[0] == 0.0 && dag.folded_source(m.node);
         let hoist_on = sil_fold;
         let front_on = hoist_on;
-        // The FRONT REGION — the fence hoist generalized to every backdrop-free materialize. A mark
-        // whose window binds no accumulator state (`to_draft`, base/input never `Backdrop`) and
-        // whose whole read spine is itself front-loaded depends only on leases, so it runs before
-        // the accumulator spine: every silhouette in one rasterize round, every chain's first blur
-        // in the next, and so on — one round per (spine depth, binding class), so each front round
-        // keeps ONE dispatch shape and producers land strictly before consumers. The front SPENDS
-        // memory the scheduler never modelled (front drafts co-live until their last spine reader),
-        // so admission is budget-capped per chain in deterministic gid order — a chain that misses
-        // the cap keeps its scheduled rounds (falling back to its fences alone) and costs windows,
-        // never pixels. The round after the last front round is reserved for the restore marker
-        // returning every tile to the base segment; spine rounds shift past it.
         let front: HashMap<usize, u32> = if hoist_on {
             use crate::vello::frame_dag::Slot;
             let shape_front = |n: usize| {
@@ -2489,7 +2386,6 @@ impl Sink {
                 }
             }
         }
-        // The last front round; `front_end + 1` is the restore round every spine round shifted past.
         let front_end: u32 = marks
             .values()
             .flatten()
@@ -2529,18 +2425,6 @@ impl Sink {
             let hi = marks.get(&gid).and_then(|ms| ms.iter().map(|m| m.round).max()).unwrap_or(rounds[j]);
             max_round = max_round.max(hi);
         }
-        // Reach-crop EVERY fine materialize draft into packed scratch atlases, reused across rounds
-        // (chordal interval colouring over each draft's [birth, last-read] rounds). A producer's
-        // device→lease origin rides its OUTPUT record (record 4, the store shift); each consumer's
-        // record-0 (and register-orig record-1) window carries the same origin for the read, and the
-        // producer's device rect rides the record params so escaped taps resolve by the blur's edge
-        // policy instead of reading a neighbouring lease. This is the ONE strategy — there is no
-        // runtime fallback: atlas sides come from a round-parity colouring that always exists, slabs
-        // meta-pack up to the texture limit, and capacity pressure is answered UPSTREAM by the
-        // scheduler's scratch budget (effects defer rounds until their drafts fit) — never by
-        // un-cropping. WV_SCRATCH_CROP=0 remains as the manual byte-parity A/B lever, and
-        // WV_CROP_NOREUSE gives every draft its own slot — the bisect lever separating layout bugs
-        // from stale-tenant reads.
         let _tlease0 = crate::vello::prof::now();
         let mut scratch_atlas_dims: [Option<(u32, u32)>; 3] = [None, None, None];
         let mut atlas_of: HashMap<usize, usize> = HashMap::new();
@@ -2552,12 +2436,6 @@ impl Sink {
             let mut lives: Vec<LiveRect> = Vec::new();
             let mut jobs: Vec<(usize, u32, u32)> = Vec::new();
             {
-                // A consumer's blur taps ESCAPE the draft's reach (3σ past its outermost marked
-                // pixel). The lease is tight, so an escaped tap is answered by the blur's own
-                // out-of-bounds policy (page for a backdrop blur, transparent for a coverage one) —
-                // the consumer knows the producer's DEVICE rect via the record params (corners in
-                // tile units, x*1024+y, low in record 0's param / high in record 1's) and bounds its
-                // taps against it, never against the atlas (a neighbouring lease is not content).
                 for (&gid, ms) in &marks {
                     for m in ms {
                         if dag.binding_shape(m.node).is_some_and(|s| s.region_out) {
@@ -2585,20 +2463,11 @@ impl Sink {
                         jobs.push((m.node, x0, y0));
                     }
                 }
-                // HashMap iteration is per-process random; the packer's layout (and therefore which
-                // texels an escaped read lands on) must not be.
                 let mut order: Vec<usize> = (0..jobs.len()).collect();
                 order.sort_by_key(|&k| (lives[k].birth, jobs[k].0));
                 lives = order.iter().enumerate().map(|(i, &k)| LiveRect { node: i, ..lives[k] }).collect();
                 jobs = order.iter().map(|&k| jobs[k]).collect();
             }
-            // The register a mark's slot-10 read actually binds, planner-side: a bare rasterize
-            // mark is its own (never-leased) edge; an erase reads its punch (inputs[1]); everything
-            // else follows its FIRST-input spine down through the in-register links to the first
-            // leased draft, stopping at a structural root OR at any accumulator-writing node (a
-            // spine value is read from the accumulator, never a draft — walking through one once
-            // fabricated read edges into other chains and made rounds appear to read themselves).
-            // Mirrors the loop's `read_edge` exactly.
             let leased: std::collections::HashSet<usize> = jobs.iter().map(|&(n, _, _)| n).collect();
             let read_input = |node: usize| -> Option<usize> {
                 if matches!(dag.nodes[node].op, UnitOp::Rasterize(_)) {
@@ -2621,8 +2490,6 @@ impl Sink {
                     cur = dag.nodes[cur].inputs.first().copied()?;
                 }
             };
-            // A draft is live until its LAST reader's round — through the same walk, so a composite
-            // past a fused pointwise tail still extends its draft's life.
             {
                 let mut death_of: HashMap<usize, u32> = HashMap::new();
                 for ms in marks.values() {
@@ -2637,10 +2504,6 @@ impl Sink {
                             let d = death_of.entry(e).or_insert(0);
                             *d = (*d).max(m2.round);
                         }
-                        // The BASE binding (a Source/Draft(2) base resolves to the chain's rasterize
-                        // root) is a read too — invisible to `inputs`/`read_input`, so without this a
-                        // front-loaded root's lease dies at its first blur and a later window binds
-                        // a reclaimed slot.
                         if let Some(e) = dag_base_rasterize(&dag, m2.node).filter(|e| leased.contains(e)) {
                             let d = death_of.entry(e).or_insert(0);
                             *d = (*d).max(m2.round);
@@ -2654,18 +2517,8 @@ impl Sink {
                 }
             }
             if !lives.is_empty() {
-                // Atlas SIDES by ROUND-parity 2-colouring. The executor's own invariants are the
-                // constraints: a materialize round writes ONE texture while reading ONE source
-                // texture, so it must take the opposite side from the round(s) it reads (neq), and
-                // any round's leased inputs must share a side (eq — one bound source). Read edges
-                // point strictly earlier, the constraint graph is acyclic, and a colouring always
-                // exists; a contradiction is a planner bug surfaced loudly, never designed around.
                 let birth_of: HashMap<usize, u32> =
                     jobs.iter().zip(&lives).map(|(&(n, _, _), l)| (n, l.birth)).collect();
-                // FOLDED silhouette leases live on their own THIRD side: their windows only write
-                // it and their readers only read it, so it can never join a dispatch's read+write
-                // conflict — and their edges stay out of the two-side parity colouring (a V pass
-                // reading its H draft AND its sil root would otherwise need three colours).
                 let fold_nodes: std::collections::HashSet<usize> = jobs
                     .iter()
                     .map(|&(n, _, _)| n)
@@ -2769,15 +2622,6 @@ impl Sink {
                             .map(|(i, &k)| LiveRect { node: i, ..lives[k] })
                             .collect();
                         let leases = pack(&side_lives);
-                        // Meta-pack the slabs into the one side texture, using its full 8192×8192.
-                        // A slab's slot rows can stack far past the height cap (thousands of
-                        // sequential drafts reuse a handful of slots but the packer still rows
-                        // co-live ones), so each slab is first CHUNKED into row groups of at most
-                        // 8192, and the chunks flow into columns: down a column to the cap, then a
-                        // new column to the right. Capacity pressure beyond the full texture is the
-                        // scheduler budget's job upstream; a chunk that still cannot place keeps its
-                        // drafts full-viewport for their own rounds — bounded, per-round, and
-                        // unreachable once the budget binds.
                         let mut slab_leases: std::collections::BTreeMap<u32, Vec<usize>> =
                             std::collections::BTreeMap::new();
                         for (i, le) in leases.iter().enumerate() {
@@ -2844,9 +2688,6 @@ impl Sink {
                                 atlas_h.max(TILE_PX),
                             );
                         }
-                        // A round's peers share ONE dispatch and one output texture, so an
-                        // overflowed block drops its WHOLE rounds — half-leased rounds would store
-                        // shifted coords into the wrong texture.
                         let dropped_rounds: std::collections::HashSet<u32> = leases
                             .iter()
                             .enumerate()
@@ -2889,9 +2730,6 @@ impl Sink {
                 for ms in marks.values_mut() {
                     for m in ms.iter_mut() {
                         if let Some(&(ox, oy)) = origin.get(&m.node) {
-                            // rec[4].w = the FLUSH flag: set only on front-merged marks, where a
-                            // second producer on a tile must store-and-reseed the register. The
-                            // planner decides; un-merged windows keep their register flow verbatim.
                             m.rec[8] = [1.0, ox, oy, f32::from(u8::from(front.contains_key(&m.node)))];
                         }
                         if let Some(e) = read_input(m.node).filter(|e| origin.contains_key(e)) {
@@ -2905,9 +2743,6 @@ impl Sink {
                                 m.rec[2][2] = oy;
                             }
                         }
-                        // The flood fold samples `base_in` at px + offset (fx_flood_value) with no
-                        // record window of its own; when the base silhouette is a packed lease,
-                        // fold its origin into the offset so the sample lands in the lease frame.
                         if (m.desc[0] as u32) & crate::vello::bake::bits::FLOOD_ERASE != 0 {
                             if let Some(&(ox, oy)) =
                                 dag_base_rasterize(&dag, m.node).and_then(|rz| origin.get(&rz))
@@ -2930,27 +2765,9 @@ impl Sink {
                 }
             }
         }
-        // Silhouette draws for a FOLDED source mark: the geometry is emitted into the MAIN scene
-        // right after the mark's marker, so it lands in the source's own round on the marker's
-        // tiles and the round's window rasterizes it into the packed lease. Same inset/class
-        // resolution the JIT builder used.
         let _tplan = crate::vello::prof::now();
         let sil_emit_ms = std::cell::Cell::new(0.0f64);
         let gi_of: HashMap<u128, usize> = gathers.iter().map(|&(gi, gid, _)| (gid, gi)).collect();
-        // THE one emitter: given a folded Rasterize node, emit its draws — the geometry is the
-        // op's own definition (a shadow silhouette, or a body's scene range at its offset). The
-        // draws are CLIPPED to the fence marker's rect: a fence exists only on the tiles that
-        // rect covers, and an escaped draw would land at the surrounding segment and composite
-        // into the picture (glyph punch silhouettes overhang their gather's reach).
-        // What a band fence DRAWS: `(transform region, z lo, z hi)` from the functor's plan — a
-        // plain region draws every root below its reader; a fold's ground and windows stop at
-        // the first writer (their later ranges ride each masked arm's `after`).
-        // FRAME-content draws must never rasterize onto rented band rows: a document taller than
-        // the viewport keeps drawing below it (the scene is unclipped), and those strays land on
-        // band tiles where they composite INTO region windows over the band's own output — the
-        // register is shared per tile, ordering does not save it. Clip every root-transform scene
-        // splice to the frame rows whenever bands exist; the clip edge sits at `band_origin_y`
-        // (tile-ceiled, past the accumulator's last stored row), so frame AA is untouched.
         let frame_clip = (regions.regions.len() > 1 && !std::env::var("WV_NO_CLIP").is_ok())
             .then(|| Rect::new(0.0, 0.0, f64::from(width), f64::from(regions.band_origin_y())));
         let draw_frame_range =
@@ -3026,23 +2843,12 @@ impl Sink {
             scene.pop_layer();
             sil_emit_ms.set(sil_emit_ms.get() + (crate::vello::prof::now() - _ts));
         };
-        // Every marker's (round, reach quad), collected as they are drawn: a window's work on a tile
-        // exists only where a marker with an in-window round advanced that tile, so these quads are an
-        // EXACT cover of every non-base window's active tiles (the sparse dispatch lists below).
         let mut marker_rects: Vec<(u32, [f32; 4])> = Vec::new();
-        // `boundaries[j]` = draw count before gather j's marker(s); `markers_before[j]` = markers emitted
-        // before it; `total_markers` = all of them. A gather emits one marker per unit mark, each at its
-        // own z ordinal.
         let (boundaries, markers_before, total_markers): (Vec<u32>, Vec<u32>, u32) = {
             let mut b = Vec::with_capacity(gathers.len());
             let mut mb = Vec::with_capacity(gathers.len());
             let mut cursor = 0usize;
             let mut z = 0u32;
-            // The FRONT block: every front mark's marker draws first in the scene, sorted by round
-            // (per-tile rounds stay monotone), fences followed by their silhouette draws. Then a
-            // full-viewport boundary marker at `front_end + 1` returns every tile to the base
-            // segment. The seed window [0,1) breaks at the first front-block marker on every tile,
-            // so the base content it used to composite rides the restore round's window instead.
             if hoist {
                 let mut fronted: Vec<(u32, usize, usize)> = Vec::new();
                 for (j, &(_, gid, _)) in gathers.iter().enumerate() {
@@ -3100,11 +2906,6 @@ impl Sink {
                 b.push(backend.draw_object_count(&scene));
                 mb.push(z);
                 if kind == FX_STACK {
-                    // The stack's window marker (eid 6) opens its first round; its unit marks
-                    // follow. The BODY's mark (zero desc, `Source::Body`) emits as a boundary
-                    // marker plus the body's draws inline — its round's plain rw window
-                    // composites them in PTCL order. The stack shape is skipped from the scene
-                    // draws (its layers paint per-round).
                     z += 1;
                     backend.draw_effect_marker(&mut scene, root, gid, 6u32, z, rounds[j], 0, reaches[j], 0);
                     marker_rects.push((rounds[j], reaches[j]));
@@ -3230,11 +3031,6 @@ impl Sink {
         let phase_usage = self.raster_usage
             | wgpu::TextureUsages::COPY_SRC
             | wgpu::TextureUsages::TEXTURE_BINDING;
-        // THE accumulator: ONE packed r32uint texture (pack4x8unorm texels), updated IN PLACE by
-        // every accumulating window through core-portable read-write storage — no ping-pong, no
-        // second slot, no adapter features. Fine never reads it as a texture: its only reads are
-        // own-pixel RMW inside a dispatch, and encoder-level snapshot blits at round boundaries
-        // (below) into `snap`, which serves every backdrop read (`base_in`).
         let acc_usage = wgpu::TextureUsages::STORAGE_BINDING
             | wgpu::TextureUsages::COPY_SRC
             | wgpu::TextureUsages::TEXTURE_BINDING
@@ -3290,13 +3086,8 @@ impl Sink {
                 sched.rounds(),
             );
         }
-        // Edge-driven scratch: every materialised DAG node writes its OWN texture, keyed by NODE INDEX; a
-        // reader binds it by following its `inputs` edge. Same-round peers alias one physical texture —
-        // the round's single dispatch wrote all their regions.
         let mut node_scratch: std::collections::HashMap<usize, wgpu::TextureView> = std::collections::HashMap::new();
         let mut draft_texs: Vec<wgpu::Texture> = Vec::new();
-        // The two packed draft atlases every materialize writes its lease into (alternating along
-        // draft→draft chains so a dispatch never reads and writes one texture), reused across rounds.
         let mut atlas_side_idx = 0usize;
         let scratch_atlas_views: [Option<wgpu::TextureView>; 3] = scratch_atlas_dims.map(|dims| {
             let side = atlas_side_idx;
@@ -3319,8 +3110,6 @@ impl Sink {
                 if std::env::var("WV_DBG_LOOPATLAS").is_ok_and(|s| s.parse() == Ok(side)) {
                     self.dbg_atlas = Some((v.clone(), aw, ah));
                 }
-                // Guard bands and slot padding are read by escaped taps and must hold transparent
-                // 0 — a pooled texture holds whatever the previous frame left in it.
                 Compositor::clear(&mut enc, &v, [0.0, 0.0, 0.0, 0.0], None);
                 draft_texs.push(t);
                 v
@@ -3332,8 +3121,6 @@ impl Sink {
             flush_mark = passes_recorded();
         }
 
-        // The round → dispatch-owning node map: a round's nodes share ONE binding shape (the scheduler's
-        // invariant), so they ride one dispatch and every materialize output is recorded for all of them.
         let round_nodes: HashMap<u32, Vec<usize>> = {
             let mut m: HashMap<u32, Vec<usize>> = HashMap::new();
             for ms in marks.values() {
@@ -3350,7 +3137,6 @@ impl Sink {
         let draws_after = |j: usize| -> u32 {
             total_draws.saturating_sub(boundaries[j]).saturating_sub(n_markers - markers_before[j])
         };
-        // Every executor round that carries work: a unit mark, or a gather's base window.
         let active_rounds: std::collections::HashSet<u32> = marks
             .values()
             .flatten()
@@ -3359,15 +3145,8 @@ impl Sink {
             .collect();
         let window_has_draws = |lo: u32, hi: u32| -> bool {
             if lo == 0 {
-                // The base window must open (seeding the accumulator and advancing the window
-                // cursor) whenever ANY later round carries a mark — a scene whose only content is
-                // stack shapes has zero base draws, but skipping [0, 1) would leave the cursor at 0
-                // and starve every mark window behind the base-only special case.
                 return real_draws > 0 || !active_rounds.is_empty();
             }
-            // The front's restore marker parks every tile's base content at `front_end + 1` — a
-            // round no mark owns, invisible to the clauses below — so its window opens whenever
-            // the scene has real draws at all.
             if hoist && lo == front_end + 1 && real_draws > 0 {
                 return true;
             }
@@ -3375,18 +3154,6 @@ impl Sink {
             (0..gathers.len()).any(|j| hit(rounds[j]) && draws_after(j) > 0)
                 || active_rounds.iter().any(|&r| hit(r))
         };
-        // Sparse dispatch lists + snapshot rects, from ONE replay of the loop's window partition.
-        //
-        // Sparse: a window has work on a tile ONLY where a marker with an in-window round advanced
-        // it (`marker_rects` is exact), so every non-seed window shrinks to one workgroup per
-        // covered tile — the list rides the tail of `effect_params` (`phase_sparse_window`). The
-        // one exception stays full-grid: a materialize round that fell back to a full-viewport
-        // draft (its unstamped records read the draft anywhere, so every tile must store).
-        //
-        // Snapshots: the accumulator is a WRITE-ONLY target for fine — every backdrop read
-        // (`base_in`) is served by the `snap` texture, refreshed per window by encoder blits of the
-        // rects its marks can read: each mark's quad padded by its tap margin (3σ for a blur's
-        // escaped taps; a flat allowance for warp displacement, chromatic shift and flood offsets).
 
         let (snap_round_rects, merge_read_rects): (
             HashMap<u32, Vec<[f32; 4]>>,
@@ -3399,9 +3166,6 @@ impl Sink {
                     _ => 64.0,
                 }
             };
-            // The MERGE read set uses honest per-mark pads, not the blit allowance: a pointwise
-            // snapshot read (a plain or blur composite — blur taps ride the DRAFT) reaches only
-            // its own quad; warp displacement, scatter and flood offsets keep the flat 64.
             let merge_pad = |mk: &UnitMark| -> f32 {
                 let bits = mk.desc[0] as u32;
                 if bits & (crate::vello::bake::bits::WARP
@@ -3415,16 +3179,6 @@ impl Sink {
             };
             let dev: HashMap<u128, [f32; 4]> =
                 gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
-            // A mark needs the snapshot refreshed only where its dispatch actually SAMPLES the
-            // snapshot, and only as far as its taps reach. Neighbourhood readers — warp
-            // displacement, scatter, floods, a blur whose taps ride the base binding (an rw window
-            // with no slot-10 input), and every mark of a materialize window whose base IS the
-            // snapshot — keep the full tap pad. An rw composite that reads only its OWN pixel's
-            // backdrop (a chained mark whose `orig` record points at the base) needs just its
-            // quad: fine reads `orig` at cov>0 pixels, all inside the reach. A mark that never
-            // samples the base at all — a plain-window fused mark whose `orig` is the running
-            // register, a blur whose taps ride a draft — contributes no rect, and a window of
-            // only such marks skips its refresh dispatch entirely.
             let snap_pad = |mk: &UnitMark| -> Option<f32> {
                 use crate::vello::frame_dag::Slot;
                 let bits = mk.desc[0] as u32;
@@ -3445,9 +3199,6 @@ impl Sink {
                 }
                 (shp.input != Slot::None && mk.rec[2][0] != 2.0).then_some(0.0)
             };
-            // A glass gather's base reads land up to its true warp displacement away — the honest
-            // per-param bound, never the flat allowance, floored at the old constant so refresh
-            // regions only ever grow.
             let glass_slack: HashMap<u128, f32> = marks
                 .keys()
                 .filter_map(|&gid| {
@@ -3504,13 +3255,6 @@ impl Sink {
             (m, mr)
         };
         let mut snap_windows: HashMap<u32, Vec<[u32; 4]>> = HashMap::new();
-        // The MERGE pass: consecutive composite (rw) windows that share a binding class and whose
-        // tile sets and padded snapshot reads are pairwise disjoint fold into ONE dispatch — the
-        // segment range moves from the dispatch uniform into each sparse entry (a parallel range
-        // block, flagged by bit 29 of the tile word), so each workgroup walks its own window. A
-        // window that conflicts — overlap, a different class, a materialize, a full-grid restore —
-        // breaks the run, so no member ever jumps a producer between it and its leader. Follower
-        // snapshot blits ride the leader (sound: members never read each other's writes).
         let (sparse_windows, merged_windows, follower_windows): (
             HashMap<u32, (u32, u32)>,
             HashMap<u32, Vec<u32>>,
@@ -3614,9 +3358,6 @@ impl Sink {
                     }
                 }
                 let listed = !tiles.is_empty() && tiles.len() < full;
-                // Grouping class: a composite window's slot-10 kind plus the physical texture it
-                // binds there (its input's atlas side; -1 = nothing bound). `None` = ungroupable —
-                // a materialize, a full-grid window, a private-texture source.
                 let cls: Option<(u8, i64)> = if !(listed && lo > front_end + 1) {
                     None
                 } else {
@@ -3659,15 +3400,6 @@ impl Sink {
                 });
                 lo = r;
             }
-            // Single-scan skip-over grouping, one OPEN group per class. A window JOINS its
-            // class's open group when it is independent — reads and writes, both directions — of
-            // every member AND of every window it would move past (the group's BLOCKED union:
-            // everything scanned since the leader that did not join it, members of other groups
-            // included, since they run at their own leader's earlier position). A member only ever
-            // moves EARLIER past windows it is fully independent of, so the observable write/read
-            // order is preserved. A window with unlisted tiles (a full-grid restore) has unknown
-            // extent and POISONS every open group. A member's own draft producers share its marker
-            // tiles, so the tile test keeps a composite behind its chain.
             struct Group {
                 members: Vec<usize>,
                 m_tiles: Vec<u64>,
@@ -3722,10 +3454,6 @@ impl Sink {
                             or_in(&mut g.b_r, &w.rbits);
                         }
                     } else {
-                        // A window that joined group g still moves past every OTHER open group's
-                        // future members? No — it records at its own class-leader's position, which
-                        // is earlier than any window scanned later; later joiners of other groups
-                        // must therefore be independent of it: block it into every other group.
                         for (&c, g) in open.iter_mut() {
                             if Some(c) == c_of(w) {
                                 continue;
@@ -3796,10 +3524,6 @@ impl Sink {
             (map, merged, followers)
         };
         let fx_bytes: Vec<u8> = fx_params.iter().flat_map(|f| f.to_le_bytes()).collect();
-        // Every rasterized source is FOLDED — a fence in the scene, a lease in the atlas;
-        // there is no JIT layer path. The one out-of-band producer left is the SDF baker: a
-        // Distance source is a FIELD generated by its own shader, never drawable geometry, so
-        // neither fold rule can apply to it.
         {
             use crate::vello::frame_dag::Source as DagSource;
             use crate::vello::units::UnitOp;
@@ -3861,18 +3585,13 @@ impl Sink {
         let _tpl = crate::vello::prof::now();
         let mut window_lo = 0u32;
         let mut seeded = false;
-        // Clearing the packed accumulator: the clear value is the premultiplied background packed
-        // as one u32 texel (the same encoding `fine_area_u`'s base-color seed writes).
         let seed_clear = |enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
             let bg = crate::vello::abi::background().premultiply().to_rgba8().to_u32();
             Compositor::clear(enc, view, [f64::from(bg), 0.0, 0.0, 0.0], None);
         };
         for r in 1..=max_round + 1 {
-            // The extra iteration is the FINAL window ([last, SEG_ALL)) — same dispatch, open end.
             let hi = if r > max_round { crate::vello::rasterize::SEG_ALL } else { r };
             if window_has_draws(window_lo, hi) {
-                // A merge FOLLOWER's tiles ride its leader's dispatch (per-entry ranges); its
-                // snapshot blits rode the leader too. Nothing left to record here.
                 if follower_windows.contains(&window_lo) {
                     window_lo = r;
                     continue;
@@ -3881,9 +3600,6 @@ impl Sink {
                 #[cfg(not(target_arch = "wasm32"))]
                 if std::env::var("WV_DBG_WIN").is_ok() { eprintln!("WV_DBG_WIN: [{window_lo},{hi}) nodes={:?} seeded={seeded}", round_nodes.get(&window_lo)); }
                 if let Some(unit_nodes) = round_nodes.get(&window_lo) {
-                    // Shape-driven dispatch: the round's binding shape — not a winner node's op —
-                    // decides the pass: what fills fine's three slots and which permutation reads slot
-                    // 10. All nodes in the round share the bindings (co-located sources, one output).
                     use crate::vello::frame_dag::Slot;
                     let rep = unit_nodes[0];
                     let shp = dag.binding_shape(rep).expect("a scheduled round's nodes own the dispatch");
@@ -3909,11 +3625,6 @@ impl Sink {
                         draft_texs.push(t);
                         v
                     };
-                    // A materialize writes its packed lease in the shared atlas (per-mark OUTPUT
-                    // records shift the stores; the dispatch default is the OOB sentinel so a tile
-                    // with no cropped marker drops its store instead of clobbering a lease). The
-                    // fallback — no atlas, records unstamped — is a fresh full-viewport draft with
-                    // identity mapping.
                     const OOB: u32 = 1 << 24;
                     let mut draft_target = |backend: &mut B, node: usize| {
                         match atlas_of.get(&node).and_then(|&c| scratch_atlas_views[c].clone()) {
@@ -3927,12 +3638,6 @@ impl Sink {
                     if let Some(&(sb, sn)) = sparse_windows.get(&window_lo) {
                         backend.phase_sparse_window(sb, sn);
                     }
-                    // Refresh the window's backdrop snapshot: encoder blits of exactly the rects
-                    // this window's marks can read, accumulator -> snap at identical coordinates
-                    // (no record shifts). Copy cost scales with effect reach, not the viewport.
-                    // A dispatch that never binds snap (a materialize whose base is a source or a
-                    // draft) skips the refresh entirely — every snap READER blits its own rects at
-                    // its own window, so an unread refresh is pure cost and a pass-batch breaker.
                     let binds_snap = !shp.to_draft || shp.base == Slot::Backdrop;
                     let refresh: Vec<[u32; 4]> = std::iter::once(window_lo)
                         .chain(merged_windows.get(&window_lo).into_iter().flatten().copied())
@@ -3970,8 +3675,6 @@ impl Sink {
                         } else {
                         match (shp.base, shp.input) {
                             (Slot::None, Slot::None) => {
-                                // A rasterize window: the fenced silhouette draws paint the lease;
-                                // nothing is bound but the draft.
                                 let dv = draft_target(backend, rep);
                                 backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &dv);
                                 dv
@@ -3982,9 +3685,6 @@ impl Sink {
                                 dv
                             }
                             (Slot::Backdrop, Slot::Source) => {
-                                // A frost warp over a sampled (SDF) field: base = the backdrop
-                                // snapshot, slot 10 = the baked SDF, materialize the refracted
-                                // sample for the blur chain.
                                 let src = read_edge(rep)
                                     .and_then(|e| node_scratch.get(&e))
                                     .expect("SDF baked for the round")
@@ -3994,8 +3694,6 @@ impl Sink {
                                 dv
                             }
                             (Slot::Source, Slot::Source) => {
-                                // Materialize from a rasterized source: base_in = input_in = the round's
-                                // co-located source texture (rgba8 — no backdrop involved).
                                 let sil = read_edge(rep)
                                     .and_then(|e| node_scratch.get(&e))
                                     .expect("source co-located for the round")
@@ -4005,8 +3703,6 @@ impl Sink {
                                 dv
                             }
                             (_, Slot::Draft(_)) => {
-                                // Materialize from a prior draft. A Source base keeps the rgba8
-                                // root-surface path; a Backdrop base reads the snapshot.
                                 let src = read_edge(rep)
                                     .and_then(|e| node_scratch.get(&e))
                                     .expect("draft aliased for the round")
@@ -4060,13 +3756,9 @@ impl Sink {
                         backend.phased_fine_segment_rwu(device, queue, &mut enc, window_lo, hi, &snap, slot10, &acc);
                     }
                 } else if !seeded {
-                    // The base window: fine_area_u seeds the packed accumulator from the config
-                    // base color and paints the round-0 draws.
                     backend.phased_fine_segment_seed_u(device, queue, &mut enc, window_lo, hi, &acc);
                     seeded = true;
                 } else {
-                    // A plain draw window (no unit nodes): in-place update. Its inline marks read
-                    // the backdrop through the snapshot, refreshed for this window's rects.
                     if let Some(&(sb, sn)) = sparse_windows.get(&window_lo) {
                         backend.phase_sparse_window(sb, sn);
                     }
@@ -4177,8 +3869,6 @@ impl Sink {
                 eprintln!("WV_DBG_DUMP_DRAFTS: wrote {path}");
             }
         }
-        // The blur drafts lived across the whole round loop (like the batch atlases); hand them to the
-        // frame-transient list so they return to the pool after the frame, not at a per-node recycle.
         self.frame_transient.extend(draft_texs);
         backend.phased_finish(device, queue, &mut enc);
         crate::vello::prof::dbg_add(27, crate::vello::prof::now() - _tpl);
@@ -4501,11 +4191,6 @@ impl Sink {
         let head = eff.as_ref().and_then(|e| e.ops.first());
         let cs = full_view.as_coeffs();
         let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
-        // A sampling head (Lens) displaces past its blur, so it pads wider (refraction slack); a plain
-        // gather blur pads to its own reach. Both numerators are `3·sigma`, from the head op itself.
-        // The reach is the marker's WRITE extent (tile coverage, composite area) — read validity is
-        // padded separately (snapshot refresh slack, the scatter's draft tap clamp), never here:
-        // widening the stamp trespasses on neighbouring effects' tiles.
         let reach = match head {
             Some(Op::Lens(g)) => 3.0 * f64::from(g.total_blur_sigma() * scale) + 20.0,
             _ => 3.0 * f64::from(self.gather_sigma(id, full_view, 1.0)) + 6.0,
@@ -6100,8 +5785,6 @@ mod batch_admission_tests {
             other => panic!("a sampling head is a lens, got {other:?}"),
         }
 
-        // Pointwise units the stamp stages do not implement are refused outright rather than
-        // silently falling into the wrong family.
         assert_eq!(batch_admit(&[units(vec![UnitOp::MaskMix(u())])]), None);
     }
 }

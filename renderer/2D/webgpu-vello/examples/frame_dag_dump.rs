@@ -51,7 +51,6 @@ fn to_mermaid_scheduled(dag: &FrameDag) -> String {
     s.push_str(CLASSDEFS);
     for level in 0..=max {
         let count = sched.round.iter().filter(|&&l| l == level).count();
-        // Label the round by the barrier that opens it (the first node at this depth that crossed one).
         let why = dag
             .nodes
             .iter()
@@ -105,7 +104,6 @@ fn main() {
         dag.nodes.len(),
         specs.len(),
     );
-    // The scheduler's output, one row per node: round · barrier · target(atlas) · op · inputs · name.
     eprintln!("  #  rnd  barrier      target     inputs        op / label");
     for (i, n) in dag.nodes.iter().enumerate() {
         let bar = match sched.barrier[i] {

@@ -52,8 +52,6 @@ pub struct FootprintDescriptor {
 pub fn pass_reach(pass: &EffectPass) -> Reach {
     match pass {
         EffectPass::Blur { sigma, .. } => Reach::Neighborhood(3.0 * sigma),
-        // A unit's reach is declared by whoever built it. Reading it back out of the uniform would
-        // mean guessing which slot holds a magnitude, and that answer is per-program.
         EffectPass::Unit { reach, .. } if *reach > 0.0 => Reach::Neighborhood(*reach),
         EffectPass::Unit { .. } => Reach::SamePixel,
     }

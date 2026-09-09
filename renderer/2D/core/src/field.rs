@@ -307,8 +307,6 @@ impl FieldProgram {
             out.push_str(FIELD_NOISE);
         }
         if uses(&|n| matches!(n, FieldOp::Gradient)) {
-            // The gradient differentiates the source, so it needs the source as a function — which
-            // is also the seam a baked provider would swap.
             let Some(src) = self.source() else {
                 panic!("the gradient differentiates a source; the program has none")
             };
@@ -556,7 +554,6 @@ mod tests {
         assert!(src.contains("fieldDistance(gi, localPos)"));
         assert!(src.contains("fieldCoverage"));
         assert!(src.contains("let mask = n1;"));
-        // A mask must not drag in the bevel or refraction machinery.
         let h = p.helpers();
         assert!(h.contains("sdfRoundedBox"));
         assert!(h.contains("fn fieldCoverage"));
@@ -722,7 +719,6 @@ mod reuse_tests {
         assert!(src.contains("- vec2<f32>(0.5, 0.5)"));
         let h = p.helpers();
         assert!(h.contains("fn _fbm") && h.contains("fn fractalNoise"));
-        // Noise is procedural: it must not drag in any shape machinery.
         assert!(!h.contains("fn fieldRefract") && !h.contains("fn fieldRamp"));
     }
 
@@ -750,7 +746,6 @@ mod reuse_tests {
             prelude = crate::vello::units::field_prelude(&p),
         );
         validate(&src);
-        // No shape, so none of the lens machinery may appear.
         assert!(!src.contains("glassSpecular(edgeT"), "no lens assembly");
         assert!(!src.contains("let localPos"), "no centre to be relative to");
         assert!(src.contains("return vec4<f32>(displacement.x, displacement.y, 0.0, 1.0);"));
@@ -803,7 +798,6 @@ mod reuse_tests {
         assert!(sampled.contains("textureSampleLevel(fieldTex"));
         assert!(!sampled.contains("sdfRoundedBox"));
 
-        // ...and the operators above them are the same text either way.
         assert_eq!(mask(box_source()).wgsl(), mask(sampled_source()).wgsl());
     }
 

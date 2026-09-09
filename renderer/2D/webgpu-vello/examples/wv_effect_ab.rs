@@ -180,9 +180,6 @@ fn main() {
     let wv_passes = render_core::vello::sink::wv_passes_recorded() - passes_before_wv;
     println!("  wv render passes: {wv_passes}");
     if let Ok(reps) = std::env::var("WV_DAG_TIME").map(|v| v.parse::<u32>().unwrap_or(60)) {
-        // Time the DAG-edge executor (default on) against the forced-legacy WindowRole/batched path.
-        // Fresh Sink per config; each frame reinstalls the scene, clears dirty, renders, and polls to
-        // completion so the wall time is a full GPU frame, not just encode.
         let mut time_it = |dag: bool| {
             unsafe {
                 std::env::set_var("WV_DAG", if dag { "1" } else { "0" });
@@ -190,7 +187,6 @@ fn main() {
             }
             let mut sink = Sink::new(&device, FORMAT);
             let t = make_target(&device, w, h, "wv dag timing");
-            // Warm up (pipeline/atlas creation) so the first frame's one-time cost is excluded.
             for _ in 0..3 {
                 let cells = install(&scene);
                 let _ = frame_setup(cells);

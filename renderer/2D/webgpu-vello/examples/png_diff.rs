@@ -90,8 +90,6 @@ fn main() {
         }
     }
 
-    // Colouring waits for the maximum, so the ramp is relative to what this comparison actually
-    // contains. A floor keeps a delta of 1 off the black end rather than indistinguishable from it.
     let span = f32::from(max_delta.max(1));
     for (o, d) in deltas.iter().enumerate() {
         let t = if *d == 0 { 0.0 } else { 0.15 + 0.85 * f32::from(*d) / span };
@@ -118,9 +116,6 @@ fn main() {
     write_rgb(out_path, &out, w, h);
     println!("wrote {out_path}");
 
-    // A stark white-on-black mask beside the heat map: any non-zero difference reads at full
-    // brightness, so a one-step delta is as visible as a saturated one. Scaled up `ZOOM`× with
-    // nearest sampling, because a two-pixel seam in a 1192×242 proof is invisible at 1:1.
     const ZOOM: u32 = 3;
     let (zw, zh) = (w * ZOOM, h * ZOOM);
     let mut mask = vec![0u8; (zw * zh * 3) as usize];

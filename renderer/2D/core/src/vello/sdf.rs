@@ -153,8 +153,6 @@ impl SdfBaker {
         decode: f32,
         clear: bool,
     ) {
-        // A one-line dummy keeps the storage buffer non-empty (and the loop a no-op) for a shape that
-        // flattened to nothing — the field then reads a constant "far outside" everywhere.
         let fallback = [[0.0f32, 0.0, 0.0, 0.0]];
         let seg_slice: &[[f32; 4]] = if segments.is_empty() { &fallback } else { segments };
         let params = Params { decode, nseg: segments.len() as u32, _pad: [0.0, 0.0] };
@@ -176,10 +174,6 @@ impl SdfBaker {
                 wgpu::BindGroupEntry { binding: 1, resource: sbuf.as_entire_binding() },
             ],
         });
-        // Clear to the MAX encoded value (1.0), which decodes to `+0.5·decode` — "far outside" the shape.
-        // Black (0.0) would decode to a NEGATIVE distance ("inside") everywhere the bake doesn't cover, so
-        // the lens would refract the whole viewport-minus-region; a max clear makes every untouched texel
-        // read as outside (the field early-outs there).
         let load = if clear {
             wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 })
         } else {
@@ -199,9 +193,6 @@ impl SdfBaker {
             multiview_mask: None,
         });
         pass.set_pipeline(&self.pipeline);
-        // Scissor + viewport to this lens's device rectangle: the fullscreen triangle's fragments carry
-        // their device pixel in `@builtin(position)`, so only `region`'s texels run and each holds the
-        // distance at its own device coordinate.
         let (rx, ry, rw, rh) = region;
         pass.set_viewport(rx as f32, ry as f32, rw as f32, rh as f32, 0.0, 1.0);
         pass.set_scissor_rect(rx, ry, rw, rh);
