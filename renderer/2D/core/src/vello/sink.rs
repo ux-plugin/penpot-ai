@@ -3680,7 +3680,7 @@ impl Sink {
                     if let Some(&(sb, sn)) = sparse_windows.get(&window_lo) {
                         backend.phase_sparse_window(sb, sn);
                     }
-                    let binds_snap = !shp.to_draft || shp.base == Slot::Backdrop;
+                    let binds_snap = !shp.to_draft;
                     let refresh: Vec<[u32; 4]> = std::iter::once(window_lo)
                         .chain(merged_windows.get(&window_lo).into_iter().flatten().copied())
                         .take_while(|_| binds_snap)
@@ -3709,7 +3709,7 @@ impl Sink {
                                 if shp.base == Slot::None {
                                     backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &bv);
                                 } else {
-                                    backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, None, &bv);
+                                    backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, None, &bv);
                                 }
                                 bv
                             }
@@ -3722,7 +3722,7 @@ impl Sink {
                             }
                             (Slot::Backdrop, Slot::None) => {
                                 let dv = draft_target(backend, rep);
-                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, None, &dv);
+                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, None, &dv);
                                 dv
                             }
                             (Slot::Backdrop, Slot::Source) => {
@@ -3731,7 +3731,7 @@ impl Sink {
                                     .expect("SDF baked for the round")
                                     .clone();
                                 let dv = draft_target(backend, rep);
-                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, Some((false, &src)), &dv);
+                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, Some((false, &src)), &dv);
                                 dv
                             }
                             (Slot::Source, Slot::Source) => {
@@ -3762,7 +3762,7 @@ impl Sink {
                                         }
                                     }
                                     _ => {
-                                        backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, Some((shp.draft_taps, &src)), &dv);
+                                        backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, Some((shp.draft_taps, &src)), &dv);
                                     }
                                 }
                                 dv
