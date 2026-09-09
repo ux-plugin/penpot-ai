@@ -132,10 +132,6 @@ pub trait RasterBackend {
     /// only the phased (classic) backend routes escaped taps.
     fn phase_region_atlas(&mut self, _atlas: Option<&wgpu::TextureView>) {}
 
-    /// Flush every deferred fine dispatch into `enc` now — a raw encoder copy that must observe a
-    /// phased dispatch's writes (a lease write-back, a transport blit) calls this first. Default
-    /// no-op — only the phased (classic) backend defers dispatches.
-    fn phase_dispatch_flush(&mut self, _enc: &mut wgpu::CommandEncoder) {}
 
     /// Fill `rect` (device px, identity transform) with a solid premul-straight `color` — the page
     /// ground an interest region's content composites over. Default no-op.

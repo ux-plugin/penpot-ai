@@ -876,9 +876,6 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         self.region_atlas = atlas.cloned();
     }
 
-    fn phase_dispatch_flush(&mut self, enc: &mut wgpu::CommandEncoder) {
-        self.renderer.inner.phased_flush_dispatches(enc);
-    }
 
     fn draw_fill_rect(&mut self, scene: &mut ClassicCtx, rect: [f32; 4], color: [f32; 4]) {
         let r = Rect::new(f64::from(rect[0]), f64::from(rect[1]), f64::from(rect[2]), f64::from(rect[3]));

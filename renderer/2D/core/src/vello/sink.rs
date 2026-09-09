@@ -1214,6 +1214,7 @@ impl Sink {
         });
         let mut rid_of: HashMap<usize, usize> = HashMap::new();
         let mut piece_owner: HashMap<usize, u128> = HashMap::new();
+        let mut store_of: HashMap<usize, usize> = HashMap::new();
         if let Some(f) = &fin {
             let mintable: std::collections::HashSet<usize> = wlk
                 .pieces
@@ -1328,20 +1329,34 @@ impl Sink {
                     dag.nodes[t].op = crate::vello::units::UnitOp::Rasterize(
                         crate::vello::units::RasterSource::Body { offset: [0.0; 2] },
                     );
-                    continue;
                 }
-                let kt = f.k.get(&t).copied().unwrap_or(1.0);
-                let crossing = dag.nodes[t].inputs.first().is_some_and(|j| {
-                    (f.k.get(j).copied().unwrap_or(1.0) - kt).abs() > 1e-6
+            }
+            let mut writers: Vec<usize> = rid_of.keys().copied().collect();
+            writers.sort_unstable();
+            for w in writers {
+                let rid = rid_of[&w];
+                let s = dag.nodes.len();
+                dag.nodes.push(crate::vello::frame_dag::Node {
+                    op: crate::vello::units::UnitOp::Copy,
+                    target: crate::vello::plan::Target::Store,
+                    source: crate::vello::frame_dag::Source::Region(rid),
+                    label: format!("store of {w}"),
+                    reach: dag.nodes[w].reach,
+                    pad: 0.0,
+                    inputs: vec![w],
                 });
-                if crossing {
-                    dag.nodes[t].op = crate::vello::units::UnitOp::Blur {
-                        sigma: 0.6,
-                        linear: false,
-                        axis: crate::vello::units::BlurAxis::X,
-                        edge: crate::vello::units::BlurEdge::Backdrop,
-                    };
+                for i in 0..s {
+                    for inp in &mut dag.nodes[i].inputs {
+                        if *inp == w {
+                            *inp = s;
+                        }
+                    }
                 }
+                rid_of.insert(s, rid);
+                if let Some(&g) = piece_owner.get(&w) {
+                    piece_owner.insert(s, g);
+                }
+                store_of.insert(w, s);
             }
             dag.reset_binding_index();
         }
@@ -1724,9 +1739,14 @@ impl Sink {
             let piece_idx: HashMap<usize, usize> =
                 wlk.pieces.iter().enumerate().map(|(i, p)| (p.node, i)).collect();
             let owner = &piece_owner;
+            let writer_of: HashMap<usize, usize> =
+                store_of.iter().map(|(&w, &s)| (s, w)).collect();
             let grid_of = |n: usize| regions.regions[rid_of[&n]].grid;
             let dev_of = |n: usize| dag.nodes[n].reach.unwrap_or(frame_rect);
-            let k_of = |n: usize| fin.k.get(&n).copied().unwrap_or(1.0);
+            let k_of = |n: usize| {
+                let n = writer_of.get(&n).copied().unwrap_or(n);
+                fin.k.get(&n).copied().unwrap_or(1.0)
+            };
             let route_rec = |target: usize,
                              origin: [f32; 2],
                              k_self: f64,
@@ -1759,9 +1779,11 @@ impl Sink {
                 ]
             };
             let consumed_only_by_steps = |n: usize| {
+                let s = store_of.get(&n).copied();
                 let mut any = false;
                 for p in &wlk.pieces {
-                    if dag.nodes[p.node].inputs.contains(&n) {
+                    let ins = &dag.nodes[p.node].inputs;
+                    if ins.contains(&n) || s.is_some_and(|s| ins.contains(&s)) {
                         any = true;
                         if !matches!(p.producer, crate::vello::walk::Producer::Step { .. }) {
                             return false;
@@ -1785,7 +1807,31 @@ impl Sink {
                 rec[8] = [1.0, 0.0, band_y0, 0.0];
                 let producer = piece_idx.get(&n).map(|&i| wlk.pieces[i].producer);
                 match (dag.nodes[n].op.clone(), producer) {
-                    (U::Copy, _) => {}
+                    (U::Copy, _) => {
+                        let mut desc = [0.0f32; 26];
+                        desc[0] = crate::vello::bake::bits::RAW as f32;
+                        if matches!(dag.nodes[n].target, crate::vello::plan::Target::Store) {
+                            rec[0] = [0.0, 0.0, band_y0, 0.0];
+                        } else if let Some(&j) = dag.nodes[n].inputs.first() {
+                            if rid_of.contains_key(&j) {
+                                let r = rect_in_grid(n, j);
+                                route_rec(j, [r[0], r[1]], k_of(n), &mut rec);
+                            }
+                        }
+                        new_marks.push((gid, UnitMark {
+                            node: n,
+                            round: sched.round[n],
+                            desc,
+                            rec,
+                            ctl: 0,
+                            masked: false,
+                            band: false,
+                            off: 0,
+                            rect: Some(grect),
+                            mark_shape: None,
+                            after: None,
+                        }));
+                    }
                     (U::Rasterize(_), Some(crate::vello::walk::Producer::Step { writer })) => {
                         let DagSource::Effect { shape: wshape, .. } = dag.nodes[writer].source
                         else {
@@ -1899,6 +1945,63 @@ impl Sink {
                             mark_shape: None,
                             after: None,
                         }));
+                        if piece_idx.contains_key(&n) {
+                            continue;
+                        }
+                        for &j in &dag.nodes[n].inputs {
+                            if !rid_of.contains_key(&j) {
+                                continue;
+                            }
+                            let ground = writer_of
+                                .get(&j)
+                                .copied()
+                                .unwrap_or(j);
+                            if wlk.pieces.iter().any(|p| {
+                                p.node == ground
+                                    && matches!(
+                                        p.producer,
+                                        crate::vello::walk::Producer::Ground { .. }
+                                    )
+                            }) {
+                                continue;
+                            }
+                            let isect = dev_of(n).intersect(dev_of(j));
+                            if !(isect.x1 > isect.x0 && isect.y1 > isect.y0) {
+                                continue;
+                            }
+                            let gn = grid_of(n);
+                            let rn = dev_of(n);
+                            let kn = k_of(n);
+                            let irect = [
+                                gn[0] as f32 + ((isect.x0 - rn.x0) * kn) as f32,
+                                gn[1] as f32 + ((isect.y0 - rn.y0) * kn) as f32,
+                                gn[0] as f32 + ((isect.x1 - rn.x0) * kn) as f32,
+                                gn[1] as f32 + ((isect.y1 - rn.y0) * kn) as f32,
+                            ];
+                            let mut desc = [0.0f32; 26];
+                            desc[0] = crate::vello::bake::bits::RAW as f32;
+                            desc[6] = irect[0];
+                            desc[7] = irect[1];
+                            desc[8] = irect[2];
+                            desc[9] = irect[3];
+                            let mut crec = [[0.0f32; 4]; 12];
+                            crec[8] = [1.0, 0.0, band_y0, 0.0];
+                            let r = rect_in_grid(n, j);
+                            route_rec(j, [r[0], r[1]], kn, &mut crec);
+                            new_marks.push((gid, UnitMark {
+                                node: n,
+                                round: sched.round[n],
+                                desc,
+                                rec: crec,
+                                ctl: 0,
+                                masked: false,
+                                band: false,
+                                off: 0,
+                                rect: Some(irect),
+                                mark_shape: None,
+                                after: None,
+                            }));
+                        }
                     }
                     (U::Blur { sigma, linear, axis, edge }, _) => {
                         if consumed_only_by_steps(n) {
@@ -3066,12 +3169,6 @@ impl Sink {
             "wv snap",
         );
         let snap = snap_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        // THE region atlas: one rgba8 texture mapping the rented grid band one-to-one (atlas row 0
-        // = grid row `band_origin_y`). Every lease lives here and every backdrop-tapping dispatch
-        // binds it read-only, so escaped taps resolve through the reader's route record (record 5).
-        // Region windows never write it directly — they write the BACK staging texture and an
-        // encoder blit lands each lease, so a dispatch is free to read any lease (its own inputs
-        // included) with no exclusive-usage constraint and no side colouring.
         let region_dims = (regions.regions.len() > 1)
             .then(|| (grid_h - regions.band_origin_y()).max(TILE_PX));
         let region_atlas_tex = region_dims.map(|h| {
@@ -3081,15 +3178,11 @@ impl Sink {
                 h,
                 format,
                 wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::COPY_DST,
+                    | wgpu::TextureUsages::STORAGE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
                 "wv region atlas",
             )
         });
-        // The BACK staging: the write half of the region pipeline register. Region window
-        // dispatches store into it (their OUTPUT records shift grid rows onto atlas rows) and the
-        // written lease rect is blitted into the atlas right after the dispatch; transports hop
-        // through it (atlas → back → atlas) because a same-texture copy is a subresource conflict.
         let region_back_tex = region_dims.map(|h| {
             self.pool.acquire_target(
                 device,
@@ -3097,8 +3190,8 @@ impl Sink {
                 h,
                 format,
                 wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::COPY_DST,
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
                 "wv region back",
             )
         });
@@ -3686,105 +3779,6 @@ impl Sink {
         backend.phased_frontend_full(device, queue, &mut enc);
 
         let _tpl = crate::vello::prof::now();
-        /// One transport blit (law 2 executed as an encoder copy): a source piece's atlas window
-        /// copied into its combine lease. Both live in the one atlas, and a same-texture copy is a
-        /// subresource conflict, so the copy hops through the BACK staging (atlas → back → atlas).
-        /// Keyed by the dense round it must complete BEFORE (its first consumer's window).
-        struct RegionBlit {
-            src: (u32, u32),
-            dst: (u32, u32),
-            size: (u32, u32),
-        }
-        let mut region_blits: std::collections::BTreeMap<u32, Vec<RegionBlit>> =
-            std::collections::BTreeMap::new();
-        if let Some(fin) = &fin {
-            let band_y0 = regions.band_origin_y();
-            let mut round_of_node: HashMap<usize, u32> = HashMap::new();
-            for ms in marks.values() {
-                for m in ms {
-                    let e = round_of_node.entry(m.node).or_insert(m.round);
-                    *e = (*e).min(m.round);
-                }
-            }
-            for &t in &fin.transports {
-                let Some(&trid) = rid_of.get(&t) else { continue };
-                let mut before = u32::MAX;
-                for (i, n) in dag.nodes.iter().enumerate() {
-                    if n.inputs.contains(&t) {
-                        if let Some(&r) = round_of_node.get(&i) {
-                            before = before.min(r);
-                        }
-                    }
-                }
-                for r in fin.routes.iter().filter(|r| r.target == t) {
-                    if let Some(&mr) = round_of_node.get(&r.reader) {
-                        before = before.min(mr);
-                    }
-                }
-                if before == u32::MAX {
-                    continue;
-                }
-                let tr = dag.nodes[t].reach.unwrap_or(frame_rect);
-                let tg = regions.regions[trid].grid;
-                let replayed = matches!(dag.nodes[t].op, crate::vello::units::UnitOp::Rasterize(_));
-                for &j in &dag.nodes[t].inputs {
-                    let Some(&jrid) = rid_of.get(&j) else { continue };
-                    if replayed
-                        && wlk.pieces.iter().any(|p| {
-                            p.node == j
-                                && matches!(
-                                    p.producer,
-                                    crate::vello::walk::Producer::Ground { .. }
-                                )
-                        })
-                    {
-                        continue;
-                    }
-                    let jr = dag.nodes[j].reach.unwrap_or(frame_rect);
-                    let jg = regions.regions[jrid].grid;
-                    let kb = regions.regions[trid].k;
-                    if (regions.regions[jrid].k - kb).abs() > 1e-6 {
-                        continue;
-                    }
-                    let isect = tr.intersect(jr);
-                    if !(isect.x1 > isect.x0 && isect.y1 > isect.y0) {
-                        continue;
-                    }
-                    let src = (
-                        jg[0] + ((isect.x0 - jr.x0) * kb) as u32,
-                        jg[1] - band_y0 + ((isect.y0 - jr.y0) * kb) as u32,
-                    );
-                    let dst = (
-                        tg[0] + ((isect.x0 - tr.x0) * kb) as u32,
-                        tg[1] - band_y0 + ((isect.y0 - tr.y0) * kb) as u32,
-                    );
-                    region_blits.entry(before).or_default().push(RegionBlit {
-                        src,
-                        dst,
-                        size: (
-                            (((isect.x1 - isect.x0) * kb) as u32).max(1),
-                            (((isect.y1 - isect.y0) * kb) as u32).max(1),
-                        ),
-                    });
-                }
-            }
-        }
-        fn copy_at(tex: &wgpu::Texture, at: (u32, u32)) -> wgpu::TexelCopyTextureInfo<'_> {
-            wgpu::TexelCopyTextureInfo {
-                texture: tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d { x: at.0, y: at.1, z: 0 },
-                aspect: wgpu::TextureAspect::All,
-            }
-        }
-        let run_region_blits = |enc: &mut wgpu::CommandEncoder, bs: &[RegionBlit]| {
-            let (Some(at), Some(bk)) = (&region_atlas_tex, &region_back_tex) else { return };
-            for b in bs {
-                let ext = wgpu::Extent3d { width: b.size.0, height: b.size.1, depth_or_array_layers: 1 };
-                enc.copy_texture_to_texture(copy_at(at, b.src), copy_at(bk, b.dst), ext);
-                enc.copy_texture_to_texture(copy_at(bk, b.dst), copy_at(at, b.dst), ext);
-            }
-        };
         let mut window_lo = 0u32;
         let mut seeded = false;
         // Clearing the packed accumulator: the clear value is the premultiplied background packed
@@ -3796,18 +3790,6 @@ impl Sink {
         for r in 1..=max_round + 1 {
             // The extra iteration is the FINAL window ([last, SEG_ALL)) — same dispatch, open end.
             let hi = if r > max_round { crate::vello::rasterize::SEG_ALL } else { r };
-            {
-                let due: Vec<u32> =
-                    region_blits.range(..=window_lo).map(|(&k, _)| k).collect();
-                if !due.is_empty() {
-                    backend.phase_dispatch_flush(&mut enc);
-                }
-                for k in due {
-                    if let Some(bs) = region_blits.remove(&k) {
-                        run_region_blits(&mut enc, &bs);
-                    }
-                }
-            }
             if window_has_draws(window_lo, hi) {
                 // A merge FOLLOWER's tiles ride its leader's dispatch (per-entry ranges); its
                 // snapshot blits rode the leader too. Nothing left to record here.
@@ -3884,42 +3866,27 @@ impl Sink {
                     }
                     if shp.to_draft {
                         let dv = if shp.region_out {
-                            // A region window writes the BACK staging (per-mark OUTPUT records
-                            // shift grid rows onto atlas rows; the OOB default drops any unmarked
-                            // tile's store), then the window's lease rects blit into the atlas —
-                            // so the dispatch samples the atlas freely (its routes may read any
-                            // lease) while never binding the texture it writes. A GROUND (base
-                            // None) rasterizes its fenced draws; every other piece runs its arm
-                            // with taps resolving through its route record.
-                            let bv = region_back
-                                .clone()
-                                .expect("a region round scheduled without a region atlas");
                             backend.phase_scratch_origins([OOB, OOB], [0, 0]);
-                            if shp.base == Slot::None {
-                                backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &bv);
+                            if shp.base == Slot::Source {
+                                let av = region_atlas
+                                    .clone()
+                                    .expect("a store round scheduled without a region atlas");
+                                let bv = region_back
+                                    .clone()
+                                    .expect("a store round scheduled without the staging texture");
+                                backend.phased_fine_segment(device, queue, &mut enc, window_lo, hi, Some(&bv), &av);
+                                av
                             } else {
-                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, None, &bv);
-                            }
-                            if let (Some(at), Some(bk)) = (&region_atlas_tex, &region_back_tex) {
-                                backend.phase_dispatch_flush(&mut enc);
-                                let band_y0 = regions.band_origin_y();
-                                for wlo in std::iter::once(window_lo)
-                                    .chain(merged_windows.get(&window_lo).into_iter().flatten().copied())
-                                {
-                                    for n in round_nodes.get(&wlo).into_iter().flatten() {
-                                        let Some(&rid) = rid_of.get(n) else { continue };
-                                        let g = regions.regions[rid].grid;
-                                        let ext = wgpu::Extent3d {
-                                            width: (g[2] - g[0]).max(1),
-                                            height: (g[3] - g[1]).max(1),
-                                            depth_or_array_layers: 1,
-                                        };
-                                        let o = (g[0], g[1] - band_y0);
-                                        enc.copy_texture_to_texture(copy_at(bk, o), copy_at(at, o), ext);
-                                    }
+                                let bv = region_back
+                                    .clone()
+                                    .expect("a region round scheduled without a region atlas");
+                                if shp.base == Slot::None {
+                                    backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &bv);
+                                } else {
+                                    backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, None, &bv);
                                 }
+                                bv
                             }
-                            bv
                         } else {
                         match (shp.base, shp.input) {
                             (Slot::None, Slot::None) => {

@@ -530,6 +530,26 @@ impl FrameDag {
     pub fn binding_shape(&self, i: usize) -> Option<BindingShape> {
         let n = &self.nodes[i];
         if matches!(n.op, UnitOp::Copy) {
+            if matches!(n.target, Target::Store) {
+                return Some(BindingShape {
+                    base: Slot::Source,
+                    input: Slot::None,
+                    to_draft: true,
+                    draft_taps: false,
+                    region_out: true,
+                });
+            }
+            if let Source::Region(r) = n.source {
+                if r != usize::MAX {
+                    return Some(BindingShape {
+                        base: Slot::Backdrop,
+                        input: Slot::None,
+                        to_draft: true,
+                        draft_taps: false,
+                        region_out: true,
+                    });
+                }
+            }
             return None;
         }
         let (mat_set, _) = self.bind_idx();

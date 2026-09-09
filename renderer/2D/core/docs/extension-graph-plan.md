@@ -126,15 +126,19 @@ positions are out-of-frame by construction, so piece arms route through the same
 per mark; multi-route serving stays out of scope — crop/combine replaced it (cost basis: bounded
 O(area) copies paid rarely beat an über-shader register/occupancy tax paid on every dispatch).
 
-There is ONE lease store (`wv region atlas`), read-only in every dispatch. Region windows write
-a staging texture (`wv region back`) and the sink blits each written lease back right after the
-dispatch — a dispatch never binds the texture it writes, so any piece may read any lease and the
-whole side/parity subsystem (2-colouring, re-side copies, the dual atlas, the sign-selected
-route word, the per-dispatch dummy swap) is deleted rather than satisfied. Transports hop
-atlas → back → atlas (a same-texture copy is a subresource conflict). Every raw encoder copy
-that observes a phased dispatch's writes flushes the deferred dispatch queue first
-(`phase_dispatch_flush`) — recorded ahead of that flush it reads the pre-dispatch texels, the
-bug that silently degraded the P3/P4 transport blits.
+There is ONE lease store (`wv region atlas`) and ONE executor form: every node is a window,
+every window is a dispatch, all dispatches ride the one deferred stream — the region pipeline
+records zero encoder-level commands, so no ordering rule exists outside the scheduler. A copy
+is a mark: a RAW-only arm whose value is one bilinear tap (`fx_bilin`) — a transport's tap rides
+its route record (`z` 1 = texel move, 2 = the ladder resample), a store's tap reads staging
+through the record-0 window, and `u[1]` optionally confines the write to a pixel rect (a combine
+edge inside a partial tile). Region windows write the staging texture (`wv region back`) because
+they sample the atlas for their routes; each writer is followed by a STORE node
+(`UnitOp::Copy`, `Target::Store` — the law-2 preserve arm) whose window binds staging as base
+and the atlas as output, landing the lease where readers tap it. Consumers' edges point at the
+store, so producer → store → consumer is ordinary scheduling. The side/parity subsystem
+(2-colouring, re-side copies, the dual atlas, the sign-selected route word, the per-dispatch
+dummy swap) is deleted rather than satisfied.
 
 Kernels never know regions; taps are device-space point samples. In-frame and off-frame outputs
 partition at the frame edge and stitch by construction (same draws, same σ, same fold on both
@@ -162,8 +166,8 @@ wiring); the Cell CONTRACT (planner decides everything, executor is a dumb VM, n
 
 ## CPU-checkable invariants (on the lowered plan)
 
-- No pass samples its write storage (own-texel exception) — structural under the staging
-  write-back: region windows write `wv region back`, never the sampled atlas.
+- No pass samples its write storage (own-texel exception) — structural: region windows write
+  `wv region back`; only store windows write the atlas, and they never bind it sampled.
 - Every read inside its producer's lease interval.
 - Every mark/route/lease maps back to a node or edge.
 - One node's pieces pairwise disjoint; one route per mark.

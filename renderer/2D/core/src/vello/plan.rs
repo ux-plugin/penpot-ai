@@ -37,6 +37,9 @@ pub enum Input {
 pub enum Target {
     Atlas,
     Accumulator,
+    /// The addressable lease store: a law-2 preserve-arm copy landing a region window's staged
+    /// output where readers tap it. Only store copies carry this target.
+    Store,
 }
 
 /// One stage of the frame's batch schedule before its surfaces are chosen: what it reads (an earlier
