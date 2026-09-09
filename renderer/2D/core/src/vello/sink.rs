@@ -1287,7 +1287,7 @@ impl Sink {
                         .and_then(|f| f.k.get(&n).copied())
                         .unwrap_or(1.0)
                         .clamp(1.0 / 64.0, 1.0);
-                    match regions.allocate([r.x0, r.y0, r.x1, r.y1], kq, max_grid_h) {
+                    match regions.allocate([r.x0, r.y0, r.x1, r.y1], kq) {
                         Some(ri) => {
                             rid_of.insert(n, ri);
                             dag.nodes[n].source = crate::vello::frame_dag::Source::Region(ri);
@@ -1360,9 +1360,7 @@ impl Sink {
             }
             dag.reset_binding_index();
         }
-        let grid_h = regions.grid_height();
         backend.set_frame_extent(width, acc_h);
-        let mut scene = backend.new_scene(width as u16, grid_h as u16);
         let dag = dag;
         // The scratch BUDGET — the upstream capacity valve. The scheduler defers whole effects to
         // later rounds until their concurrent draft footprint fits, so the lease planner below is
@@ -1728,12 +1726,81 @@ impl Sink {
                 }
             }
         }
+        if let Some(f) = &fin {
+            if !rid_of.is_empty() {
+                use crate::vello::region::{interval_shelf, IntervalRect};
+                let gid_max: HashMap<u128, u32> = marks
+                    .iter()
+                    .map(|(&g, ms)| (g, ms.iter().map(|m| m.round).max().unwrap_or(0)))
+                    .collect();
+                let mut nodes_of_rid: HashMap<usize, Vec<usize>> = HashMap::new();
+                for (&n, &rid) in &rid_of {
+                    nodes_of_rid.entry(rid).or_default().push(n);
+                }
+                let mut death_of: HashMap<usize, u32> = HashMap::new();
+                for (i, nd) in dag.nodes.iter().enumerate() {
+                    for &j in &nd.inputs {
+                        if let Some(&rid) = rid_of.get(&j) {
+                            let e = death_of.entry(rid).or_insert(0);
+                            *e = (*e).max(sched.round[i]);
+                        }
+                    }
+                }
+                for r in &f.routes {
+                    let Some(&rid) = rid_of.get(&r.target) else { continue };
+                    let mut d = sched.round[r.reader];
+                    if let crate::vello::frame_dag::Source::Effect { shape, .. } =
+                        dag.nodes[r.reader].source
+                    {
+                        d = d.max(gid_max.get(&shape).copied().unwrap_or(0));
+                    }
+                    let e = death_of.entry(rid).or_insert(0);
+                    *e = (*e).max(d);
+                }
+                let ordered: Vec<usize> = {
+                    let mut v: Vec<usize> = nodes_of_rid.keys().copied().collect();
+                    v.sort_unstable();
+                    v
+                };
+                let mut host_items = Vec::with_capacity(ordered.len());
+                let mut lease_items = Vec::with_capacity(ordered.len());
+                for &rid in &ordered {
+                    let ns = &nodes_of_rid[&rid];
+                    let (w, h) = regions.regions[rid].texel_size();
+                    let birth = ns.iter().map(|&n| sched.round[n]).min().unwrap_or(0);
+                    let windows_end = ns.iter().map(|&n| sched.round[n]).max().unwrap_or(0);
+                    let gid = ns
+                        .iter()
+                        .find_map(|n| piece_owner.get(n).copied())
+                        .unwrap_or(0);
+                    host_items.push(IntervalRect { w, h, birth, death: windows_end, group: gid });
+                    let death = death_of.get(&rid).copied().unwrap_or(0).max(windows_end);
+                    lease_items.push(IntervalRect { w, h, birth, death, group: 0 });
+                }
+                let band = regions.band_origin_y();
+                let hosts = interval_shelf(&host_items, width, max_grid_h.saturating_sub(band));
+                let leases = interval_shelf(&lease_items, width, 8192);
+                for (idx, &rid) in ordered.iter().enumerate() {
+                    match (hosts[idx], leases[idx]) {
+                        (Some(hp), Some(lp)) => {
+                            regions.place(rid, [hp[0], hp[1] + band], lp);
+                        }
+                        _ => {
+                            for n in nodes_of_rid[&rid].clone() {
+                                rid_of.remove(&n);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let grid_h = regions.grid_height();
+        let mut scene = backend.new_scene(width as u16, grid_h as u16);
         let mut region_draws: HashMap<usize, (usize, usize, usize, bool)> = HashMap::new();
         if let Some(fin) = &fin {
             use crate::vello::bake::{blur_arm, stamp_field_anchor, Policy};
             use crate::vello::frame_dag::Source as DagSource;
             use crate::vello::units::{BlurAxis, BlurEdge, UnitOp as U};
-            let band_y0 = regions.band_origin_y() as f32;
             let gi_of0: HashMap<u128, usize> =
                 gathers.iter().map(|&(gi, gid, _)| (gid, gi)).collect();
             let piece_idx: HashMap<usize, usize> =
@@ -1742,6 +1809,10 @@ impl Sink {
             let writer_of: HashMap<usize, usize> =
                 store_of.iter().map(|(&w, &s)| (s, w)).collect();
             let grid_of = |n: usize| regions.regions[rid_of[&n]].grid;
+            let shift_of = |n: usize| {
+                let r = &regions.regions[rid_of[&n]];
+                (r.grid[0] as f32 - r.lease[0] as f32, r.grid[1] as f32 - r.lease[1] as f32)
+            };
             let dev_of = |n: usize| dag.nodes[n].reach.unwrap_or(frame_rect);
             let k_of = |n: usize| {
                 let n = writer_of.get(&n).copied().unwrap_or(n);
@@ -1751,20 +1822,21 @@ impl Sink {
                              origin: [f32; 2],
                              k_self: f64,
                              rec: &mut [[f32; 4]; 12]| {
-                let g = regions.regions[rid_of[&target]].grid;
+                let t = &regions.regions[rid_of[&target]];
                 let z = (k_of(target) / k_self) as f32;
-                let lo = [g[0] as f32, g[1] as f32 - band_y0];
+                let lo = [t.lease[0] as f32, t.lease[1] as f32];
                 rec[10] = [
                     crate::vello::bake::SRC_REGION,
                     lo[0] - origin[0] * z,
                     lo[1] - origin[1] * z,
                     z,
                 ];
+                let (tw, th) = t.texel_size();
                 rec[11] = [
                     lo[0],
                     lo[1],
-                    lo[0] + (g[2] - g[0]) as f32 - 1.0,
-                    lo[1] + (g[3] - g[1]) as f32 - 1.0,
+                    lo[0] + tw as f32 - 1.0,
+                    lo[1] + th as f32 - 1.0,
                 ];
             };
             let rect_in_grid = |n: usize, j: usize| -> [f32; 4] {
@@ -1804,14 +1876,15 @@ impl Sink {
                 let grect = [g[0] as f32, g[1] as f32, g[2] as f32, g[3] as f32];
                 let below = gi_of0.get(&gid).copied().unwrap_or(0);
                 let mut rec = [[0.0f32; 4]; 12];
-                rec[8] = [1.0, 0.0, band_y0, 0.0];
+                let sh = shift_of(n);
+                rec[8] = [1.0, sh.0, sh.1, 0.0];
                 let producer = piece_idx.get(&n).map(|&i| wlk.pieces[i].producer);
                 match (dag.nodes[n].op.clone(), producer) {
                     (U::Copy, _) => {
                         let mut desc = [0.0f32; 26];
                         desc[0] = crate::vello::bake::bits::RAW as f32;
                         if matches!(dag.nodes[n].target, crate::vello::plan::Target::Store) {
-                            rec[0] = [0.0, 0.0, band_y0, 0.0];
+                            rec[0] = [0.0, sh.0, sh.1, 0.0];
                         } else if let Some(&j) = dag.nodes[n].inputs.first() {
                             if rid_of.contains_key(&j) {
                                 let r = rect_in_grid(n, j);
@@ -1897,7 +1970,7 @@ impl Sink {
                         let kn = k_of(n);
                         let vs = vs * kn as f32;
                         let mut vrec = [[0.0f32; 4]; 12];
-                        vrec[8] = [1.0, 0.0, band_y0, 0.0];
+                        vrec[8] = [1.0, sh.0, sh.1, 0.0];
                         if let Some(x) = x_target {
                             let r = rect_in_grid(n, x);
                             route_rec(x, [r[0], r[1]], kn, &mut vrec);
@@ -1985,7 +2058,7 @@ impl Sink {
                             desc[8] = irect[2];
                             desc[9] = irect[3];
                             let mut crec = [[0.0f32; 4]; 12];
-                            crec[8] = [1.0, 0.0, band_y0, 0.0];
+                            crec[8] = [1.0, sh.0, sh.1, 0.0];
                             let r = rect_in_grid(n, j);
                             route_rec(j, [r[0], r[1]], kn, &mut crec);
                             new_marks.push((gid, UnitMark {
@@ -2074,11 +2147,19 @@ impl Sink {
                     (_, _) => {}
                 }
             }
+            let mut grouped: std::collections::BTreeMap<u128, Vec<UnitMark>> =
+                std::collections::BTreeMap::new();
             for (gid, m) in new_marks {
+                grouped.entry(gid).or_default().push(m);
+            }
+            for (gid, mut ms_new) in grouped {
+                ms_new.sort_by_key(|m| m.round);
                 let ms = marks.entry(gid).or_default();
                 let pos = at.entry(gid).or_insert(0);
-                ms.insert(*pos, m);
-                *pos += 1;
+                for m in ms_new {
+                    ms.insert(*pos, m);
+                    *pos += 1;
+                }
             }
             let routed_nodes: std::collections::HashSet<usize> =
                 fin.routes.iter().map(|r| r.reader).collect();
@@ -3169,8 +3250,7 @@ impl Sink {
             "wv snap",
         );
         let snap = snap_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let region_dims = (regions.regions.len() > 1)
-            .then(|| (grid_h - regions.band_origin_y()).max(TILE_PX));
+        let region_dims = (regions.atlas_height() > 0).then(|| regions.atlas_height());
         let region_atlas_tex = region_dims.map(|h| {
             self.pool.acquire_target(
                 device,

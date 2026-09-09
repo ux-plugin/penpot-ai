@@ -108,12 +108,18 @@ Runs once, after the walk; inserts nodes but never re-plans the walk's cuts.
   pack by (same write target, inputs ready, disjoint rects). The presented image is the last
   state of the fully-coalesced chain — the existing accumulator path already implements this
   maximal coalescing and needs no rewrite, only this reinterpretation.
-- **One grid.** Viewport tiles + a configurable count of slack rows (possibly zero). The flush
-  is the execution primitive — a fence, a record-directed store, a register reset, unlimited
-  per tile — so a tile is a general worker and a piece's job is appended to whichever tile's
-  list is cheapest (quiet frame tiles or slack rows; cost = schedule coupling the planner can
-  see via marker density). Capacity is configuration; placement is planning. This kills the
-  hard row ceiling, the hopeless-drop case, and most of the trial-pack ladder.
+- **One grid, split addresses (EXECUTED 2026-09-09).** A region has two addresses: its HOST
+  (the grid rect where its windows bin and draw) and its LEASE (the atlas origin where its value
+  lives); `rec[8]`/`rec[0]` carry the host→lease shift, routes and clamps read the lease. Both
+  are placed AFTER the schedule by one interval packer (`region::interval_shelf`): a host is
+  rented only over its windows' rounds, a lease from its birth to its last read (consumer
+  rounds, route-reader gid maxima, the store round), so rows recycle across time. Slots are
+  exact-size classes with permanent positions; reuse requires strictly disjoint intervals (an
+  equal round has no barrier between its dispatches) and, for hosts, the SAME owner gid — the
+  per-tile PTCL walk breaks at the first marker at or past the window, so a tile's marker rounds
+  must be stream-monotone, which round-sorted marks guarantee within one gid and nothing
+  guarantees across gids. Lease slots share freely (group 0). An item the packer cannot land
+  falls back to clamp, replacing the hard row ceiling and the hopeless-drop case.
 
 ## Serving (P5 — the records transport, EXECUTED 2026-09-09)
 
@@ -221,8 +227,8 @@ or env switches are left behind.
   Full gate suite; every oracle case judged equal-or-better vs the recorded clamp baselines.
 - **P4 — density live.** Resample fusion ≤2:1, the halving ladder, the budget slide; density
   oracle cases. Requires P3 to measure.
-- **P5 — unified placement.** Flush-hosted jobs on frame tiles + slack rows; delete the row
-  ceiling and trial-pack; perf teeth on the stress scenes.
+- **P5b — interval placement (DONE 2026-09-09).** Host/lease split + interval-recycled rows;
+  the row ceiling and trial-pack are gone. Frame-tile hosting stays open as a perf lever.
 - **P6 — coalescing buyouts.** Priced WAR discharge (snapshot / rename-blit). Overlaps the
   queued accumulator-rework arc; lands wherever sequencing says.
 
