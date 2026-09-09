@@ -1678,9 +1678,15 @@ impl Sink {
                     cur = dag.nodes[cur].inputs.first().copied()?;
                 }
             };
+            let mat_reader = |n: usize| {
+                dag.binding_shape(n).is_some_and(|sh| sh.to_draft)
+            };
             let mut readset: std::collections::HashSet<usize> = std::collections::HashSet::new();
             for ms in marks.values() {
                 for m in ms {
+                    if !mat_reader(m.node) {
+                        continue;
+                    }
                     if !matches!(dag.nodes[m.node].op, crate::vello::units::UnitOp::Rasterize(_)) {
                         if let Some(e) = read_target(m.node) {
                             readset.insert(e);
@@ -1713,6 +1719,19 @@ impl Sink {
             }
             draft_writers.sort_unstable_by_key(|&(g, n, r, _)| (g, n, r));
             draft_writers.dedup_by_key(|&mut (g, n, _, _)| (g, n));
+            #[cfg(not(target_arch = "wasm32"))]
+            if std::env::var("WV_DBG_STORES").is_ok() {
+                let all = marks
+                    .values()
+                    .flatten()
+                    .filter(|m| {
+                        !rid_of.contains_key(&m.node) && to_draft(m.node)
+                    })
+                    .map(|m| m.node)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len();
+                eprintln!("WV_DBG_STORES: {} stores of {} draft writers", draft_writers.len(), all);
+            }
             let mut by_round: std::collections::BTreeMap<u32, Vec<usize>> =
                 std::collections::BTreeMap::new();
             for (i, &(_, _, round, _)) in draft_writers.iter().enumerate() {
@@ -3384,7 +3403,7 @@ impl Sink {
                                         let kind = if shp.draft_taps { 2u8 } else { 1u8 };
                                         read_edge_of(&dag, shp, rep)
                                             .filter(|e| draft_placed.contains(e))
-                                            .map(|_| (kind, 0i64))
+                                            .map(|e| (kind, i64::from(!store_of.contains_key(&e))))
                                     }
                                     Slot::Backdrop => None,
                                 },
