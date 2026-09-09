@@ -31,6 +31,12 @@ use super::units::UnitOp;
 /// grid's shelf alignment.
 pub const PIECE_TILE: f64 = 16.0;
 
+/// One guard texel added wherever a pad extends a need: a route's bilinear reads `i0 + 1` and the
+/// executor's tap affine has no lease clamp, so every lease must own one texel past the farthest
+/// tap. Riding the pad (before cuts) keeps same-producer pieces pairwise disjoint — inflating
+/// after subtraction would re-overlap the rects the cut just separated.
+const GUARD: f64 = 1.0;
+
 /// The shared prefix predicate: does spine writer `n`'s contribution admit the per-texel fold form
 /// `state' = f(state)` given its materialized value inputs? True for every accumulator write that
 /// lands a computed value (a `Compose`, a fused acc-writing `Blur` — their state access is the
@@ -279,7 +285,7 @@ impl Ctx<'_> {
             return Vec::new();
         };
         if self.dag.nodes[value].op.is_barrier() {
-            let pad = f64::from(self.dag.nodes[value].pad);
+            let pad = f64::from(self.dag.nodes[value].pad) + GUARD;
             if let Some(&below) = self.dag.nodes[value].inputs.first() {
                 return self.instantiate_value(below, vec![win.inflate(pad, pad)]);
             }
@@ -329,7 +335,7 @@ impl Ctx<'_> {
             }
             UnitOp::Rasterize(_) => Vec::new(),
             _ => {
-                let pad = f64::from(self.dag.nodes[v].pad);
+                let pad = f64::from(self.dag.nodes[v].pad) + GUARD;
                 let vop = self.dag.nodes[v].op.clone();
                 let vinputs = self.dag.nodes[v].inputs.clone();
                 self.cover_with(Producer::Chain { of: v }, rects, &mut |ctx, r| {
@@ -379,7 +385,7 @@ pub fn walk(dag: &mut FrameDag, frame: Rect) -> Walk {
         if degenerate(window) {
             continue;
         }
-        let pad = f64::from(pad);
+        let pad = f64::from(pad) + GUARD;
         let need = subtract_all(vec![window.inflate(pad, pad)], frame);
         if need.is_empty() {
             continue;

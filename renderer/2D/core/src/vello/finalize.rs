@@ -11,12 +11,13 @@
 //! 2. **Fragmentation.** A reader whose coverage is more than one piece gets a **combine** — one
 //!    transport assembling its sources into one contiguous lease — so every reader ends with
 //!    exactly ONE route.
-//! 3. **Sides.** 2-colouring along sample edges ([`FrameDag::parity_colours`]); a collision is
-//!    discharged by law 2 with one re-side copy.
-//! 4. **Allocation.** Interval leases from the deaths [`FrameDag::schedule`] already computes,
+//! 3. **Allocation.** Interval leases from the deaths [`FrameDag::schedule`] already computes,
 //!    packed by [`super::frame_dag::pack`]; every slot reuse is a WAR edge with a priced buyout
 //!    (min of read-set and write-set areas).
-//! 5. **Route records** are data the swap emits; here they are the [`Route`] list.
+//! 4. **Route records** are data the swap emits; here they are the [`Route`] list — one operand
+//!    record per served reader (the overflow role of the records ABI). There is no side/parity
+//!    step: region windows write through a staging texture and blit back, so a dispatch never
+//!    binds the lease store it writes and any piece may read any lease.
 
 use crate::kurbo::Rect;
 use std::collections::HashMap;
@@ -53,61 +54,18 @@ pub struct War {
 }
 
 /// Finalize's whole output: per-node density, the single route per reader, the inserted transport
-/// nodes, the side colouring, the interval leases, and the WAR ledger.
+/// nodes, the interval leases, and the WAR ledger.
 #[derive(Debug, Default)]
 pub struct Final {
     pub k: HashMap<usize, f64>,
     pub routes: Vec<Route>,
     pub transports: Vec<usize>,
-    pub sides: Vec<u8>,
     pub leases: Vec<Option<Lease>>,
     pub wars: Vec<War>,
 }
 
 fn union_rect(rects: impl Iterator<Item = Rect>) -> Option<Rect> {
     rects.reduce(|a, b| a.union(b))
-}
-
-/// Parity 2-colouring that reports its first failing constraint instead of just `None`:
-/// `Err((a, b, was_eq))` names the exact pair law 2 must discharge. Same union-find-with-parity
-/// as [`FrameDag::parity_colours`]; kept separate because the discharge needs the culprit.
-fn try_colour(
-    n: usize,
-    eq: &[(usize, usize)],
-    neq: &[(usize, usize)],
-) -> Result<Vec<u8>, (usize, usize, bool)> {
-    let mut parent: Vec<usize> = (0..n).collect();
-    let mut par = vec![0u8; n];
-    fn find(parent: &mut [usize], par: &mut [u8], i: usize) -> (usize, u8) {
-        if parent[i] == i {
-            return (i, 0);
-        }
-        let (root, p) = find(parent, par, parent[i]);
-        parent[i] = root;
-        par[i] ^= p;
-        (root, par[i])
-    }
-    let mut union = |a: usize, b: usize, diff: u8| -> bool {
-        let (ra, pa) = find(&mut parent, &mut par, a);
-        let (rb, pb) = find(&mut parent, &mut par, b);
-        if ra == rb {
-            return pa ^ pb == diff;
-        }
-        parent[ra] = rb;
-        par[ra] = pa ^ pb ^ diff;
-        true
-    };
-    for &(a, b) in eq {
-        if !union(a, b, 0) {
-            return Err((a, b, true));
-        }
-    }
-    for &(a, b) in neq {
-        if !union(a, b, 1) {
-            return Err((a, b, false));
-        }
-    }
-    Ok((0..n).map(|i| find(&mut parent, &mut par, i).1).collect())
 }
 
 /// Step 1a — per-piece k: the finest ask among the piece's readers (frame readers via coverage,
@@ -220,112 +178,6 @@ impl Fin<'_> {
         self.out.k.insert(c, k_reader);
         self.out.routes.push(Route { reader, target: c, rect, k: 1.0 });
     }
-
-    /// Sampled-input pairs for the parity constraints: a lease-writing node samples every
-    /// piece/transport input, so it must sit on the opposite atlas side (`neq`), and all its
-    /// sampled inputs must co-side (`eq`).
-    fn parity_edges(&self, lease_writers: &[usize]) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
-        let set: std::collections::HashSet<usize> = lease_writers.iter().copied().collect();
-        let mut eq = Vec::new();
-        let mut neq = Vec::new();
-        for &i in lease_writers {
-            let sampled: Vec<usize> = self.dag.nodes[i]
-                .inputs
-                .iter()
-                .copied()
-                .filter(|j| set.contains(j))
-                .collect();
-            for &j in &sampled {
-                neq.push((i, j));
-            }
-            for w in sampled.windows(2) {
-                eq.push((w[0], w[1]));
-            }
-        }
-        (eq, neq)
-    }
-
-    /// Step 3 — sides are STRUCTURAL fold parity, not a search: a piece pass samples only the
-    /// non-written atlas, so a node's side is one hop past its inputs', and depth parity mod 2 is
-    /// the colouring. Processing lease writers bottom-up (the node vector is topological), any
-    /// window that co-samples mixed parities is discharged by law 2 right there: each
-    /// minority-parity input gets one re-side copy (which flips its parity by construction), so
-    /// every window is co-sided and opposite its writer with a deterministic, bounded number of
-    /// copies — no retry loop, no failure mode. Verified against the union-find colouring in
-    /// debug builds.
-    fn colour_with_resides(&mut self, walk: &Walk) -> Vec<u8> {
-        let mut writer_of = vec![false; self.dag.nodes.len()];
-        for p in &walk.pieces {
-            writer_of[p.node] = true;
-        }
-        for &t in &self.out.transports {
-            writer_of[t] = true;
-        }
-        let mut parity: HashMap<usize, u8> = HashMap::new();
-        loop {
-            let ready = (0..self.dag.nodes.len()).find(|&i| {
-                writer_of.get(i).copied().unwrap_or(false)
-                    && !parity.contains_key(&i)
-                    && self.dag.nodes[i].inputs.iter().all(|&j| {
-                        !writer_of.get(j).copied().unwrap_or(false) || parity.contains_key(&j)
-                    })
-            });
-            let Some(i) = ready else { break };
-            let sampled: Vec<usize> = self.dag.nodes[i]
-                .inputs
-                .iter()
-                .copied()
-                .filter(|&j| writer_of.get(j).copied().unwrap_or(false))
-                .collect();
-            let Some(&first) = sampled.first() else {
-                parity.insert(i, 0);
-                continue;
-            };
-            let target = parity[&first];
-            for &j in sampled.iter().skip(1) {
-                let pj = parity[&j];
-                if pj % 2 != target % 2 {
-                    let r = self.reside(i, j);
-                    writer_of.resize(self.dag.nodes.len(), false);
-                    writer_of[r] = true;
-                    parity.insert(r, pj + 1);
-                }
-            }
-            parity.insert(i, target + 1);
-        }
-        let sides: Vec<u8> = (0..self.dag.nodes.len())
-            .map(|n| parity.get(&n).map_or(0, |p| p % 2))
-            .collect();
-        #[cfg(debug_assertions)]
-        {
-            let writers: Vec<usize> = (0..self.dag.nodes.len())
-                .filter(|&n| writer_of.get(n).copied().unwrap_or(false))
-                .collect();
-            let (eq, neq) = self.parity_edges(&writers);
-            debug_assert!(
-                try_colour(self.dag.nodes.len(), &eq, &neq).is_ok(),
-                "structural parity left an uncolourable window"
-            );
-        }
-        sides
-    }
-
-    /// Discharge one parity collision: mint a re-side copy of `b` (law 2, side arm — same rect,
-    /// same density, opposite atlas) and make `sampler` read it instead.
-    fn reside(&mut self, sampler: usize, b: usize) -> usize {
-        let rect = self.dag.nodes[b].reach.unwrap_or_default();
-        let kb = self.out.k.get(&b).copied().unwrap_or(1.0);
-        let r = self.push_copy(rect, vec![b], format!("re-side of {b}"));
-        self.out.k.insert(r, kb);
-        if sampler != b {
-            for inp in &mut self.dag.nodes[sampler].inputs {
-                if *inp == b {
-                    *inp = r;
-                }
-            }
-        }
-        r
-    }
 }
 
 /// Run finalize over a walked dag. `asks(reader)` is the reader's authored ask (`None` = full
@@ -379,7 +231,7 @@ pub fn finalize(
                 continue;
             }
             let need = fin.dag.nodes[n].reach.map(|r| {
-                let p = f64::from(fin.dag.nodes[n].pad);
+                let p = f64::from(fin.dag.nodes[n].pad) + 1.0;
                 r.inflate(p, p)
             });
             let rect = union_rect(
@@ -409,8 +261,6 @@ pub fn finalize(
             fin.dag.nodes[n].inputs = rewired;
         }
     }
-
-    fin.out.sides = fin.colour_with_resides(walk);
 
     let routes: Vec<Route> = fin.out.routes.clone();
     for r in &routes {
@@ -525,16 +375,6 @@ pub fn check(dag: &FrameDag, walk: &Walk, fin: &Final) -> Result<(), String> {
         }
         let sampled: Vec<usize> =
             n.inputs.iter().copied().filter(|&j| lease_writer[j]).collect();
-        for &j in &sampled {
-            if fin.sides[i] == fin.sides[j] {
-                return Err(format!("node {i} samples its own side ({j})"));
-            }
-        }
-        for w in sampled.windows(2) {
-            if fin.sides[w[0]] != fin.sides[w[1]] {
-                return Err(format!("node {i} samples both sides ({} vs {})", w[0], w[1]));
-            }
-        }
         let kn = fin.k.get(&i).copied().unwrap_or(1.0);
         for &j in &sampled {
             let kj = fin.k.get(&j).copied().unwrap_or(1.0);
@@ -717,92 +557,6 @@ mod tests {
         assert_eq!(cur, w.pieces[coarse_piece].node, "the ladder roots at the shared piece");
         assert_eq!(rungs, 2, "8:1 = two halving rungs (½, ¼) + a 2:1 residual in the taps");
         check(&dag, &w, &fin).expect("ladder plan is invariant-clean");
-    }
-
-    #[test]
-    fn parity_collision_discharges_with_a_reside() {
-        let mut dag = base_dag();
-        let a = dag.nodes.len();
-        dag.nodes.push(Node {
-            op: UnitOp::Rasterize(RasterSource::Body { offset: [0.0; 2] }),
-            target: Target::Atlas,
-            source: Source::Region(0),
-            label: "piece A".into(),
-            reach: Some(Rect::new(-64.0, 0.0, 0.0, 480.0)),
-            pad: 0.0,
-            inputs: vec![],
-        });
-        let b = dag.nodes.len();
-        dag.nodes.push(Node {
-            op: UnitOp::Blur { sigma: 8.0, linear: false, axis: BlurAxis::X, edge: BlurEdge::Backdrop },
-            target: Target::Atlas,
-            source: Source::Region(1),
-            label: "piece B (samples A)".into(),
-            reach: Some(Rect::new(-64.0, 0.0, 0.0, 480.0)),
-            pad: 0.0,
-            inputs: vec![a],
-        });
-        let s = dag.nodes.len();
-        dag.nodes.push(Node {
-            op: UnitOp::Compose { mode: ComposeMode::Over, colour: None },
-            target: Target::Atlas,
-            source: Source::Region(2),
-            label: "step S (samples A and B)".into(),
-            reach: Some(Rect::new(-64.0, 0.0, 0.0, 480.0)),
-            pad: 0.0,
-            inputs: vec![a, b],
-        });
-        let w = Walk {
-            pieces: vec![
-                Piece { node: a, producer: Producer::Ground { prefix: 0 }, rect: dag.nodes[a].reach.unwrap() },
-                Piece { node: b, producer: Producer::Chain { of: 1 }, rect: dag.nodes[b].reach.unwrap() },
-                Piece { node: s, producer: Producer::Step { writer: 2 }, rect: dag.nodes[s].reach.unwrap() },
-            ],
-            coverage: vec![],
-        };
-        let mut fin = Fin { dag: &mut dag, out: Final::default() };
-        let sides = fin.colour_with_resides(&w);
-        let transports = fin.out.transports.clone();
-        assert_eq!(transports.len(), 1, "the odd cycle discharges with exactly ONE re-side copy");
-        let r = transports[0];
-        assert!(matches!(dag.nodes[r].op, UnitOp::Copy));
-        let mut writers: Vec<usize> = vec![a, b, s];
-        writers.extend(&transports);
-        for &i in &writers {
-            let sampled: Vec<usize> = dag.nodes[i]
-                .inputs
-                .iter()
-                .copied()
-                .filter(|j| writers.contains(j))
-                .collect();
-            for &j in &sampled {
-                assert_ne!(sides[i], sides[j], "node {i} must sample the opposite side ({j})");
-            }
-            for pair in sampled.windows(2) {
-                assert_eq!(
-                    sides[pair[0]], sides[pair[1]],
-                    "node {i}'s sampled reads must co-side"
-                );
-            }
-        }
-        let _ = (a, b, s);
-    }
-
-    #[test]
-    fn cross_parity_combine_gets_a_reside() {
-        let (mut dag, w) = walked();
-        let fin = finalize(&mut dag, &w, &|_| None, u64::MAX);
-        let resides: Vec<usize> = fin
-            .transports
-            .iter()
-            .copied()
-            .filter(|&t| dag.nodes[t].label.starts_with("re-side"))
-            .collect();
-        assert!(
-            !resides.is_empty(),
-            "a sampler co-reading a step and its own base ground forces one re-side"
-        );
-        check(&dag, &w, &fin).expect("cross-parity discharge leaves an invariant-clean plan");
     }
 
     #[test]

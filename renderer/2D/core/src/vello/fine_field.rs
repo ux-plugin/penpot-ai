@@ -198,12 +198,12 @@ fn dispatcher(ps: &[FineProgram]) -> String {
          // field's distance SOURCE and coordinate anchor come from operand record 3, never from the\n\
          // program.\n\
          fn fx_computeField(d: FxDesc, fc: vec2<f32>) -> vec4<f32> {\n\
-         \x20   let anchor = d.rec[3].yz;\n\
-         \x20   let sampled = d.rec[3].x == 2.0;\n",
+         \x20   let anchor = d.rec[6].yz;\n\
+         \x20   let sampled = d.rec[6].x == 2.0;\n",
     );
     for e in ps {
         out.push_str(&format!(
-            "    if (d.program == {}u) {{ return fx_computeField_{}(d.u, fc, anchor, sampled, d.rec[3].w); }}\n",
+            "    if (d.program == {}u) {{ return fx_computeField_{}(d.u, fc, anchor, sampled, d.rec[6].w); }}\n",
             e.id, e.name
         ));
     }
@@ -282,7 +282,7 @@ mod tests {
             .flatten()
             .collect();
         let src = format!(
-            "struct FxDesc {{\n    bits: u32,\n    program: u32,\n    u: array<vec4<f32>, 6>,\n    rec: array<vec4<f32>, 5>,\n}}\n{body}\n@fragment\nfn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{\n    var d: FxDesc;\n    return fx_computeField(d, pos.xy);\n}}\n"
+            "struct FxDesc {{\n    bits: u32,\n    program: u32,\n    u: array<vec4<f32>, 6>,\n    rec: array<vec4<f32>, 12>,\n}}\n{body}\n@fragment\nfn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{\n    var d: FxDesc;\n    return fx_computeField(d, pos.xy);\n}}\n"
         );
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("WGSL parse failed: {}\n{src}", e.emit_to_string(&src)));

@@ -115,13 +115,28 @@ Runs once, after the walk; inserts nodes but never re-plans the walk's cuts.
   see via marker density). Capacity is configuration; placement is planning. This kills the
   hard row ceiling, the hopeless-drop case, and most of the trial-pack ladder.
 
-## Serving
+## Serving (P5 — the records transport, EXECUTED 2026-09-09)
 
-The shipped fine.wgsl transport is **final**: `fx_region_serves`/`fx_region_tap`, one route per
-mark, sign-selected atlas, lease-clamped bilinear. Zero shader edits in this plan. Multi-route
-serving is explicitly out of scope — crop/combine replaced it (cost basis: bounded O(area)
-copies paid rarely beat an über-shader register/occupancy tax paid on every dispatch). Kernels
-never know regions; taps are device-space point samples. In-frame and off-frame outputs
+Region serving is one row of the operand-records ABI
+(`webgpu-vello/docs/operand-records-abi.md`), not a side channel: record 5 is the OVERFLOW role
+— `[SRC_REGION, offset x, offset y, k]` (the affine `atlas = pos * k + offset`) plus the
+extension row `[lo, lo, hi, hi]` (the lease's texel rect, clamping strays to lease edge-extend).
+`fx_region_serves` = route stamped ∧ position out-of-frame ∧ mapped point in-lease; band
+positions are out-of-frame by construction, so piece arms route through the same row. One route
+per mark; multi-route serving stays out of scope — crop/combine replaced it (cost basis: bounded
+O(area) copies paid rarely beat an über-shader register/occupancy tax paid on every dispatch).
+
+There is ONE lease store (`wv region atlas`), read-only in every dispatch. Region windows write
+a staging texture (`wv region back`) and the sink blits each written lease back right after the
+dispatch — a dispatch never binds the texture it writes, so any piece may read any lease and the
+whole side/parity subsystem (2-colouring, re-side copies, the dual atlas, the sign-selected
+route word, the per-dispatch dummy swap) is deleted rather than satisfied. Transports hop
+atlas → back → atlas (a same-texture copy is a subresource conflict). Every raw encoder copy
+that observes a phased dispatch's writes flushes the deferred dispatch queue first
+(`phase_dispatch_flush`) — recorded ahead of that flush it reads the pre-dispatch texels, the
+bug that silently degraded the P3/P4 transport blits.
+
+Kernels never know regions; taps are device-space point samples. In-frame and off-frame outputs
 partition at the frame edge and stitch by construction (same draws, same σ, same fold on both
 sides — the 3σ reach convention makes the seam exact); the only doubled work is a pad-margin
 replay where a piece's window dips in-frame, and its priced alternative is a snapshot copy
@@ -136,18 +151,19 @@ fallback policy tables; effect-named piece constructors (push_region/push_region
 piece is minted by ONE op-generic constructor over any UnitOp, so no planner entry point names
 an effect; `UnitOp::Reload` — the backdrop snapshot is the transport node's preserve arm
 (law 2), so a gather reads its state piece through an ordinary copy and reader wiring keys on
-that copy node.
+that copy node; the parity/sides subsystem and the dual chain atlas (P5: the staging write-back
+removes the read-while-write hazard the colouring existed to satisfy); the rec5/rec6 route
+bolt-on (P5: the route is operand record 5); demand.rs (its squeeze re-fed into finalize).
 
-Survives untouched: fine.wgsl serve/tap and permutations; RegionTable; pack();
-parity_colours(); schedule() and its deaths; wire_region_reader (op-agnostic reader wiring);
-demand.rs budget math (re-fed); the Cell CONTRACT (planner decides everything, executor is a
-dumb VM, no kind tags); `fx_bilin_input` stays unhooked (crop-shifted positions — Δ142 when
-violated).
+Survives untouched: RegionTable; pack(); parity_colours() (the draft scratch colouring — its
+region user is gone); schedule() and its deaths; wire_region_reader (op-agnostic reader
+wiring); the Cell CONTRACT (planner decides everything, executor is a dumb VM, no kind tags);
+`fx_bilin_input` stays unhooked (crop-shifted positions — Δ142 when violated).
 
 ## CPU-checkable invariants (on the lowered plan)
 
-- No pass samples its write storage (own-texel exception).
-- All sampled reads of one pass co-sided.
+- No pass samples its write storage (own-texel exception) — structural under the staging
+  write-back: region windows write `wv region back`, never the sampled atlas.
 - Every read inside its producer's lease interval.
 - Every mark/route/lease maps back to a node or edge.
 - One node's pieces pairwise disjoint; one route per mark.

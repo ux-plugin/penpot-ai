@@ -1345,21 +1345,6 @@ impl Sink {
             }
             dag.reset_binding_index();
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if std::env::var("WV_DBG_PIECES").is_ok() {
-            match &fin {
-                Some(f) => eprintln!(
-                    "WV_DBG_PIECES: pieces={} transports={} routes={} placed={} regions={} coverage={}",
-                    wlk.pieces.len(),
-                    f.transports.len(),
-                    f.routes.len(),
-                    rid_of.len(),
-                    regions.regions.len(),
-                    wlk.coverage.len(),
-                ),
-                None => eprintln!("WV_DBG_PIECES: no pieces"),
-            }
-        }
         let grid_h = regions.grid_height();
         backend.set_frame_extent(width, acc_h);
         let mut scene = backend.new_scene(width as u16, grid_h as u16);
@@ -1386,7 +1371,7 @@ impl Sink {
             node: usize,
             round: u32,
             desc: [f32; 26],
-            rec: [[f32; 4]; 7],
+            rec: [[f32; 4]; 12],
             ctl: u32,
             masked: bool,
             band: bool,
@@ -1461,7 +1446,7 @@ impl Sink {
                                     node: compose_idx,
                                     round: sched.round[compose_idx],
                                     desc,
-                                    rec: [[0.0f32; 4]; 7],
+                                    rec: [[0.0f32; 4]; 12],
                                     ctl: 0,
                                     masked: true,
                                     band: false,
@@ -1487,7 +1472,7 @@ impl Sink {
                                 node: root,
                                 round: sched.round[root],
                                 desc: [0.0f32; 26],
-                                rec: [[0.0f32; 4]; 7],
+                                rec: [[0.0f32; 4]; 12],
                                 ctl: 0,
                                 masked: false,
                                 band: false,
@@ -1521,7 +1506,7 @@ impl Sink {
                             desc[0] += bits::TINT as f32;
                             desc[14..18].copy_from_slice(&c);
                         }
-                        let mut rec = [[0.0f32; 4]; 7];
+                        let mut rec = [[0.0f32; 4]; 12];
                         crate::vello::bake::stamp_field_anchor(&desc, &mut rec);
                         out.push(UnitMark {
                             node: compose_idx,
@@ -1569,10 +1554,10 @@ impl Sink {
                             _ => None,
                         }
                     });
-                    let stamp_program = |r: &mut [[f32; 4]; 7]| {
+                    let stamp_program = |r: &mut [[f32; 4]; 12]| {
                         if let Some(decode) = sampled {
-                            r[3][0] = 2.0;
-                            r[3][3] = decode;
+                            r[6][0] = 2.0;
+                            r[6][3] = decode;
                         }
                     };
                     // Fold-eligible silhouette sources (shape (None, None, to_draft) — analytic
@@ -1587,7 +1572,7 @@ impl Sink {
                                     node: sn,
                                     round: sched.round[sn],
                                     desc: [0.0f32; 26],
-                                    rec: [[0.0f32; 4]; 7],
+                                    rec: [[0.0f32; 4]; 12],
                                     ctl: 0,
                                     masked: false,
                                     band: false,
@@ -1666,10 +1651,10 @@ impl Sink {
                         } else {
                             continue;
                         };
-                        let mut rec = [[0.0f32; 4]; 7];
+                        let mut rec = [[0.0f32; 4]; 12];
                         rec[0][0] = src[0];
-                        rec[1][0] = src[1];
-                        rec[2][0] = src[2];
+                        rec[2][0] = src[1];
+                        rec[4][0] = src[2];
                         stamp_program(&mut rec);
                         if ctl == 0
                             && (desc[0] as u32) & (bits::WARP | bits::BLUR | bits::SCATTER) == 0
@@ -1680,7 +1665,7 @@ impl Sink {
                         if (desc[0] as u32) & (bits::BLUR | bits::COLOUR_OVER)
                             == (bits::BLUR | bits::COLOUR_OVER)
                         {
-                            rec[2][0] = 2.0;
+                            rec[4][0] = 2.0;
                         }
                         crate::vello::bake::stamp_field_anchor(&desc, &mut rec);
                         out.push(UnitMark { node: i, round: sched.round[i], desc, rec, ctl, masked, band, off: 0, rect: None, mark_shape: None, after: None });
@@ -1717,7 +1702,7 @@ impl Sink {
                                 if m.node == er {
                                     m.desc[0] = bits::COLOUR_OVER as f32;
                                     m.rec[0][0] = 2.0;
-                                    m.rec[2][0] = 2.0;
+                                    m.rec[4][0] = 2.0;
                                 }
                             }
                         }
@@ -1743,16 +1728,24 @@ impl Sink {
             let dev_of = |n: usize| dag.nodes[n].reach.unwrap_or(frame_rect);
             let k_of = |n: usize| fin.k.get(&n).copied().unwrap_or(1.0);
             let route_rec = |target: usize,
-                             rect5: [f32; 4],
-                             slack: f32,
+                             origin: [f32; 2],
                              k_self: f64,
-                             rec: &mut [[f32; 4]; 7]| {
+                             rec: &mut [[f32; 4]; 12]| {
                 let g = regions.regions[rid_of[&target]].grid;
-                let chain = fin.sides.get(target).copied().unwrap_or(0) == 1;
-                let s = slack.max(1.0);
                 let z = (k_of(target) / k_self) as f32;
-                rec[5] = rect5;
-                rec[6] = [g[0] as f32, g[1] as f32 - band_y0, z, if chain { -s } else { s }];
+                let lo = [g[0] as f32, g[1] as f32 - band_y0];
+                rec[10] = [
+                    crate::vello::bake::SRC_REGION,
+                    lo[0] - origin[0] * z,
+                    lo[1] - origin[1] * z,
+                    z,
+                ];
+                rec[11] = [
+                    lo[0],
+                    lo[1],
+                    lo[0] + (g[2] - g[0]) as f32 - 1.0,
+                    lo[1] + (g[3] - g[1]) as f32 - 1.0,
+                ];
             };
             let rect_in_grid = |n: usize, j: usize| -> [f32; 4] {
                 let gn = grid_of(n);
@@ -1788,8 +1781,8 @@ impl Sink {
                 let g = grid_of(n);
                 let grect = [g[0] as f32, g[1] as f32, g[2] as f32, g[3] as f32];
                 let below = gi_of0.get(&gid).copied().unwrap_or(0);
-                let mut rec = [[0.0f32; 4]; 7];
-                rec[4] = [1.0, 0.0, band_y0, 0.0];
+                let mut rec = [[0.0f32; 4]; 12];
+                rec[8] = [1.0, 0.0, band_y0, 0.0];
                 let producer = piece_idx.get(&n).map(|&i| wlk.pieces[i].producer);
                 match (dag.nodes[n].op.clone(), producer) {
                     (U::Copy, _) => {}
@@ -1820,12 +1813,6 @@ impl Sink {
                             .copied()
                             .find(|&j| matches!(dag.nodes[j].op, U::Blur { .. }));
                         let Some(v) = v else {
-                            #[cfg(not(target_arch = "wasm32"))]
-                            if std::env::var("WV_DBG_PIECES").is_ok() {
-                                eprintln!(
-                                    "WV_DBG_PIECES: step {n} writer {writer} lands without a blur — ground-only window"
-                                );
-                            }
                             continue;
                         };
                         let U::Blur { sigma: vs, linear: vl, .. } = dag.nodes[v].op else {
@@ -1839,30 +1826,35 @@ impl Sink {
                             if !rid_of.contains_key(&c) {
                                 return false;
                             }
-                            let mut cur = c;
-                            loop {
-                                if let Some(&pi) = piece_idx.get(&cur) {
-                                    break matches!(
-                                        wlk.pieces[pi].producer,
-                                        crate::vello::walk::Producer::Chain { .. }
-                                    );
-                                }
-                                if matches!(dag.nodes[cur].op, U::Copy) {
-                                    match dag.nodes[cur].inputs.first() {
-                                        Some(&j) => cur = j,
-                                        None => break false,
+                            if let Some(&pi) = piece_idx.get(&c) {
+                                return matches!(
+                                    wlk.pieces[pi].producer,
+                                    crate::vello::walk::Producer::Chain { .. }
+                                );
+                            }
+                            let mut stack: Vec<usize> = dag.nodes[c].inputs.clone();
+                            while let Some(cur) = stack.pop() {
+                                match piece_idx.get(&cur) {
+                                    Some(&pi) => {
+                                        if matches!(
+                                            wlk.pieces[pi].producer,
+                                            crate::vello::walk::Producer::Chain { .. }
+                                        ) {
+                                            return true;
+                                        }
                                     }
-                                } else {
-                                    break false;
+                                    None => stack.extend(dag.nodes[cur].inputs.iter().copied()),
                                 }
                             }
+                            false
                         });
                         let kn = k_of(n);
                         let vs = vs * kn as f32;
-                        let mut vrec = [[0.0f32; 4]; 7];
-                        vrec[4] = [1.0, 0.0, band_y0, 0.0];
+                        let mut vrec = [[0.0f32; 4]; 12];
+                        vrec[8] = [1.0, 0.0, band_y0, 0.0];
                         if let Some(x) = x_target {
-                            route_rec(x, rect_in_grid(n, x), 3.0 * vs + 8.0, kn, &mut vrec);
+                            let r = rect_in_grid(n, x);
+                            route_rec(x, [r[0], r[1]], kn, &mut vrec);
                         }
                         let desc = blur_arm(
                             vs,
@@ -1916,7 +1908,8 @@ impl Sink {
                         let sigma = sigma * kn as f32;
                         if let Some(&j) = dag.nodes[n].inputs.first() {
                             if rid_of.contains_key(&j) {
-                                route_rec(j, rect_in_grid(n, j), dag.nodes[n].pad, kn, &mut rec);
+                                let r = rect_in_grid(n, j);
+                                route_rec(j, [r[0], r[1]], kn, &mut rec);
                             }
                         }
                         let desc = blur_arm(
@@ -1951,7 +1944,8 @@ impl Sink {
                     ) => {
                         if let Some(&j) = dag.nodes[n].inputs.first() {
                             if rid_of.contains_key(&j) {
-                                route_rec(j, rect_in_grid(n, j), dag.nodes[n].pad, k_of(n), &mut rec);
+                                let r = rect_in_grid(n, j);
+                                route_rec(j, [r[0], r[1]], k_of(n), &mut rec);
                             }
                         }
                         let desc = crate::vello::bake::arm_descriptor(
@@ -1974,12 +1968,7 @@ impl Sink {
                             after: None,
                         }));
                     }
-                    (op, _) => {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if std::env::var("WV_DBG_PIECES").is_ok() {
-                            eprintln!("WV_DBG_PIECES: piece {n} op {op:?} has no lowering arm — lease left unwritten");
-                        }
-                    }
+                    (_, _) => {}
                 }
             }
             for (gid, m) in new_marks {
@@ -2024,29 +2013,13 @@ impl Sink {
                     if !owns && !fused {
                         continue;
                     }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if std::env::var("WV_DBG_PIECES").is_ok() {
-                        eprintln!(
-                            "WV_DBG_PIECES: route gid={shape:04x} reader={} -> target={} (node {} {}) k={}",
-                            r.reader, r.target, m.node, if owns { "owns" } else { "fused" }, r.k,
-                        );
-                    }
                     let t = &regions.regions[trid];
-                    m.rec[5] = [
-                        t.source[0] as f32,
-                        t.source[1] as f32,
-                        t.source[2] as f32,
-                        t.source[3] as f32,
-                    ];
-                    let g = t.grid;
-                    let chain = fin.sides.get(r.target).copied().unwrap_or(0) == 1;
-                    let slack = dag.nodes[r.reader].pad.max(1.0);
-                    m.rec[6] = [
-                        g[0] as f32,
-                        g[1] as f32 - band_y0,
-                        k_of(r.target) as f32,
-                        if chain { -slack } else { slack },
-                    ];
+                    route_rec(
+                        r.target,
+                        [t.source[0] as f32, t.source[1] as f32],
+                        1.0,
+                        &mut m.rec,
+                    );
                 }
             }
         }
@@ -2105,7 +2078,7 @@ impl Sink {
                     node: body_idx,
                     round,
                     desc: [0.0f32; 26],
-                    rec: [[0.0f32; 4]; 7],
+                    rec: [[0.0f32; 4]; 12],
                     ctl: 0,
                     masked: false,
                     band: false,
@@ -2360,9 +2333,9 @@ impl Sink {
             for (gid, ms) in &marks {
                 for m in ms {
                     eprintln!(
-                        "WV_DBG_MARKS: gid={:04x} node={} op={:?} round={} ctl={} masked={} band={} bits={} u1=({}, {}) a={} rec5={:?} rec6={:?}",
+                        "WV_DBG_MARKS: gid={:04x} node={} op={:?} round={} ctl={} masked={} band={} bits={} u1=({}, {}) a={} route={:?} clamp={:?}",
                         (gid & 0xffff) as u16, m.node, dag.nodes[m.node].op, m.round, m.ctl, m.masked, m.band,
-                        m.desc[0], m.desc[6], m.desc[7], m.desc[17], m.rec[5], m.rec[6],
+                        m.desc[0], m.desc[6], m.desc[7], m.desc[17], m.rec[10], m.rec[11],
                     );
                 }
             }
@@ -2735,17 +2708,17 @@ impl Sink {
                             // rec[4].w = the FLUSH flag: set only on front-merged marks, where a
                             // second producer on a tile must store-and-reseed the register. The
                             // planner decides; un-merged windows keep their register flow verbatim.
-                            m.rec[4] = [1.0, ox, oy, f32::from(u8::from(front.contains_key(&m.node)))];
+                            m.rec[8] = [1.0, ox, oy, f32::from(u8::from(front.contains_key(&m.node)))];
                         }
                         if let Some(e) = read_input(m.node).filter(|e| origin.contains_key(e)) {
                             let (ox, oy) = origin[&e];
                             m.rec[0][1] = ox;
                             m.rec[0][2] = oy;
                             m.rec[0][3] = extent[&e].0;
-                            m.rec[1][3] = extent[&e].1;
-                            if m.rec[1][0] == 2.0 {
-                                m.rec[1][1] = ox;
-                                m.rec[1][2] = oy;
+                            m.rec[2][3] = extent[&e].1;
+                            if m.rec[2][0] == 2.0 {
+                                m.rec[2][1] = ox;
+                                m.rec[2][2] = oy;
                             }
                         }
                         // The flood fold samples `base_in` at px + offset (fx_flood_value) with no
@@ -3094,9 +3067,11 @@ impl Sink {
         );
         let snap = snap_tex.create_view(&wgpu::TextureViewDescriptor::default());
         // THE region atlas: one rgba8 texture mapping the rented grid band one-to-one (atlas row 0
-        // = grid row `band_origin_y`). Region ground windows store into it (their OUTPUT records
-        // shift by the band origin) and every backdrop-tapping dispatch binds it read-only so
-        // escaped taps resolve through the reader's region route records.
+        // = grid row `band_origin_y`). Every lease lives here and every backdrop-tapping dispatch
+        // binds it read-only, so escaped taps resolve through the reader's route record (record 5).
+        // Region windows never write it directly — they write the BACK staging texture and an
+        // encoder blit lands each lease, so a dispatch is free to read any lease (its own inputs
+        // included) with no exclusive-usage constraint and no side colouring.
         let region_dims = (regions.regions.len() > 1)
             .then(|| (grid_h - regions.band_origin_y()).max(TILE_PX));
         let region_atlas_tex = region_dims.map(|h| {
@@ -3106,35 +3081,32 @@ impl Sink {
                 h,
                 format,
                 wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::STORAGE_BINDING
                     | wgpu::TextureUsages::COPY_SRC
                     | wgpu::TextureUsages::COPY_DST,
                 "wv region atlas",
             )
         });
-        // The CHAIN atlas: region-space intermediates (a band-instance blur's lease). A separate
-        // texture with stable roles — chain dispatches READ the values atlas while WRITING here
-        // (one texture for both would be an exclusive-usage conflict) — selected per route by the
-        // sign of the slack word (record 6.w < 0 = chain).
-        let region_chain_tex = region_dims
-            .map(|h| {
-                self.pool.acquire_target(
-                    device,
-                    width,
-                    h,
-                    format,
-                    wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::STORAGE_BINDING
-                        | wgpu::TextureUsages::COPY_SRC
-                        | wgpu::TextureUsages::COPY_DST,
-                    "wv region chain",
-                )
-            });
+        // The BACK staging: the write half of the region pipeline register. Region window
+        // dispatches store into it (their OUTPUT records shift grid rows onto atlas rows) and the
+        // written lease rect is blitted into the atlas right after the dispatch; transports hop
+        // through it (atlas → back → atlas) because a same-texture copy is a subresource conflict.
+        let region_back_tex = region_dims.map(|h| {
+            self.pool.acquire_target(
+                device,
+                width,
+                h,
+                format,
+                wgpu::TextureUsages::STORAGE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+                "wv region back",
+            )
+        });
         let region_atlas =
             region_atlas_tex.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
-        let region_chain =
-            region_chain_tex.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
-        backend.phase_region_atlas(region_atlas.as_ref(), region_chain.as_ref());
+        let region_back =
+            region_back_tex.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
+        backend.phase_region_atlas(region_atlas.as_ref());
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_ROUNDS").is_ok() {
             eprintln!(
@@ -3298,7 +3270,7 @@ impl Sink {
                 if matches!(dag.nodes[mk.node].op, UnitOp::Blur { .. }) && shp.input == Slot::None {
                     return Some(tap_pad(mk.node));
                 }
-                (shp.input != Slot::None && mk.rec[1][0] != 2.0).then_some(0.0)
+                (shp.input != Slot::None && mk.rec[2][0] != 2.0).then_some(0.0)
             };
             // A glass gather's base reads land up to its true warp displacement away — the honest
             // per-param bound, never the flat allowance, floored at the old constant so refresh
@@ -3715,11 +3687,10 @@ impl Sink {
 
         let _tpl = crate::vello::prof::now();
         /// One transport blit (law 2 executed as an encoder copy): a source piece's atlas window
-        /// copied into its combine/re-side lease, cross-atlas by parity construction. Keyed by the
-        /// dense round it must complete BEFORE (its first consumer's window).
+        /// copied into its combine lease. Both live in the one atlas, and a same-texture copy is a
+        /// subresource conflict, so the copy hops through the BACK staging (atlas → back → atlas).
+        /// Keyed by the dense round it must complete BEFORE (its first consumer's window).
         struct RegionBlit {
-            src_chain: bool,
-            dst_chain: bool,
             src: (u32, u32),
             dst: (u32, u32),
             size: (u32, u32),
@@ -3737,7 +3708,6 @@ impl Sink {
             }
             for &t in &fin.transports {
                 let Some(&trid) = rid_of.get(&t) else { continue };
-                let side_t = fin.sides.get(t).copied().unwrap_or(0) == 1;
                 let mut before = u32::MAX;
                 for (i, n) in dag.nodes.iter().enumerate() {
                     if n.inputs.contains(&t) {
@@ -3770,22 +3740,10 @@ impl Sink {
                     {
                         continue;
                     }
-                    let side_j = fin.sides.get(j).copied().unwrap_or(0) == 1;
-                    if side_j == side_t {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if std::env::var("WV_DBG_PIECES").is_ok() {
-                            eprintln!("WV_DBG_PIECES: transport {t} and source {j} co-sided — blit skipped");
-                        }
-                        continue;
-                    }
                     let jr = dag.nodes[j].reach.unwrap_or(frame_rect);
                     let jg = regions.regions[jrid].grid;
                     let kb = regions.regions[trid].k;
                     if (regions.regions[jrid].k - kb).abs() > 1e-6 {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if std::env::var("WV_DBG_PIECES").is_ok() {
-                            eprintln!("WV_DBG_PIECES: transport {t} blit crosses density — skipped");
-                        }
                         continue;
                     }
                     let isect = tr.intersect(jr);
@@ -3801,8 +3759,6 @@ impl Sink {
                         tg[1] - band_y0 + ((isect.y0 - tr.y0) * kb) as u32,
                     );
                     region_blits.entry(before).or_default().push(RegionBlit {
-                        src_chain: side_j,
-                        dst_chain: side_t,
                         src,
                         dst,
                         size: (
@@ -3813,25 +3769,20 @@ impl Sink {
                 }
             }
         }
+        fn copy_at(tex: &wgpu::Texture, at: (u32, u32)) -> wgpu::TexelCopyTextureInfo<'_> {
+            wgpu::TexelCopyTextureInfo {
+                texture: tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: at.0, y: at.1, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            }
+        }
         let run_region_blits = |enc: &mut wgpu::CommandEncoder, bs: &[RegionBlit]| {
-            let (Some(va), Some(ch)) = (&region_atlas_tex, &region_chain_tex) else { return };
+            let (Some(at), Some(bk)) = (&region_atlas_tex, &region_back_tex) else { return };
             for b in bs {
-                let pick = |chain: bool| if chain { ch } else { va };
-                enc.copy_texture_to_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: pick(b.src_chain),
-                        mip_level: 0,
-                        origin: wgpu::Origin3d { x: b.src.0, y: b.src.1, z: 0 },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    wgpu::TexelCopyTextureInfo {
-                        texture: pick(b.dst_chain),
-                        mip_level: 0,
-                        origin: wgpu::Origin3d { x: b.dst.0, y: b.dst.1, z: 0 },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    wgpu::Extent3d { width: b.size.0, height: b.size.1, depth_or_array_layers: 1 },
-                );
+                let ext = wgpu::Extent3d { width: b.size.0, height: b.size.1, depth_or_array_layers: 1 };
+                enc.copy_texture_to_texture(copy_at(at, b.src), copy_at(bk, b.dst), ext);
+                enc.copy_texture_to_texture(copy_at(bk, b.dst), copy_at(at, b.dst), ext);
             }
         };
         let mut window_lo = 0u32;
@@ -3848,6 +3799,9 @@ impl Sink {
             {
                 let due: Vec<u32> =
                     region_blits.range(..=window_lo).map(|(&k, _)| k).collect();
+                if !due.is_empty() {
+                    backend.phase_dispatch_flush(&mut enc);
+                }
                 for k in due {
                     if let Some(bs) = region_blits.remove(&k) {
                         run_region_blits(&mut enc, &bs);
@@ -3930,35 +3884,42 @@ impl Sink {
                     }
                     if shp.to_draft {
                         let dv = if shp.region_out {
-                            // A region window writes the region atlas; per-mark OUTPUT records
-                            // shift grid rows onto atlas rows, and the OOB default drops any
-                            // unmarked tile's store. A GROUND (base None) rasterizes its fenced
-                            // draws; every other piece runs its arm with taps resolving through
-                            // its region route, writing whichever atlas its parity side put its
-                            // lease in (opposite its sampled inputs, so a dispatch never reads
-                            // the texture it writes).
-                            let dv = region_atlas
+                            // A region window writes the BACK staging (per-mark OUTPUT records
+                            // shift grid rows onto atlas rows; the OOB default drops any unmarked
+                            // tile's store), then the window's lease rects blit into the atlas —
+                            // so the dispatch samples the atlas freely (its routes may read any
+                            // lease) while never binding the texture it writes. A GROUND (base
+                            // None) rasterizes its fenced draws; every other piece runs its arm
+                            // with taps resolving through its route record.
+                            let bv = region_back
                                 .clone()
                                 .expect("a region round scheduled without a region atlas");
                             backend.phase_scratch_origins([OOB, OOB], [0, 0]);
-                            let side_chain = fin
-                                .as_ref()
-                                .is_some_and(|f| f.sides.get(rep).copied().unwrap_or(0) == 1);
                             if shp.base == Slot::None {
-                                backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &dv);
-                                dv
-                            } else if side_chain {
-                                let cv = region_chain
-                                    .clone()
-                                    .expect("a region chain round scheduled without a chain atlas");
-                                backend.phase_region_chain_write();
-                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, None, &cv);
-                                cv
+                                backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &bv);
                             } else {
-                                backend.phase_region_values_write();
-                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, None, &dv);
-                                dv
+                                backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, None, &bv);
                             }
+                            if let (Some(at), Some(bk)) = (&region_atlas_tex, &region_back_tex) {
+                                backend.phase_dispatch_flush(&mut enc);
+                                let band_y0 = regions.band_origin_y();
+                                for wlo in std::iter::once(window_lo)
+                                    .chain(merged_windows.get(&window_lo).into_iter().flatten().copied())
+                                {
+                                    for n in round_nodes.get(&wlo).into_iter().flatten() {
+                                        let Some(&rid) = rid_of.get(n) else { continue };
+                                        let g = regions.regions[rid].grid;
+                                        let ext = wgpu::Extent3d {
+                                            width: (g[2] - g[0]).max(1),
+                                            height: (g[3] - g[1]).max(1),
+                                            depth_or_array_layers: 1,
+                                        };
+                                        let o = (g[0], g[1] - band_y0);
+                                        enc.copy_texture_to_texture(copy_at(bk, o), copy_at(at, o), ext);
+                                    }
+                                }
+                            }
+                            bv
                         } else {
                         match (shp.base, shp.input) {
                             (Slot::None, Slot::None) => {
@@ -4258,10 +4219,10 @@ impl Sink {
                 eprintln!("WV_DUMP_ATLAS: wrote {path}");
             };
             if let Some(t) = region_atlas_tex.as_ref() {
-                dump(t, "values");
+                dump(t, "atlas");
             }
-            if let Some(t) = region_chain_tex.as_ref() {
-                dump(t, "chain");
+            if let Some(t) = region_back_tex.as_ref() {
+                dump(t, "back");
             }
         }
         self.frame_transient.push(acc_tex);
@@ -4269,10 +4230,10 @@ impl Sink {
         if let Some(t) = region_atlas_tex {
             self.frame_transient.push(t);
         }
-        if let Some(t) = region_chain_tex {
+        if let Some(t) = region_back_tex {
             self.frame_transient.push(t);
         }
-        backend.phase_region_atlas(None, None);
+        backend.phase_region_atlas(None);
         backend.set_frame_extent(0, 0);
     }
 

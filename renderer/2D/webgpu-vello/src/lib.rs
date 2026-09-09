@@ -565,19 +565,9 @@ impl ClassicRenderer {
 impl ClassicBackend {
     /// The region atlas view for a fine dispatch, or a persistent 1x1 dummy when none is bound
     /// (the binding layout always carries the slot).
-    fn region_views(&mut self, device: &wgpu::Device) -> (wgpu::TextureView, wgpu::TextureView) {
+    fn region_view(&mut self, device: &wgpu::Device) -> wgpu::TextureView {
         let dummy = self.region_dummy_view(device);
-        let chain = if std::mem::take(&mut self.region_chain_write) {
-            dummy.clone()
-        } else {
-            self.region_chain.clone().unwrap_or_else(|| dummy.clone())
-        };
-        let values = if std::mem::take(&mut self.region_values_write) {
-            dummy
-        } else {
-            self.region_atlas.clone().unwrap_or(dummy)
-        };
-        (values, chain)
+        self.region_atlas.clone().unwrap_or(dummy)
     }
 
     fn region_dummy_view(&mut self, device: &wgpu::Device) -> wgpu::TextureView {
@@ -685,12 +675,9 @@ pub struct ClassicBackend {
     /// The in-progress persistent phased render, live between `phased_begin` and `phased_finish` so
     /// the sink can drive phases one at a time with a gather's effect recorded between them.
     phased_session: Option<vello::low_level::PhasedSession>,
-    /// The frame's region atlas views (values = grounds, chain = region-space intermediates),
-    /// bound read-only by every backdrop-tapping fine dispatch; a 1x1 dummy rides an empty slot.
+    /// The frame's region atlas view — the one lease store, bound read-only by every
+    /// backdrop-tapping fine dispatch; a 1x1 dummy rides an empty slot.
     region_atlas: Option<wgpu::TextureView>,
-    region_chain: Option<wgpu::TextureView>,
-    region_chain_write: bool,
-    region_values_write: bool,
     region_dummy: Option<wgpu::TextureView>,
     /// Encoded leaf-body fragments spliced by the whole-viewport walk — see [`walk::BodyCache`].
     body_cache: crate::walk::BodyCache,
@@ -716,9 +703,6 @@ impl ClassicBackend {
             next_inline: 0,
             phased_session: None,
             region_atlas: None,
-            region_chain: None,
-            region_chain_write: false,
-            region_values_write: false,
             region_dummy: None,
             body_cache: crate::walk::BodyCache::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -888,17 +872,12 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         vello::set_frame(width, height);
     }
 
-    fn phase_region_atlas(&mut self, values: Option<&wgpu::TextureView>, chain: Option<&wgpu::TextureView>) {
-        self.region_atlas = values.cloned();
-        self.region_chain = chain.cloned();
+    fn phase_region_atlas(&mut self, atlas: Option<&wgpu::TextureView>) {
+        self.region_atlas = atlas.cloned();
     }
 
-    fn phase_region_chain_write(&mut self) {
-        self.region_chain_write = true;
-    }
-
-    fn phase_region_values_write(&mut self) {
-        self.region_values_write = true;
+    fn phase_dispatch_flush(&mut self, enc: &mut wgpu::CommandEncoder) {
+        self.renderer.inner.phased_flush_dispatches(enc);
     }
 
     fn draw_fill_rect(&mut self, scene: &mut ClassicCtx, rect: [f32; 4], color: [f32; 4]) {
@@ -1038,11 +1017,11 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         out: &wgpu::TextureView,
     ) {
         let _trd = render_core::vello::prof::now();
-        let (region, chain) = self.region_views(device);
+        let region = self.region_view(device);
         let session = self.phased_session.as_mut().expect("phased_fine_segment_draft without phased_begin");
         self.renderer
             .inner
-            .phased_fine_segment_draft_into(session, device, queue, enc, seg_lo, seg_target, base, draft, &region, &chain, out)
+            .phased_fine_segment_draft_into(session, device, queue, enc, seg_lo, seg_target, base, draft, &region, out)
             .expect("phased_fine_segment_draft_into");
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
     }
@@ -1059,11 +1038,11 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         out: &wgpu::TextureView,
     ) {
         let _trd = render_core::vello::prof::now();
-        let (region, chain) = self.region_views(device);
+        let region = self.region_view(device);
         let session = self.phased_session.as_mut().expect("phased_fine_segment_input without phased_begin");
         self.renderer
             .inner
-            .phased_fine_segment_input_into(session, device, queue, enc, seg_lo, seg_target, base, input, &region, &chain, out)
+            .phased_fine_segment_input_into(session, device, queue, enc, seg_lo, seg_target, base, input, &region, out)
             .expect("phased_fine_segment_input_into");
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
     }
@@ -1133,11 +1112,11 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         slot10: Option<(bool, &wgpu::TextureView)>,
         target: &wgpu::TextureView,
     ) {
-        let (region, chain) = self.region_views(device);
+        let region = self.region_view(device);
         let session = self.phased_session.as_mut().expect("phased_fine_segment_rwu without phased_begin");
         self.renderer
             .inner
-            .phased_fine_segment_rwu_into(session, device, queue, enc, seg_lo, seg_target, snap, slot10, &region, &chain, target)
+            .phased_fine_segment_rwu_into(session, device, queue, enc, seg_lo, seg_target, snap, slot10, &region, target)
             .expect("phased_fine_segment_rwu_into");
     }
 
@@ -1152,11 +1131,11 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         slot10: Option<(bool, &wgpu::TextureView)>,
         out: &wgpu::TextureView,
     ) {
-        let (region, chain) = self.region_views(device);
+        let region = self.region_view(device);
         let session = self.phased_session.as_mut().expect("phased_fine_segment_loadu without phased_begin");
         self.renderer
             .inner
-            .phased_fine_segment_loadu_into(session, device, queue, enc, seg_lo, seg_target, snap, slot10, &region, &chain, out)
+            .phased_fine_segment_loadu_into(session, device, queue, enc, seg_lo, seg_target, snap, slot10, &region, out)
             .expect("phased_fine_segment_loadu_into");
     }
 
