@@ -119,6 +119,78 @@ impl Node {
     }
 }
 
+/// The packer's placement for one value: which slab (atlas texture) it lives in and where. `w`/`h` are
+/// the value's true size — the slot it occupies may be a rounded size class, but the shader addresses
+/// only `w`×`h` inside it (the rest is padding). This is the allocator's whole output; `death` shaped
+/// it and is gone. The Sink turns `slab` into a bound texture and `(x, y)` into the fine `scratch_offset`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lease {
+    pub slab: u32,
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// The widest atlas a slab may grow to before slots wrap to a new row. A tunable, not a hard limit —
+/// slabs stack rows below it, so a class just gets a taller texture, never a second slab from width.
+pub const SLAB_MAX_WIDTH: u32 = 4096;
+
+fn round_up_pow2(n: u32) -> u32 {
+    n.max(1).next_power_of_two()
+}
+
+/// Place every materialized value into a size-class slab, reusing a slot whose prior occupant died
+/// before this value is born. This is the offline packer: it sees all `[birth, death]` intervals up
+/// front (the schedule is static), so it is interval-graph colouring, not an online gamble. Each value
+/// is rounded up to a power-of-two size class; within a class every slot is identical, so a freed slot
+/// serves any later value of that class with ZERO fragmentation — the reuse the round-over-round size
+/// changes need. One slab (atlas) per class; slots tile left-to-right up to [`SLAB_MAX_WIDTH`], then
+/// wrap. Greedy first-fit in birth order uses exactly `max concurrent live` slots per class (the
+/// interval-graph clique number — the true lower bound). Returns one lease per input, input order.
+#[must_use]
+pub fn pack(items: &[LiveRect]) -> Vec<Lease> {
+    use std::collections::HashMap;
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by_key(|&i| (items[i].birth, items[i].node));
+    let mut slots_of: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+    let mut slab_of: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut next_slab = 0u32;
+    let mut slot_of = vec![0usize; items.len()];
+    let mut class_of = vec![(0u32, 0u32); items.len()];
+    for &i in &order {
+        let it = items[i];
+        let class = (round_up_pow2(it.w), round_up_pow2(it.h));
+        class_of[i] = class;
+        slab_of.entry(class).or_insert_with(|| {
+            let s = next_slab;
+            next_slab += 1;
+            s
+        });
+        let slots = slots_of.entry(class).or_default();
+        let slot = match slots.iter().position(|&until| until < it.birth) {
+            Some(s) => {
+                slots[s] = it.death;
+                s
+            }
+            None => {
+                slots.push(it.death);
+                slots.len() - 1
+            }
+        };
+        slot_of[i] = slot;
+    }
+    (0..items.len())
+        .map(|i| {
+            let (cw, ch) = class_of[i];
+            let cols = (SLAB_MAX_WIDTH / cw).max(1);
+            let s = slot_of[i] as u32;
+            let (col, row) = (s % cols, s / cols);
+            Lease { slab: slab_of[&class_of[i]], x: col * cw, y: row * ch, w: items[i].w, h: items[i].h }
+        })
+        .collect()
+}
+
 /// The whole-frame value-DAG: a flat, topologically-buildable node list (a node only ever cites
 /// earlier indices, so the vector order is already a valid topological order).
 #[derive(Clone, Debug, Default)]
@@ -241,77 +313,6 @@ pub struct LiveRect {
     pub death: u32,
 }
 
-/// The packer's placement for one value: which slab (atlas texture) it lives in and where. `w`/`h` are
-/// the value's true size — the slot it occupies may be a rounded size class, but the shader addresses
-/// only `w`×`h` inside it (the rest is padding). This is the allocator's whole output; `death` shaped
-/// it and is gone. The Sink turns `slab` into a bound texture and `(x, y)` into the fine `scratch_offset`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Lease {
-    pub slab: u32,
-    pub x: u32,
-    pub y: u32,
-    pub w: u32,
-    pub h: u32,
-}
-
-/// The widest atlas a slab may grow to before slots wrap to a new row. A tunable, not a hard limit —
-/// slabs stack rows below it, so a class just gets a taller texture, never a second slab from width.
-pub const SLAB_MAX_WIDTH: u32 = 4096;
-
-fn round_up_pow2(n: u32) -> u32 {
-    n.max(1).next_power_of_two()
-}
-
-/// Place every materialized value into a size-class slab, reusing a slot whose prior occupant died
-/// before this value is born. This is the offline packer: it sees all `[birth, death]` intervals up
-/// front (the schedule is static), so it is interval-graph colouring, not an online gamble. Each value
-/// is rounded up to a power-of-two size class; within a class every slot is identical, so a freed slot
-/// serves any later value of that class with ZERO fragmentation — the reuse the round-over-round size
-/// changes need. One slab (atlas) per class; slots tile left-to-right up to [`SLAB_MAX_WIDTH`], then
-/// wrap. Greedy first-fit in birth order uses exactly `max concurrent live` slots per class (the
-/// interval-graph clique number — the true lower bound). Returns one lease per input, input order.
-#[must_use]
-pub fn pack(items: &[LiveRect]) -> Vec<Lease> {
-    use std::collections::HashMap;
-    let mut order: Vec<usize> = (0..items.len()).collect();
-    order.sort_by_key(|&i| (items[i].birth, items[i].node));
-    let mut slots_of: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
-    let mut slab_of: HashMap<(u32, u32), u32> = HashMap::new();
-    let mut next_slab = 0u32;
-    let mut slot_of = vec![0usize; items.len()];
-    let mut class_of = vec![(0u32, 0u32); items.len()];
-    for &i in &order {
-        let it = items[i];
-        let class = (round_up_pow2(it.w), round_up_pow2(it.h));
-        class_of[i] = class;
-        slab_of.entry(class).or_insert_with(|| {
-            let s = next_slab;
-            next_slab += 1;
-            s
-        });
-        let slots = slots_of.entry(class).or_default();
-        let slot = match slots.iter().position(|&until| until < it.birth) {
-            Some(s) => {
-                slots[s] = it.death;
-                s
-            }
-            None => {
-                slots.push(it.death);
-                slots.len() - 1
-            }
-        };
-        slot_of[i] = slot;
-    }
-    (0..items.len())
-        .map(|i| {
-            let (cw, ch) = class_of[i];
-            let cols = (SLAB_MAX_WIDTH / cw).max(1);
-            let s = slot_of[i] as u32;
-            let (col, row) = (s % cols, s / cols);
-            Lease { slab: slab_of[&class_of[i]], x: col * cw, y: row * ch, w: items[i].w, h: items[i].h }
-        })
-        .collect()
-}
 
 impl FrameDag {
     /// The NAIVE topological depth: `0` for a leaf, else `1 + max(input round)` — a barrier at *every*
@@ -418,8 +419,8 @@ impl FrameDag {
     }
 
     /// Whether node `j` is a FOLDED source: a rasterize whose geometry rides the main scene
-    /// behind a fence and lands in a side-2 lease, because some consumer binds its output as a
-    /// texture. Derived from op + edges alone: drawable geometry (a Coverage silhouette or an
+    /// behind a fence and lands in a lease of the shared store, because some consumer binds its
+    /// output as a texture. Derived from op + edges alone: drawable geometry (a Coverage silhouette or an
     /// effect-owned Body) that is texture-read. A Distance source is not drawable geometry (its
     /// producer is the SDF baker); a plain stack body is read through the accumulator, not a
     /// texture, and rides inline instead.
@@ -1020,51 +1021,6 @@ impl FrameDag {
             .collect()
     }
 
-    /// Two-colour rounds under the executor's texture constraints — union-find with PARITY. Items
-    /// are (dense) round ids; `union(a, b, diff)` merges them with `diff = true` for "must take
-    /// opposite atlas sides" (a materialize round versus a round it reads) and `false` for "must
-    /// share a side" (two producer rounds co-read by one dispatch, which binds a single source
-    /// texture). Read edges always point to earlier rounds, so the constraint graph is acyclic and
-    /// a colouring always exists; `union` returning `false` (an odd cycle) is therefore a planner
-    /// bug surfaced, not a case to design around.
-    pub fn parity_colours(n: usize, eq: &[(usize, usize)], neq: &[(usize, usize)]) -> Option<Vec<u8>> {
-        let mut parent: Vec<usize> = (0..n).collect();
-        let mut par = vec![0u8; n];
-        fn find(parent: &mut [usize], par: &mut [u8], i: usize) -> (usize, u8) {
-            if parent[i] == i {
-                return (i, 0);
-            }
-            let (root, p) = find(parent, par, parent[i]);
-            parent[i] = root;
-            par[i] ^= p;
-            (root, par[i])
-        }
-        let mut union = |a: usize, b: usize, diff: u8| -> bool {
-            let (ra, pa) = find(&mut parent, &mut par, a);
-            let (rb, pb) = find(&mut parent, &mut par, b);
-            if ra == rb {
-                return pa ^ pb == diff;
-            }
-            parent[ra] = rb;
-            par[ra] = pa ^ pb ^ diff;
-            true
-        };
-        for &(a, b) in eq {
-            if !union(a, b, 0) {
-                return None;
-            }
-        }
-        for &(a, b) in neq {
-            if !union(a, b, 1) {
-                return None;
-            }
-        }
-        Some(
-            (0..n)
-                .map(|i| find(&mut parent, &mut par, i).1)
-                .collect(),
-        )
-    }
 
     /// The scratch-VRAM curve a set of live intervals implies: for each round, the bytes of every
     /// value live there (RGBA8, 4 bytes/px); returns the peak and the round it occurs at. This is
@@ -2020,19 +1976,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn parity_colours_solve_chains_and_expose_odd_cycles() {
-        let c = FrameDag::parity_colours(4, &[], &[(0, 1), (1, 2), (2, 3)]).expect("a chain 2-colours");
-        assert_eq!(c[0], c[2]);
-        assert_eq!(c[1], c[3]);
-        assert_ne!(c[0], c[1]);
-        let c = FrameDag::parity_colours(3, &[(0, 2)], &[(0, 1), (1, 2)]).expect("eq closing an even path");
-        assert_eq!(c[0], c[2]);
-        assert!(
-            FrameDag::parity_colours(3, &[], &[(0, 1), (1, 2), (2, 0)]).is_none(),
-            "an odd cycle has no 2-colouring and must be surfaced"
-        );
-    }
 
     #[test]
     fn peak_scratch_bytes_finds_the_worst_round() {

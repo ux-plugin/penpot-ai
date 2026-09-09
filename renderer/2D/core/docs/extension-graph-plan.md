@@ -90,8 +90,18 @@ Runs once, after the walk; inserts nodes but never re-plans the walk's cuts.
    same-class replay pieces can instead be a fresh replay over the union window; a writer
    step's transport arm doubles as the combine when co-located; placement may lay sources
    grid-adjacent and elide the combine entirely.
-3. **Sides.** 2-colouring along sample edges (parity_colours); collisions discharge by law 2.
-   A piece pass samples only the non-written atlas (both bound, written one dummy-swapped).
+3. **Sides (EXECUTED as the staging write-back, 2026-09-09 — parity_colours is DELETED).**
+   There are no sides: every writer — region piece or frame draft — writes the STAGING texture
+   at its lease and a store node copies it into the one read-only atlas; readers only ever bind
+   the atlas. The write/read conflict parity coloured around cannot exist by construction. A
+   frame draft's store is a law-2 preserve arm like any region store: minted per texture-read
+   writer, keyed into its own exec round between writer and readers ((round, 3+layer) — layered
+   so same-round stores with overlapping tiles never share a window, whose single register
+   could hold only one store), hoisted with its writer when the writer fronts (one depth level
+   below its readers). The three side scratch textures, the parity colouring and the slab
+   meta-pack are gone; draft leases join the region leases in the shared interval_shelf store
+   (8192 wide, size-classed: pow2 to 512 then 256-multiples), and an unplaceable draft falls
+   back to a private full-viewport texture with its store mark stamped inert.
 4. **Allocation.** Interval leases from the deaths schedule() already computes. Address
    coalescing: in place iff own-texel (the accumulator chain is the maximal case — N states,
    one address, zero copies); reuse-after-death for everything else. Every coalescing choice

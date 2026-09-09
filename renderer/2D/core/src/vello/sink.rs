@@ -1326,7 +1326,7 @@ impl Sink {
             dag.reset_binding_index();
         }
         backend.set_frame_extent(width, acc_h);
-        let dag = dag;
+        let mut dag = dag;
         let scratch_budget = std::env::var("WV_SCRATCH_BUDGET_MB")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -1653,6 +1653,125 @@ impl Sink {
                 }
             }
         }
+        let mut store_layer: HashMap<usize, u8> = HashMap::new();
+        let mut store_rect: HashMap<usize, [f32; 4]> = HashMap::new();
+        {
+            let to_draft = |n: usize| {
+                dag.binding_shape(n).is_some_and(|sh| sh.to_draft && !sh.region_out)
+            };
+            let read_target = |node: usize| -> Option<usize> {
+                use crate::vello::units::UnitOp;
+                let mut cur = if matches!(dag.nodes[node].op, UnitOp::EraseBy(_)) {
+                    dag.nodes[node].inputs.get(1).copied()?
+                } else {
+                    dag.nodes[node].inputs.first().copied()?
+                };
+                loop {
+                    if to_draft(cur) {
+                        return Some(cur);
+                    }
+                    if matches!(dag.nodes[cur].op, UnitOp::Rasterize(_) | UnitOp::Reload)
+                        || dag.nodes[cur].writes_accumulator()
+                    {
+                        return None;
+                    }
+                    cur = dag.nodes[cur].inputs.first().copied()?;
+                }
+            };
+            let mut readset: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            for ms in marks.values() {
+                for m in ms {
+                    if !matches!(dag.nodes[m.node].op, crate::vello::units::UnitOp::Rasterize(_)) {
+                        if let Some(e) = read_target(m.node) {
+                            readset.insert(e);
+                        }
+                    }
+                    if let Some(rz) = dag_base_rasterize(&dag, m.node).filter(|&rz| rz != m.node && to_draft(rz)) {
+                        readset.insert(rz);
+                    }
+                    if dag.nodes[m.node].op.is_head() {
+                        if let Some(&sd) = dag.nodes[m.node].inputs.get(1) {
+                            if to_draft(sd) {
+                                readset.insert(sd);
+                            }
+                        }
+                    }
+                }
+            }
+            let reach_of: HashMap<u128, [f32; 4]> =
+                gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
+            let mut draft_writers: Vec<(u128, usize, u32, [f32; 4])> = Vec::new();
+            for (&gid, ms) in &marks {
+                for m in ms {
+                    if rid_of.contains_key(&m.node) || store_of.contains_key(&m.node) {
+                        continue;
+                    }
+                    if readset.contains(&m.node) && to_draft(m.node) {
+                        draft_writers.push((gid, m.node, m.round, m.rect.unwrap_or(reach_of[&gid])));
+                    }
+                }
+            }
+            draft_writers.sort_unstable_by_key(|&(g, n, r, _)| (g, n, r));
+            draft_writers.dedup_by_key(|&mut (g, n, _, _)| (g, n));
+            let mut by_round: std::collections::BTreeMap<u32, Vec<usize>> =
+                std::collections::BTreeMap::new();
+            for (i, &(_, _, round, _)) in draft_writers.iter().enumerate() {
+                by_round.entry(round).or_default().push(i);
+            }
+            let overlaps = |a: [f32; 4], b: [f32; 4]| {
+                a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
+            };
+            let mut layer_of: Vec<u8> = vec![0; draft_writers.len()];
+            for idxs in by_round.values() {
+                let mut layers: Vec<Vec<[f32; 4]>> = Vec::new();
+                for &i in idxs {
+                    let r = draft_writers[i].3;
+                    let l = layers
+                        .iter()
+                        .position(|rs| rs.iter().all(|&q| !overlaps(r, q)))
+                        .unwrap_or(layers.len());
+                    if l == layers.len() {
+                        layers.push(Vec::new());
+                    }
+                    layers[l].push(r);
+                    layer_of[i] = l.min(250) as u8;
+                }
+            }
+            for (i, (gid, w, round, _)) in draft_writers.iter().copied().enumerate() {
+                let sn = dag.nodes.len();
+                store_layer.insert(sn, layer_of[i]);
+                store_rect.insert(sn, draft_writers[i].3);
+                dag.nodes.push(crate::vello::frame_dag::Node {
+                    op: crate::vello::units::UnitOp::Copy,
+                    target: crate::vello::plan::Target::Store,
+                    source: dag.nodes[w].source.clone(),
+                    label: format!("store of {w}"),
+                    reach: None,
+                    pad: 0.0,
+                    inputs: vec![w],
+                });
+                store_of.insert(w, sn);
+                let mut desc = [0.0f32; 26];
+                desc[0] = crate::vello::bake::bits::RAW as f32;
+                marks.get_mut(&gid).expect("writer's gid holds marks").push(UnitMark {
+                    node: sn,
+                    round,
+                    desc,
+                    rec: [[0.0f32; 4]; 12],
+                    ctl: 0,
+                    masked: false,
+                    band: false,
+                    off: 0,
+                    rect: None,
+                    mark_shape: None,
+                    after: None,
+                });
+            }
+            dag.reset_binding_index();
+        }
+        let dag = dag;
+        let writer_of: HashMap<usize, usize> =
+            store_of.iter().map(|(&w, &s)| (s, w)).collect();
         if let Some(f) = &fin {
             if !rid_of.is_empty() {
                 use crate::vello::region::{interval_shelf, IntervalRect};
@@ -1706,7 +1825,7 @@ impl Sink {
                 }
                 let band = regions.band_origin_y();
                 let hosts = interval_shelf(&host_items, width, max_grid_h.saturating_sub(band));
-                let leases = interval_shelf(&lease_items, width, 8192);
+                let leases = interval_shelf(&lease_items, 8192, 8192);
                 for (idx, &rid) in ordered.iter().enumerate() {
                     match (hosts[idx], leases[idx]) {
                         (Some(hp), Some(lp)) => {
@@ -2211,7 +2330,11 @@ impl Sink {
             use crate::vello::frame_dag::Slot;
             let shape_front = |n: usize| {
                 dag.binding_shape(n).is_some_and(|s| {
-                    s.to_draft && !s.region_out && s.base != Slot::Backdrop && s.input != Slot::Backdrop
+                    s.to_draft
+                        && (!s.region_out
+                            || (writer_of.contains_key(&n) && !rid_of.contains_key(&n)))
+                        && s.base != Slot::Backdrop
+                        && s.input != Slot::Backdrop
                 })
             };
             let mut depth_of: HashMap<usize, u8> = HashMap::new();
@@ -2253,17 +2376,24 @@ impl Sink {
                             } else {
                                 dag.nodes[m.node].inputs.first().copied()
                             };
+                            let bump = |c: usize, d: u8| {
+                                d.saturating_add(u8::from(
+                                    store_of.contains_key(&c)
+                                        && !rid_of.contains_key(&c)
+                                        && store_of.get(&c) != Some(&m.node),
+                                ))
+                            };
                             let dep = loop {
                                 let Some(c) = cur else { break None };
                                 if let Some(&k) = mark_at.get(&c) {
                                     if !is_fence(&ms[k])
                                         && dag.binding_shape(c).is_some_and(|s| s.to_draft)
                                     {
-                                        break depth_of.get(&c).copied();
+                                        break depth_of.get(&c).map(|&d| bump(c, d));
                                     }
                                 }
                                 if matches!(dag.nodes[c].op, crate::vello::units::UnitOp::Rasterize(_)) {
-                                    break if depth_of.contains_key(&c) { Some(0) } else { None };
+                                    break if depth_of.contains_key(&c) { Some(bump(c, 0)) } else { None };
                                 }
                                 if matches!(dag.nodes[c].op, crate::vello::units::UnitOp::Reload)
                                     || dag.nodes[c].writes_accumulator()
@@ -2340,13 +2470,42 @@ impl Sink {
                 let s = dag.binding_shape(n).expect("admitted marks have a shape");
                 (sk(s.base), sk(s.input), u8::from(s.draft_taps) | (u8::from(s.region_out) << 1))
             };
-            let mut keys: Vec<(u8, (u8, u8, u8))> =
-                admitted.iter().map(|&(n, d)| (d, class_of(n))).collect();
+            let overlaps = |a: [f32; 4], b: [f32; 4]| {
+                a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
+            };
+            let mut front_layer: HashMap<usize, u8> = HashMap::new();
+            {
+                let mut groups: std::collections::BTreeMap<(u8, (u8, u8, u8)), Vec<usize>> =
+                    std::collections::BTreeMap::new();
+                for &(n, d) in &admitted {
+                    if store_rect.contains_key(&n) {
+                        groups.entry((d, class_of(n))).or_default().push(n);
+                    }
+                }
+                for ns in groups.values() {
+                    let mut layers: Vec<Vec<[f32; 4]>> = Vec::new();
+                    for &n in ns {
+                        let r = store_rect[&n];
+                        let l = layers
+                            .iter()
+                            .position(|rs| rs.iter().all(|&q| !overlaps(r, q)))
+                            .unwrap_or(layers.len());
+                        if l == layers.len() {
+                            layers.push(Vec::new());
+                        }
+                        layers[l].push(r);
+                        front_layer.insert(n, l.min(250) as u8);
+                    }
+                }
+            }
+            let lay = |n: usize| front_layer.get(&n).copied().unwrap_or(0);
+            let mut keys: Vec<(u8, (u8, u8, u8), u8)> =
+                admitted.iter().map(|&(n, d)| (d, class_of(n), lay(n))).collect();
             keys.sort_unstable();
             keys.dedup();
-            let rank: HashMap<(u8, (u8, u8, u8)), u32> =
+            let rank: HashMap<(u8, (u8, u8, u8), u8), u32> =
                 keys.iter().enumerate().map(|(i, &k)| (k, i as u32)).collect();
-            admitted.into_iter().map(|(n, d)| (n, rank[&(d, class_of(n))])).collect()
+            admitted.into_iter().map(|(n, d)| (n, rank[&(d, class_of(n), lay(n))])).collect()
         } else {
             HashMap::new()
         };
@@ -2369,6 +2528,9 @@ impl Sink {
         let mark_key = |m: &UnitMark, ms: &[UnitMark]| -> (i64, u8) {
             if let Some(&r) = front.get(&m.node) {
                 return (i64::MIN + i64::from(r), 0);
+            }
+            if writer_of.contains_key(&m.node) && !rid_of.contains_key(&m.node) {
+                return (i64::from(m.round), 3 + store_layer.get(&m.node).copied().unwrap_or(0));
             }
             if dag.binding_shape(m.node).is_some_and(|s| s.region_out) {
                 return (i64::from(m.round), 2);
@@ -2433,10 +2595,10 @@ impl Sink {
             max_round = max_round.max(hi);
         }
         let _tlease0 = crate::vello::prof::now();
-        let mut scratch_atlas_dims: [Option<(u32, u32)>; 3] = [None, None, None];
-        let mut atlas_of: HashMap<usize, usize> = HashMap::new();
+        let mut draft_placed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut draft_atlas_h: u32 = 0;
         {
-            use crate::vello::frame_dag::{pack, LiveRect};
+            use crate::vello::frame_dag::LiveRect;
             use crate::vello::units::UnitOp;
             let reach_of: HashMap<u128, [f32; 4]> =
                 gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
@@ -2523,207 +2685,59 @@ impl Sink {
                     }
                 }
             }
+            let mut origin: HashMap<usize, (f32, f32)> = HashMap::new();
             if !lives.is_empty() {
-                let birth_of: HashMap<usize, u32> =
-                    jobs.iter().zip(&lives).map(|(&(n, _, _), l)| (n, l.birth)).collect();
-                let fold_nodes: std::collections::HashSet<usize> = jobs
+                use crate::vello::region::{interval_shelf, IntervalRect};
+                let base_h = {
+                    let h = regions.atlas_height();
+                    if h > 0 { h + TILE_PX } else { 0 }
+                };
+                let class = |x: u32| {
+                    let padded = x + TILE_PX;
+                    if padded <= 512 { padded.next_power_of_two() } else { padded.next_multiple_of(256) }
+                };
+                let items: Vec<IntervalRect> = lives
                     .iter()
-                    .map(|&(n, _, _)| n)
-                    .filter(|&n| {
-                        matches!(dag.nodes[n].op, UnitOp::Rasterize(_))
-                            && dag.binding_shape(n).is_some_and(|sh| {
-                                sh.to_draft
-                                    && sh.base == crate::vello::frame_dag::Slot::None
-                                    && sh.input == crate::vello::frame_dag::Slot::None
-                            })
+                    .map(|l| IntervalRect {
+                        w: class(l.w).min(8192).max(l.w),
+                        h: class(l.h),
+                        birth: l.birth,
+                        death: l.death,
+                        group: 0,
                     })
                     .collect();
-                let mut reads: std::collections::BTreeMap<u32, Vec<u32>> =
-                    std::collections::BTreeMap::new();
-                for ms in marks.values() {
-                    for m in ms {
-                        if let Some(&p) = read_input(m.node)
-                            .filter(|e| !fold_nodes.contains(e))
-                            .and_then(|e| birth_of.get(&e))
-                        {
-                            reads.entry(m.round).or_default().push(p);
-                        }
-                    }
-                }
-                let producer_rounds: std::collections::BTreeSet<u32> = birth_of
-                    .iter()
-                    .filter(|&(n, _)| !fold_nodes.contains(n))
-                    .map(|(_, &b)| b)
-                    .collect();
-                let all_rounds: Vec<u32> = producer_rounds
-                    .iter()
-                    .copied()
-                    .chain(reads.keys().copied())
-                    .collect::<std::collections::BTreeSet<u32>>()
-                    .into_iter()
-                    .collect();
-                let rid: HashMap<u32, usize> =
-                    all_rounds.iter().enumerate().map(|(i, &r)| (r, i)).collect();
-                let (mut eq, mut neq) = (Vec::new(), Vec::new());
-                for (&r, ps) in &reads {
-                    for &p in &ps[1..] {
-                        eq.push((rid[&ps[0]], rid[&p]));
-                    }
-                    if producer_rounds.contains(&r) {
-                        neq.push((rid[&r], rid[&ps[0]]));
-                    }
-                }
-                let round_side = crate::vello::frame_dag::FrameDag::parity_colours(
-                    all_rounds.len(),
-                    &eq,
-                    &neq,
-                );
-                debug_assert!(round_side.is_some(), "round colouring is always 2-colourable");
-                let side_of = |node: usize| -> usize {
-                    if fold_nodes.contains(&node) {
-                        return 2;
-                    }
-                    round_side
-                        .as_ref()
-                        .map_or(0, |c| c.get(rid.get(&birth_of[&node]).copied().unwrap_or(usize::MAX)).copied().map_or(0, usize::from))
-                };
-                if round_side.is_none() {
-                    eprintln!(
-                        "wv scratch: round-colouring contradiction — planner bug, frame renders uncropped"
-                    );
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if std::env::var("WV_DBG_ALLOC").is_ok() {
-                        for ms in marks.values() {
-                            for m in ms {
-                                if let Some(e) = read_input(m.node) {
-                                    if birth_of.get(&e) == Some(&m.round) {
-                                        eprintln!(
-                                            "  SELF-READ: mark node={} op={:?} round={} ctl={} -> edge node={} op={:?}",
-                                            m.node, dag.nodes[m.node].op, m.round, m.ctl, e, dag.nodes[e].op,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        for (&r, ps) in &reads {
-                            let mut u: Vec<u32> = ps.clone();
-                            u.sort_unstable();
-                            u.dedup();
-                            if u.len() > 1 || producer_rounds.contains(&r) {
-                                eprintln!("  round {r} (producer={}) reads {u:?}", producer_rounds.contains(&r));
-                            }
-                        }
-                    }
-                }
-                let mut origin: HashMap<usize, (f32, f32)> = HashMap::new();
-                if round_side.is_some() {
-                    for side in 0..3usize {
-                        let picked: Vec<usize> =
-                            (0..jobs.len()).filter(|&k| side_of(jobs[k].0) == side).collect();
-                        if picked.is_empty() {
-                            continue;
-                        }
-                        let side_lives: Vec<LiveRect> = picked
-                            .iter()
-                            .enumerate()
-                            .map(|(i, &k)| LiveRect { node: i, ..lives[k] })
-                            .collect();
-                        let leases = pack(&side_lives);
-                        let mut slab_leases: std::collections::BTreeMap<u32, Vec<usize>> =
-                            std::collections::BTreeMap::new();
-                        for (i, le) in leases.iter().enumerate() {
-                            slab_leases.entry(le.slab).or_default().push(i);
-                        }
-                        let mut blocks: std::collections::BTreeMap<(u32, u32), (u32, u32)> =
-                            std::collections::BTreeMap::new();
-                        let mut lease_pos: Vec<((u32, u32), u32)> = vec![((0, 0), 0); leases.len()];
-                        for (&slab, idxs) in &slab_leases {
-                            let ch = idxs
-                                .iter()
-                                .map(|&i| leases[i].h)
-                                .max()
-                                .unwrap_or(1)
-                                .max(1)
-                                .next_power_of_two();
-                            let rows_per_chunk = (8192 / ch).max(1);
-                            for &i in idxs {
-                                let le = &leases[i];
-                                let row = le.y / ch;
-                                let chunk = row / rows_per_chunk;
-                                let local_y = (row % rows_per_chunk) * ch;
-                                let b = blocks.entry((slab, chunk)).or_insert((0, 0));
-                                b.0 = b.0.max(le.x + le.w);
-                                b.1 = b.1.max(local_y + le.h);
-                                lease_pos[i] = ((slab, chunk), local_y);
-                            }
-                        }
-                        let mut block_pos: std::collections::BTreeMap<(u32, u32), (u32, u32)> =
-                            std::collections::BTreeMap::new();
-                        let (mut col_x, mut col_w, mut cur_y) = (0u32, 0u32, 0u32);
-                        let (mut atlas_w, mut atlas_h) = (0u32, 0u32);
-                        for (&key, &(w, h)) in &blocks {
-                            if cur_y + h > 8192 && cur_y > 0 {
-                                col_x += col_w;
-                                col_w = 0;
-                                cur_y = 0;
-                            }
-                            if col_x + w > 8192 || h > 8192 {
-                                #[cfg(not(target_arch = "wasm32"))]
-                                eprintln!(
-                                    "wv scratch: side {side} block {key:?} overflows the texture limit — its drafts render full-viewport (raise the scratch budget's pressure)"
-                                );
-                                continue;
-                            }
-                            block_pos.insert(key, (col_x, cur_y));
-                            cur_y += h;
-                            col_w = col_w.max(w);
-                            atlas_w = atlas_w.max(col_x + w);
-                            atlas_h = atlas_h.max(cur_y);
-                        }
-                        if block_pos.is_empty() {
-                            continue;
-                        }
-                        scratch_atlas_dims[side] =
-                            Some((atlas_w.max(TILE_PX), atlas_h.max(TILE_PX)));
+                let placed = interval_shelf(&items, 8192, 8192u32.saturating_sub(base_h));
+                for (k, pos) in placed.iter().enumerate() {
+                    let Some([lx, ly]) = *pos else {
                         #[cfg(not(target_arch = "wasm32"))]
                         if std::env::var("WV_DBG_ALLOC").is_ok() {
                             eprintln!(
-                                "WV_DBG_ALLOC side {side}: {} leases, {} blocks, atlas {}x{}",
-                                picked.len(),
-                                blocks.len(),
-                                atlas_w.max(TILE_PX),
-                                atlas_h.max(TILE_PX),
+                                "WV_DBG_ALLOC: node={} {}x{} rounds=[{},{}] UNPLACED (full-viewport draft)",
+                                jobs[k].0, items[k].w, items[k].h, items[k].birth, items[k].death,
                             );
                         }
-                        let dropped_rounds: std::collections::HashSet<u32> = leases
-                            .iter()
-                            .enumerate()
-                            .zip(&picked)
-                            .filter(|((i, _), _)| !block_pos.contains_key(&lease_pos[*i].0))
-                            .map(|(_, &k)| lives[k].birth)
-                            .collect();
-                        for ((i, le), &k) in leases.iter().enumerate().zip(&picked) {
-                            if dropped_rounds.contains(&lives[k].birth) {
-                                continue;
-                            }
-                            let Some(&(sx, sy)) = block_pos.get(&lease_pos[i].0) else { continue };
-                            let (node, dx0, dy0) = jobs[k];
-                            let (lx, ly) = (sx + le.x, sy + lease_pos[i].1);
-                            #[cfg(not(target_arch = "wasm32"))]
-                            if std::env::var("WV_DBG_ALLOC").is_ok() {
-                                eprintln!(
-                                    "WV_DBG_ALLOC lease: node={} side={side} dev=({dx0},{dy0} {}x{}) atlas=({lx},{ly}) rounds=[{}..{}]",
-                                    node, le.w, le.h, lives[k].birth, lives[k].death,
-                                );
-                            }
-                            origin.insert(
-                                node,
-                                ((dx0 as i32 - lx as i32) as f32, (dy0 as i32 - ly as i32) as f32),
-                            );
-                            atlas_of.insert(node, side);
-                        }
+                        continue;
+                    };
+                    let (node, dx0, dy0) = jobs[k];
+                    let ay = base_h + ly;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if std::env::var("WV_DBG_ALLOC").is_ok() {
+                        eprintln!(
+                            "WV_DBG_ALLOC lease: node={node} dev=({dx0},{dy0} {}x{}) atlas=({lx},{ay}) rounds=[{},{}]",
+                            items[k].w, items[k].h, items[k].birth, items[k].death,
+                        );
                     }
+                    origin.insert(node, ((dx0 as i32 - lx as i32) as f32, (dy0 as i32 - ay as i32) as f32));
+                    draft_placed.insert(node);
+                    draft_atlas_h = draft_atlas_h.max(ay + items[k].h);
                 }
+                let lease_rect: HashMap<usize, [f32; 4]> = lives
+                    .iter()
+                    .zip(&jobs)
+                    .map(|(l, &(node, dx0, dy0))| {
+                        (node, [dx0 as f32, dy0 as f32, (dx0 + l.w) as f32, (dy0 + l.h) as f32])
+                    })
+                    .collect();
                 let extent: HashMap<usize, (f32, f32)> = lives
                     .iter()
                     .zip(&jobs)
@@ -2756,6 +2770,17 @@ impl Sink {
                             {
                                 m.desc[10] -= ox;
                                 m.desc[11] -= oy;
+                            }
+                        }
+                        if let Some(&w) = writer_of.get(&m.node).filter(|_| !rid_of.contains_key(&m.node)) {
+                            match origin.get(&w) {
+                                Some(&(ox, oy)) => {
+                                    m.rec[8] = [1.0, ox, oy, 0.0];
+                                    m.rect = lease_rect.get(&w).copied();
+                                }
+                                None => {
+                                    m.rec[8] = [1.0, 1.0e9, 1.0e9, 0.0];
+                                }
                             }
                         }
                     }
@@ -3053,11 +3078,14 @@ impl Sink {
             "wv snap",
         );
         let snap = snap_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let region_dims = (regions.atlas_height() > 0).then(|| regions.atlas_height());
+        let region_dims = {
+            let h = regions.atlas_height().max(draft_atlas_h);
+            (h > 0).then_some(h)
+        };
         let region_atlas_tex = region_dims.map(|h| {
             self.pool.acquire_target(
                 device,
-                width,
+                8192,
                 h,
                 format,
                 wgpu::TextureUsages::TEXTURE_BINDING
@@ -3069,7 +3097,7 @@ impl Sink {
         let region_back_tex = region_dims.map(|h| {
             self.pool.acquire_target(
                 device,
-                width,
+                8192,
                 h,
                 format,
                 wgpu::TextureUsages::STORAGE_BINDING
@@ -3082,6 +3110,9 @@ impl Sink {
             region_atlas_tex.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
         let region_back =
             region_back_tex.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
+        for v in region_atlas.iter().chain(region_back.iter()) {
+            Compositor::clear(&mut enc, v, [0.0, 0.0, 0.0, 0.0], None);
+        }
         backend.phase_region_atlas(region_atlas.as_ref());
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_ROUNDS").is_ok() {
@@ -3095,34 +3126,6 @@ impl Sink {
         }
         let mut node_scratch: std::collections::HashMap<usize, wgpu::TextureView> = std::collections::HashMap::new();
         let mut draft_texs: Vec<wgpu::Texture> = Vec::new();
-        let mut atlas_side_idx = 0usize;
-        let scratch_atlas_views: [Option<wgpu::TextureView>; 3] = scratch_atlas_dims.map(|dims| {
-            let side = atlas_side_idx;
-            atlas_side_idx += 1;
-            dims.map(|(aw, ah)| {
-                let t = self.pool.acquire_target(
-                    device,
-                    aw,
-                    ah,
-                    format,
-                    phase_usage | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    "wv scratch atlas",
-                );
-                let v = t.create_view(&wgpu::TextureViewDescriptor::default());
-                #[cfg(not(target_arch = "wasm32"))]
-                if std::env::var("WV_DBG_SILATLAS").is_ok() && side == 2 {
-                    self.dbg_atlas = Some((v.clone(), aw, ah));
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                if std::env::var("WV_DBG_LOOPATLAS").is_ok_and(|s| s.parse() == Ok(side)) {
-                    self.dbg_atlas = Some((v.clone(), aw, ah));
-                }
-                Compositor::clear(&mut enc, &v, [0.0, 0.0, 0.0, 0.0], None);
-                draft_texs.push(t);
-                v
-            })
-        });
-
         if passes_recorded().wrapping_sub(flush_mark) >= wv_pass_flush_budget() {
             Self::submit_batch(&mut enc, device, queue, backend);
             flush_mark = passes_recorded();
@@ -3344,7 +3347,8 @@ impl Sink {
                 let eligible = lo != 0
                     && round_nodes.get(&lo).is_none_or(|nodes| {
                         !dag.binding_shape(nodes[0]).is_some_and(|shp| shp.to_draft)
-                            || atlas_of.contains_key(&nodes[0])
+                            || draft_placed.contains(&nodes[0])
+                            || writer_of.get(&nodes[0]).is_some_and(|w| draft_placed.contains(w))
                     });
                 let mut tiles: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
                 let mut tbits: Vec<u64> = vec![0; words];
@@ -3379,8 +3383,8 @@ impl Sink {
                                     Slot::Draft(_) | Slot::Source => {
                                         let kind = if shp.draft_taps { 2u8 } else { 1u8 };
                                         read_edge_of(&dag, shp, rep)
-                                            .and_then(|e| atlas_of.get(&e).copied())
-                                            .map(|side| (kind, side as i64))
+                                            .filter(|e| draft_placed.contains(e))
+                                            .map(|_| (kind, 0i64))
                                     }
                                     Slot::Backdrop => None,
                                 },
@@ -3606,6 +3610,18 @@ impl Sink {
                 note_passes(2);
                 #[cfg(not(target_arch = "wasm32"))]
                 if std::env::var("WV_DBG_WIN").is_ok() { eprintln!("WV_DBG_WIN: [{window_lo},{hi}) nodes={:?} seeded={seeded}", round_nodes.get(&window_lo)); }
+                if round_nodes.get(&window_lo).is_some_and(|nodes| {
+                    dag.binding_shape(nodes[0]).is_some_and(|shp| {
+                        shp.region_out && shp.base == crate::vello::frame_dag::Slot::Source
+                    }) && (region_atlas.is_none()
+                        || nodes.iter().all(|n| {
+                            !rid_of.contains_key(n)
+                                && writer_of.get(n).is_some_and(|w| !draft_placed.contains(w))
+                        }))
+                }) {
+                    window_lo = r;
+                    continue;
+                }
                 if let Some(unit_nodes) = round_nodes.get(&window_lo) {
                     use crate::vello::frame_dag::Slot;
                     let rep = unit_nodes[0];
@@ -3634,7 +3650,7 @@ impl Sink {
                     };
                     const OOB: u32 = 1 << 24;
                     let mut draft_target = |backend: &mut B, node: usize| {
-                        match atlas_of.get(&node).and_then(|&c| scratch_atlas_views[c].clone()) {
+                        match region_back.clone().filter(|_| draft_placed.contains(&node)) {
                             Some(v) => {
                                 backend.phase_scratch_origins([OOB, OOB], [0, 0]);
                                 v
@@ -3660,14 +3676,13 @@ impl Sink {
                         let dv = if shp.region_out {
                             backend.phase_scratch_origins([OOB, OOB], [0, 0]);
                             if shp.base == Slot::Source {
-                                let av = region_atlas
-                                    .clone()
-                                    .expect("a store round scheduled without a region atlas");
-                                let bv = region_back
-                                    .clone()
-                                    .expect("a store round scheduled without the staging texture");
-                                backend.phased_fine_segment(device, queue, &mut enc, window_lo, hi, Some(&bv), &av);
-                                av
+                                match (region_atlas.clone(), region_back.clone()) {
+                                    (Some(av), Some(bv)) => {
+                                        backend.phased_fine_segment(device, queue, &mut enc, window_lo, hi, Some(&bv), &av);
+                                        av
+                                    }
+                                    _ => acquire(),
+                                }
                             } else {
                                 let bv = region_back
                                     .clone()
@@ -3738,6 +3753,11 @@ impl Sink {
                         };
                         for &n in unit_nodes {
                             node_scratch.insert(n, dv.clone());
+                            if let Some(&w) = writer_of.get(&n).filter(|_| !rid_of.contains_key(&n)) {
+                                if draft_placed.contains(&w) {
+                                    node_scratch.insert(w, dv.clone());
+                                }
+                            }
                         }
                     } else {
                         debug_assert!(seeded, "a composite window runs after the base window seeded the accumulator");
@@ -3803,8 +3823,10 @@ impl Sink {
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_ALLOC").is_ok() {
             let mb = |b: u64| b as f64 / (1024.0 * 1024.0);
-            let sched_dbg = dag.schedule(f64::from(TILE_PX), u64::MAX);
-            let lives = dag.materialized_lives(&sched_dbg);
+            let mut dag_dbg = dag.clone();
+            dag_dbg.normalize();
+            let sched_dbg = dag_dbg.schedule(f64::from(TILE_PX), u64::MAX);
+            let lives = dag_dbg.materialized_lives(&sched_dbg);
             let (peak, peak_round) =
                 crate::vello::frame_dag::FrameDag::peak_scratch_bytes(&lives);
             let slot_bytes = 2 * u64::from(width) * u64::from(acc_h) * 4;
@@ -3820,7 +3842,7 @@ impl Sink {
                 mb(slot_bytes),
                 draft_texs.len(),
                 mb(draft_bytes),
-                scratch_atlas_dims,
+                draft_atlas_h,
             );
             for l in &lives {
                 eprintln!(
