@@ -160,6 +160,15 @@ pub fn replay(path: &str) -> Replayed {
             "calculate_position_data" => {
                 let _ = render_core::vello::text::calculate_position_data();
             }
+            "get_selection_rect" => {
+                let _ = abi::get_selection_rect();
+            }
+            "set_modifiers" => abi::set_modifiers(),
+            "clean_modifiers" => abi::clean_modifiers(),
+            "propagate_modifiers" => {
+                let _ = abi::propagate_modifiers(b(0));
+            }
+            "render_sync" => abi::render_sync(),
             "render" => abi::render(i32a(0)),
             "clean_up" => abi::clean_up(),
             other => panic!("replay: unmapped ABI entry point {other:?} — add it to util/replay.rs"),
