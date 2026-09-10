@@ -492,7 +492,10 @@ impl ClassicRenderer {
 
         let pat_side = 200u32;
         let tex = storage_tex("spike pattern", pat_side);
-        let tview = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let tview = tex.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
         let mut pat = Scene::new();
         pat.fill(Fill::NonZero, Affine::IDENTITY, half_red, None, &Rect::new(0.0, 0.0, 200.0, 200.0));
         self.inner
@@ -502,7 +505,10 @@ impl ClassicRenderer {
         let img = self.inner.register_texture(tex);
 
         let out_tex = storage_tex("spike out", SIDE);
-        let out_view = out_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let out_view = out_tex.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
         let mut out = Scene::new();
         let full = f64::from(SIDE);
         out.fill(Fill::NonZero, Affine::IDENTITY, css::GREEN, None, &Rect::new(0.0, 0.0, full, full));
@@ -603,6 +609,13 @@ impl render_core::vello::rasterize::SceneRasterizer for ClassicRenderer {
     /// Rasterize `scene` into `target` (an `Rgba8Unorm` + `STORAGE_BINDING` texture) over
     /// `base_color`, recording into the caller's encoder. Clears the target first — there is no load
     /// variant (accumulation is the sink's job, above this seam).
+    fn rasterize_target_view(&self, t: &wgpu::Texture) -> wgpu::TextureView {
+        t.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        })
+    }
+
     fn rasterize(
         &mut self,
         scene: &ClassicCtx,
@@ -906,6 +919,10 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         } else {
             scene.draw_effect(Affine::IDENTITY, &r, effect_id, params);
         }
+    }
+
+    fn rasterize_target_view(&self, t: &wgpu::Texture) -> wgpu::TextureView {
+        render_core::vello::rasterize::SceneRasterizer::rasterize_target_view(&self.renderer, t)
     }
 
     fn rasterize(

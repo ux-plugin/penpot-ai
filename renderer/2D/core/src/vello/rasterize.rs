@@ -459,6 +459,13 @@ pub trait RasterBackend {
         wgpu::TextureUsages::RENDER_ATTACHMENT
     }
 
+    /// The view [`Self::rasterize`] expects for its `target`. Hybrid attaches the texture to a
+    /// render pass (a plain `D2` view, the default); classic binds it at fine's layered storage
+    /// `output` slot, so it overrides this with a `D2Array` view.
+    fn rasterize_target_view(&self, t: &wgpu::Texture) -> wgpu::TextureView {
+        t.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
     /// Whether this backend can draw an already-rendered surface as an **inline image** inside a scene
     /// being built — the primitive the tile-fuse needs to collapse a tile's plain bodies *and* its
     /// spread effect surfaces into ONE rasterize (instead of a plain render split by every effect
@@ -523,6 +530,12 @@ pub trait SceneRasterizer {
 
     /// A fresh, empty scene sized `width × height` device pixels, ready to be drawn into.
     fn new_scene(&self, width: u16, height: u16) -> Self::Scene;
+
+    /// The view [`Self::rasterize`] expects for its `target` — see
+    /// [`RasterBackend::rasterize_target_view`].
+    fn rasterize_target_view(&self, t: &wgpu::Texture) -> wgpu::TextureView {
+        t.create_view(&wgpu::TextureViewDescriptor::default())
+    }
 
     /// Rasterize `scene` into `target` (a `width × height` texture), clearing to `base_color` first.
     ///

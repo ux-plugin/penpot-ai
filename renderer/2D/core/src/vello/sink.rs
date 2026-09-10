@@ -57,6 +57,16 @@ const CLEAR: Color = TRANSPARENT;
 /// blurring a shape's silhouette across the entire viewport (which a ~500px shape on a 4K screen does
 /// at ~20× the necessary pixels), the pass runs in a surface the size of this box and composites back
 /// at its origin. Mirrors the tiled path's `device_rect` + the gather path's scoped bbox.
+/// A `D2Array` view of `t`, for binding at fine's layered `output` slot. Fine's output is a
+/// `texture_storage_2d_array`; every texture bound there — including plain one-layer targets —
+/// must be viewed as an array, while sampled uses of the same texture keep their default `D2` view.
+fn storage_array_view(t: &wgpu::Texture) -> wgpu::TextureView {
+    t.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    })
+}
+
 fn wv_device_box(page: crate::kurbo::Rect, full_view: Affine, width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
     use crate::kurbo::Point;
     let pts = [
@@ -224,7 +234,7 @@ fn rasterize_masks<B: RasterBackend>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     enc: &mut wgpu::CommandEncoder,
-    target: &wgpu::TextureView,
+    target: &wgpu::Texture,
     width: u32,
     height: u32,
     clear: Color,
@@ -234,7 +244,8 @@ fn rasterize_masks<B: RasterBackend>(
     for (id, transform) in masks {
         backend.build_mask(&mut scene, transform, id);
     }
-    backend.rasterize(&scene, device, queue, enc, target, width, height, clear);
+    let tv = backend.rasterize_target_view(target);
+    backend.rasterize(&scene, device, queue, enc, &tv, width, height, clear);
 }
 
 /// A marker's reach clamped to the FRAME.
@@ -3038,6 +3049,7 @@ impl Sink {
             | wgpu::TextureUsages::RENDER_ATTACHMENT;
         let acc_tex = self.pool.acquire_target(device, width, acc_h, wgpu::TextureFormat::R32Uint, acc_usage, "wv acc");
         let acc = acc_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let acc_w = storage_array_view(&acc_tex);
         let snap_tex = self.pool.acquire_target(
             device,
             width,
@@ -3080,6 +3092,8 @@ impl Sink {
             region_atlas_tex.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
         let region_back =
             region_back_tex.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
+        let region_atlas_w = region_atlas_tex.as_ref().map(storage_array_view);
+        let region_back_w = region_back_tex.as_ref().map(storage_array_view);
         for v in region_atlas.iter().chain(region_back.iter()) {
             Compositor::clear(&mut enc, v, [0.0, 0.0, 0.0, 0.0], None);
         }
@@ -3610,15 +3624,16 @@ impl Sink {
                     let mut acquire = || {
                         let t = self.pool.acquire_target(device, width, grid_h, format, phase_usage, "wv unit scratch");
                         let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+                        let w = storage_array_view(&t);
                         draft_texs.push(t);
-                        v
+                        (w, v)
                     };
                     const OOB: u32 = 1 << 24;
                     let mut draft_target = |backend: &mut B, node: usize| {
                         match region_back.clone().filter(|_| draft_placed.contains(&node)) {
                             Some(v) => {
                                 backend.phase_scratch_origins([OOB, OOB], [0, 0]);
-                                v
+                                (region_back_w.clone().expect("a placed draft's atlas has a paired array view"), v)
                             }
                             None => acquire(),
                         }
@@ -3641,21 +3656,24 @@ impl Sink {
                         let dv = if shp.region_out {
                             backend.phase_scratch_origins([OOB, OOB], [0, 0]);
                             if shp.base == Slot::Source {
-                                match (region_atlas.clone(), region_back.clone()) {
-                                    (Some(av), Some(bv)) => {
-                                        backend.phased_fine_segment_loadu_store(device, queue, &mut enc, window_lo, hi, &bv, &av);
+                                match (region_atlas.clone(), region_back.clone(), region_atlas_w.as_ref()) {
+                                    (Some(av), Some(bv), Some(aw)) => {
+                                        backend.phased_fine_segment_loadu_store(device, queue, &mut enc, window_lo, hi, &bv, aw);
                                         av
                                     }
-                                    _ => acquire(),
+                                    _ => acquire().1,
                                 }
                             } else {
                                 let bv = region_back
                                     .clone()
                                     .expect("a region round scheduled without a region atlas");
+                                let bw = region_back_w
+                                    .as_ref()
+                                    .expect("a region round scheduled without a region atlas");
                                 if shp.base == Slot::None {
-                                    backend.phased_fine_segment_stg(device, queue, &mut enc, window_lo, hi, &bv);
+                                    backend.phased_fine_segment_stg(device, queue, &mut enc, window_lo, hi, bw);
                                 } else {
-                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, None, &bv);
+                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, None, bw);
                                 }
                                 bv
                             }
@@ -3663,20 +3681,20 @@ impl Sink {
                         let placed = draft_placed.contains(&rep);
                         match (shp.base, shp.input) {
                             (Slot::None, Slot::None) => {
-                                let dv = draft_target(backend, rep);
+                                let (dw, dv) = draft_target(backend, rep);
                                 if placed {
-                                    backend.phased_fine_segment_stg(device, queue, &mut enc, window_lo, hi, &dv);
+                                    backend.phased_fine_segment_stg(device, queue, &mut enc, window_lo, hi, &dw);
                                 } else {
-                                    backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &dv);
+                                    backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &dw);
                                 }
                                 dv
                             }
                             (Slot::Backdrop, Slot::None) => {
-                                let dv = draft_target(backend, rep);
+                                let (dw, dv) = draft_target(backend, rep);
                                 if placed {
-                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, None, &dv);
+                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, None, &dw);
                                 } else {
-                                    backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, None, &dv);
+                                    backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, None, &dw);
                                 }
                                 dv
                             }
@@ -3685,31 +3703,31 @@ impl Sink {
                                     .and_then(|e| node_scratch.get(&e))
                                     .expect("SDF baked for the round")
                                     .clone();
-                                let dv = draft_target(backend, rep);
+                                let (dw, dv) = draft_target(backend, rep);
                                 if placed {
-                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, Some(&src), &dv);
+                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, Some(&src), &dw);
                                 } else {
-                                    backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, Some((false, &src)), &dv);
+                                    backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, Some((false, &src)), &dw);
                                 }
                                 dv
                             }
                             (Slot::Source, Slot::Source) => {
-                                let dv = draft_target(backend, rep);
+                                let (dw, dv) = draft_target(backend, rep);
                                 if placed {
-                                    backend.phased_fine_segment_stg_chain(device, queue, &mut enc, window_lo, hi, false, &acc, &dv);
+                                    backend.phased_fine_segment_stg_chain(device, queue, &mut enc, window_lo, hi, false, &acc, &dw);
                                 } else {
                                     let sil = read_edge(rep)
                                         .and_then(|e| node_scratch.get(&e))
                                         .expect("source co-located for the round")
                                         .clone();
-                                    backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &sil, &sil, &dv);
+                                    backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &sil, &sil, &dw);
                                 }
                                 dv
                             }
                             (_, Slot::Draft(_)) => {
-                                let dv = draft_target(backend, rep);
+                                let (dw, dv) = draft_target(backend, rep);
                                 if placed {
-                                    backend.phased_fine_segment_stg_chain(device, queue, &mut enc, window_lo, hi, shp.draft_taps, &acc, &dv);
+                                    backend.phased_fine_segment_stg_chain(device, queue, &mut enc, window_lo, hi, shp.draft_taps, &acc, &dw);
                                 } else {
                                     let src = read_edge(rep)
                                         .and_then(|e| node_scratch.get(&e))
@@ -3722,13 +3740,13 @@ impl Sink {
                                                 .cloned()
                                                 .expect("materialize base bound");
                                             if shp.draft_taps {
-                                                backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, hi, &base, &src, &dv);
+                                                backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, hi, &base, &src, &dw);
                                             } else {
-                                                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &base, &src, &dv);
+                                                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &base, &src, &dw);
                                             }
                                         }
                                         _ => {
-                                            backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, Some((shp.draft_taps, &src)), &dv);
+                                            backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, Some((shp.draft_taps, &src)), &dw);
                                         }
                                     }
                                 }
@@ -3757,10 +3775,10 @@ impl Sink {
                             Slot::None => None,
                             other => panic!("unit dispatch: unexpected composite input {other:?}"),
                         };
-                        backend.phased_fine_segment_rwu(device, queue, &mut enc, window_lo, hi, &snap, slot10, &acc);
+                        backend.phased_fine_segment_rwu(device, queue, &mut enc, window_lo, hi, &snap, slot10, &acc_w);
                     }
                 } else if !seeded {
-                    backend.phased_fine_segment_seed_u(device, queue, &mut enc, window_lo, hi, &acc);
+                    backend.phased_fine_segment_seed_u(device, queue, &mut enc, window_lo, hi, &acc_w);
                     seeded = true;
                 } else {
                     if let Some(&(sb, sn)) = sparse_windows.get(&window_lo) {
@@ -3775,7 +3793,7 @@ impl Sink {
                     if !refresh.is_empty() {
                         backend.phase_snap_copy(device, queue, &mut enc, &refresh, &acc, &snap);
                     }
-                    backend.phased_fine_segment_rwu(device, queue, &mut enc, window_lo, hi, &snap, None, &acc);
+                    backend.phased_fine_segment_rwu(device, queue, &mut enc, window_lo, hi, &snap, None, &acc_w);
                 }
                 window_lo = r;
             } else if !seeded {
@@ -4285,9 +4303,8 @@ impl Sink {
             PoolKey { w: aw, h: ah, format, usage: atlas_usage.bits() },
             "body atlas",
         );
-        let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
-
-        backend.rasterize(&scene, device, queue, enc, &atlas_view, aw, ah, CLEAR);
+        let atlas_tv = backend.rasterize_target_view(&atlas);
+        backend.rasterize(&scene, device, queue, enc, &atlas_tv, aw, ah, CLEAR);
         for cell in &packing.cells {
             let (_, write_to, _) = &candidates[cell.index];
             self.ensure_surface(*write_to, device, TILE_BUFFER, TILE_BUFFER, format);
@@ -4395,9 +4412,8 @@ impl Sink {
             PoolKey { w: atlas_w, h: atlas_h, format, usage: atlas_usage.bits() },
             "spread atlas",
         );
-        let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
-
-        backend.rasterize(&scene, device, queue, enc, &atlas_view, atlas_w, atlas_h, CLEAR);
+        let atlas_tv = backend.rasterize_target_view(&atlas);
+        backend.rasterize(&scene, device, queue, enc, &atlas_tv, atlas_w, atlas_h, CLEAR);
         for cell in &packing.cells {
             let (_, write_to, _, w, h, _, _) = &cands[cell.index];
             self.ensure_surface(*write_to, device, *w, *h, format);
@@ -4590,8 +4606,8 @@ impl Sink {
             PoolKey { w: aw, h: ah, format, usage: atlas_usage.bits() },
             "fuse atlas",
         );
-        let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
-        backend.rasterize(&scene, device, queue, enc, &atlas_view, aw, ah, CLEAR);
+        let atlas_tv = backend.rasterize_target_view(&atlas);
+        backend.rasterize(&scene, device, queue, enc, &atlas_tv, aw, ah, CLEAR);
 
         for cell in &packing.cells {
             let t = fused_tiles[cell.index];
@@ -4761,7 +4777,7 @@ impl Sink {
                         * root;
                     (plan.gathers[c.gi].shape, root_for_cell)
                 });
-                rasterize_masks(backend, device, queue, enc, &mask_view, aw, ah, CLEAR, masks);
+                rasterize_masks(backend, device, queue, enc, &mask_atlas, aw, ah, CLEAR, masks);
             }
 
             if crate::vello::abi::debug_atlas() == 3 {
@@ -4939,6 +4955,7 @@ impl Sink {
         backend: &mut B,
         scene: &B::Scene,
         target: &wgpu::TextureView,
+        target_tex: &wgpu::Texture,
         w: u32,
         h: u32,
         first: bool,
@@ -4948,14 +4965,16 @@ impl Sink {
         format: wgpu::TextureFormat,
     ) {
         if first {
-            backend.rasterize(scene, device, queue, enc, target, w, h, CLEAR);
+            let tv = backend.rasterize_target_view(target_tex);
+            backend.rasterize(scene, device, queue, enc, &tv, w, h, CLEAR);
             return;
         }
         let usage = self.raster_usage | wgpu::TextureUsages::TEXTURE_BINDING;
         let scratch =
             self.pool.acquire(device, PoolKey { w, h, format, usage: usage.bits() }, "sink accumulate scratch");
         let scratch_view = scratch.create_view(&wgpu::TextureViewDescriptor::default());
-        backend.rasterize(scene, device, queue, enc, &scratch_view, w, h, CLEAR);
+        let scratch_tv = backend.rasterize_target_view(&scratch);
+        backend.rasterize(scene, device, queue, enc, &scratch_tv, w, h, CLEAR);
         self.compositor.blit(
             device,
             enc,
@@ -5007,10 +5026,11 @@ impl Sink {
         self.ensure_surface(write_to, device, w, h, format);
         let first = self.written.insert(write_to);
         let view = self.surfaces[&write_to].view.clone();
+        let tex = self.surfaces[&write_to].texture.clone();
 
         let mut scene = backend.new_scene(w as u16, h as u16);
         backend.build_bodies(&mut scene, root_for_target, ops);
-        self.rasterize_accumulate(backend, &scene, &view, w, h, first, device, queue, enc, format);
+        self.rasterize_accumulate(backend, &scene, &view, &tex, w, h, first, device, queue, enc, format);
         crate::vello::prof::inc_step();
 
         if let SurfaceRole::RasterEffectOutput(id) = write_to.role {
@@ -5401,7 +5421,7 @@ impl Sink {
                 let mask = new_target_with_usage(device, bw, bh, format, self.raster_usage);
                 let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
                 let root_for_mask = Affine::scale(k) * Affine::translate((-bdx, -bdy)) * root;
-                rasterize_masks(backend, device, queue, enc, &mask_view, bw, bh, CLEAR, [(id, root_for_mask)]);
+                rasterize_masks(backend, device, queue, enc, &mask, bw, bh, CLEAR, [(id, root_for_mask)]);
                 self.surfaces.insert(mask_ref, Surface { texture: mask, view: mask_view, width: bw, height: bh });
             }
         }
@@ -5480,7 +5500,8 @@ impl Sink {
         let root_for_sil = Affine::translate((-edx, -edy)) * root;
         let mut sscene = backend.new_scene(w as u16, h as u16);
         backend.build_shadow_silhouette(&mut sscene, root_for_sil, shape, shadow, false, true, true);
-        backend.rasterize(&sscene, device, queue, enc, &sil_view, w, h, TRANSPARENT);
+        let sil_tv = backend.rasterize_target_view(&sil);
+        backend.rasterize(&sscene, device, queue, enc, &sil_tv, w, h, TRANSPARENT);
 
         let c = full_view.as_coeffs();
         let scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
@@ -5559,13 +5580,15 @@ impl Sink {
         let flood_view = flood.create_view(&wgpu::TextureViewDescriptor::default());
         let mut fscene = backend.new_scene(w as u16, h as u16);
         backend.build_shadow_silhouette(&mut fscene, root_for_sil, shape, shadow, true, false, true);
-        backend.rasterize(&fscene, device, queue, enc, &flood_view, w, h, TRANSPARENT);
+        let flood_tv = backend.rasterize_target_view(&flood);
+        backend.rasterize(&fscene, device, queue, enc, &flood_tv, w, h, TRANSPARENT);
 
         let punch = self.pool.acquire_target(device, w, h, format, self.raster_usage, "inner shadow punch");
         let punch_view = punch.create_view(&wgpu::TextureViewDescriptor::default());
         let mut pscene = backend.new_scene(w as u16, h as u16);
         backend.build_shadow_silhouette(&mut pscene, root_for_sil, shape, shadow, true, true, true);
-        backend.rasterize(&pscene, device, queue, enc, &punch_view, w, h, TRANSPARENT);
+        let punch_tv = backend.rasterize_target_view(&punch);
+        backend.rasterize(&pscene, device, queue, enc, &punch_tv, w, h, TRANSPARENT);
 
         let c = full_view.as_coeffs();
         let scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
