@@ -1153,13 +1153,14 @@ impl Sink {
                 })
                 .collect()
         });
-        let frost_of: HashMap<u128, f32> = crate::vello::abi::with_scene(|live, _, _| {
+        let soft_of: HashMap<u128, (f32, f32)> = crate::vello::abi::with_scene(|live, _, _| {
             gathers
                 .iter()
                 .filter_map(|&(_, gid, _)| {
                     let n = live.get(gid)?;
                     let g = n.glass.as_ref()?;
-                    (g.frost > 0.01).then_some((gid, g.frost))
+                    (g.frost > 0.01 || g.total_blur_sigma() > 0.01)
+                        .then_some((gid, (g.frost, g.total_blur_sigma())))
                 })
                 .collect()
         });
@@ -2472,8 +2473,13 @@ impl Sink {
                     UnitOp::Blur { sigma, edge: BlurEdge::Coverage, .. } => {
                         declared.or_else(|| (auto_k && sigma >= 2.0).then_some(0.5))
                     }
+                    UnitOp::Blur { .. } => declared.or_else(|| {
+                        (auto_k && soft_of.get(&gid).is_some_and(|&(_, s)| s >= 2.0))
+                            .then_some(0.5)
+                    }),
                     _ => declared.or_else(|| {
-                        (auto_k && frost_of.get(&gid).is_some_and(|&f| f >= 2.0)).then_some(0.5)
+                        (auto_k && soft_of.get(&gid).is_some_and(|&(f, _)| f >= 2.0))
+                            .then_some(0.5)
                     }),
                 }
             };

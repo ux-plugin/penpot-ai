@@ -81,7 +81,12 @@ fn main() {
         "inner-shadow" => render_core::vello::abi::load_inner_shadow_scene(),
         "path-shadow" => render_core::vello::abi::load_path_shadow_scene(),
         "multi-shadow" => render_core::vello::abi::load_multi_shadow_scene(),
-        "stack-glass" => render_core::vello::abi::load_stack_glass_scene(2, 0),
+        "stack-glass" => render_core::vello::abi::load_stack_glass_scene(
+            2,
+            u32::from(std::env::var("FROST").is_ok()),
+        ),
+        "bgblur-stack" => render_core::vello::abi::load_bgblur_stack_scene(8),
+        "bgblur-stack3" => render_core::vello::abi::load_bgblur_stack3_scene(8),
         "parity" => render_core::vello::abi::load_parity_scene(),
         "matrix" => render_core::vello::abi::load_matrix_scene(),
         "showcase" => render_core::vello::abi::load_showcase_scene(),
