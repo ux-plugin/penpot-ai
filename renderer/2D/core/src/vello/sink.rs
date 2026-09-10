@@ -1153,6 +1153,16 @@ impl Sink {
                 })
                 .collect()
         });
+        let frost_of: HashMap<u128, f32> = crate::vello::abi::with_scene(|live, _, _| {
+            gathers
+                .iter()
+                .filter_map(|&(_, gid, _)| {
+                    let n = live.get(gid)?;
+                    let g = n.glass.as_ref()?;
+                    (g.frost > 0.01).then_some((gid, g.frost))
+                })
+                .collect()
+        });
         let ask_by_node: HashMap<usize, f64> = wlk
             .coverage
             .iter()
@@ -2444,8 +2454,33 @@ impl Sink {
             use crate::vello::units::UnitOp;
             let reach_of: HashMap<u128, [f32; 4]> =
                 gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
+            let quantize_k = |a: f64| -> Option<f32> {
+                if a <= 0.26 {
+                    Some(0.25)
+                } else if a <= 0.51 {
+                    Some(0.5)
+                } else {
+                    None
+                }
+            };
+            let auto_k = !std::env::var("WV_NO_AUTO_K").is_ok();
+            let node_scale = |n: usize, gid: u128| -> Option<f32> {
+                use crate::vello::units::BlurEdge;
+                let declared = ask_of.get(&gid).copied().and_then(quantize_k);
+                match dag.nodes[n].op {
+                    UnitOp::Rasterize(_) | UnitOp::Reload | UnitOp::EraseBy(_) | UnitOp::Copy => None,
+                    UnitOp::Blur { sigma, edge: BlurEdge::Coverage, .. } => {
+                        declared.or_else(|| (auto_k && sigma >= 2.0).then_some(0.5))
+                    }
+                    _ => declared.or_else(|| {
+                        (auto_k && frost_of.get(&gid).is_some_and(|&f| f >= 2.0)).then_some(0.5)
+                    }),
+                }
+            };
             let mut lives: Vec<LiveRect> = Vec::new();
             let mut jobs: Vec<(usize, u32, u32)> = Vec::new();
+            let mut k_of: HashMap<usize, f32> = HashMap::new();
+            let mut dev_dim: HashMap<usize, (u32, u32)> = HashMap::new();
             {
                 for (&gid, ms) in &marks {
                     for m in ms {
@@ -2460,10 +2495,16 @@ impl Sink {
                         let y0 = (r[1].max(0.0) as u32 / TILE_PX) * TILE_PX;
                         let x1 = ((r[2].ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(width);
                         let y1 = ((r[3].ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(grid_h);
+                        let k = node_scale(m.node, gid);
+                        if let Some(k) = k {
+                            k_of.insert(m.node, k);
+                        }
+                        let ks = k.unwrap_or(1.0);
+                        dev_dim.insert(m.node, (x1 - x0, y1 - y0));
                         lives.push(LiveRect {
                             node: jobs.len(),
-                            w: x1 - x0,
-                            h: y1 - y0,
+                            w: (((x1 - x0) as f32) * ks) as u32,
+                            h: (((y1 - y0) as f32) * ks) as u32,
                             birth: m.round,
                             death: if std::env::var("WV_CROP_NOREUSE").is_ok() {
                                 m.round + 100_000
@@ -2528,6 +2569,7 @@ impl Sink {
                 }
             }
             let mut origin: HashMap<usize, (f32, f32)> = HashMap::new();
+            let mut lease_rect_s: HashMap<usize, [f32; 4]> = HashMap::new();
             if !lives.is_empty() {
                 use crate::vello::region::{interval_shelf, IntervalRect};
                 let base_h = {
@@ -2569,7 +2611,15 @@ impl Sink {
                             items[k].w, items[k].h, items[k].birth, items[k].death,
                         );
                     }
-                    origin.insert(node, ((dx0 as i32 - lx as i32) as f32, (dy0 as i32 - ay as i32) as f32));
+                    let nk = k_of.get(&node).copied().unwrap_or(1.0);
+                    origin.insert(node, (dx0 as f32 * nk - lx as f32, dy0 as f32 * nk - ay as f32));
+                    let (dw, dh) = dev_dim.get(&node).copied().unwrap_or((items[k].w, items[k].h));
+                    lease_rect_s.insert(node, [
+                        lx as f32,
+                        ay as f32,
+                        lx as f32 + dw as f32 * nk,
+                        ay as f32 + dh as f32 * nk,
+                    ]);
                     draft_placed.insert(node);
                     draft_atlas_h = draft_atlas_h.max(ay + items[k].h);
                 }
@@ -2651,20 +2701,13 @@ impl Sink {
                         }
                     }
                 }
-                let lease_rect: HashMap<usize, [f32; 4]> = lives
+                let extent: HashMap<usize, (f32, f32)> = jobs
                     .iter()
-                    .zip(&jobs)
-                    .map(|(l, &(node, dx0, dy0))| {
-                        (node, [dx0 as f32, dy0 as f32, (dx0 + l.w) as f32, (dy0 + l.h) as f32])
-                    })
-                    .collect();
-                let extent: HashMap<usize, (f32, f32)> = lives
-                    .iter()
-                    .zip(&jobs)
-                    .map(|(l, &(node, dx0, dy0))| {
+                    .map(|&(node, dx0, dy0)| {
+                        let (dw, dh) = dev_dim.get(&node).copied().unwrap_or((0, 0));
                         let lo = (dx0 / TILE_PX * 1024 + dy0 / TILE_PX) as f32;
-                        let hi = ((dx0 + l.w).div_ceil(TILE_PX) * 1024
-                            + (dy0 + l.h).div_ceil(TILE_PX)) as f32;
+                        let hi = ((dx0 + dw).div_ceil(TILE_PX) * 1024
+                            + (dy0 + dh).div_ceil(TILE_PX)) as f32;
                         (node, (lo, hi))
                     })
                     .collect();
@@ -2672,6 +2715,9 @@ impl Sink {
                     for m in ms.iter_mut() {
                         if let Some(&(ox, oy)) = origin.get(&m.node) {
                             m.rec[8] = [1.0, ox, oy, f32::from(u8::from(front.contains_key(&m.node)))];
+                            if let Some(&nk) = k_of.get(&m.node) {
+                                m.rec[9][0] = nk;
+                            }
                         }
                         if let Some(e) = read_input(m.node).filter(|e| origin.contains_key(e)) {
                             let (ox, oy) = origin[&e];
@@ -2679,12 +2725,17 @@ impl Sink {
                             m.rec[0][2] = oy;
                             m.rec[0][3] = extent[&e].0;
                             m.rec[2][3] = extent[&e].1;
-                            let lr = lease_rect[&e];
-                            m.rec[1] = [lr[0] - ox, lr[1] - oy, lr[2] - ox, lr[3] - oy];
+                            m.rec[1] = lease_rect_s[&e];
+                            if let Some(&ek) = k_of.get(&e) {
+                                m.rec[9][1] = ek;
+                            }
                             if m.rec[2][0] == 2.0 {
                                 m.rec[2][1] = ox;
                                 m.rec[2][2] = oy;
                                 m.rec[3] = m.rec[1];
+                                if let Some(&ek) = k_of.get(&e) {
+                                    m.rec[9][2] = ek;
+                                }
                             }
                         }
                         if (m.desc[0] as u32) & crate::vello::bake::bits::FLOOD_ERASE != 0 {
