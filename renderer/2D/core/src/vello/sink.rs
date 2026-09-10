@@ -57,6 +57,17 @@ const CLEAR: Color = TRANSPARENT;
 /// blurring a shape's silhouette across the entire viewport (which a ~500px shape on a 4K screen does
 /// at ~20× the necessary pixels), the pass runs in a surface the size of this box and composites back
 /// at its origin. Mirrors the tiled path's `device_rect` + the gather path's scoped bbox.
+/// A `D2` view of `t`'s layer 0, for sampled bindings — explicit because the default view of a
+/// multi-layer texture infers `D2Array`, which a `texture_2d` binding rejects.
+fn layer0_view(t: &wgpu::Texture) -> wgpu::TextureView {
+    t.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        base_array_layer: 0,
+        array_layer_count: Some(1),
+        ..Default::default()
+    })
+}
+
 /// A `D2Array` view of `t`, for binding at fine's layered `output` slot. Fine's output is a
 /// `texture_storage_2d_array`; every texture bound there — including plain one-layer targets —
 /// must be viewed as an array, while sampled uses of the same texture keep their default `D2` view.
@@ -278,13 +289,20 @@ struct Surface {
 pub(crate) struct PoolKey {
     w: u32,
     h: u32,
+    layers: u32,
     format: wgpu::TextureFormat,
     usage: u32,
 }
 
 impl PoolKey {
     fn of(t: &wgpu::Texture) -> Self {
-        Self { w: t.width(), h: t.height(), format: t.format(), usage: t.usage().bits() }
+        Self {
+            w: t.width(),
+            h: t.height(),
+            layers: t.depth_or_array_layers(),
+            format: t.format(),
+            usage: t.usage().bits(),
+        }
     }
 
     /// Approximate GPU footprint of one texture with this key, for the pool budget.
@@ -345,7 +363,7 @@ impl TexturePool {
         let _tt = crate::vello::prof::now();
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
-            size: wgpu::Extent3d { width: key.w, height: key.h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d { width: key.w, height: key.h, depth_or_array_layers: key.layers.max(1) },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -371,7 +389,26 @@ impl TexturePool {
         label: &str,
     ) -> wgpu::Texture {
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | extra;
-        self.acquire(device, PoolKey { w, h, format, usage: usage.bits() }, label)
+        self.acquire(device, PoolKey { w, h, layers: 1, format, usage: usage.bits() }, label)
+    }
+
+    /// A storage-only grid target of virtual height `grid_h`: one layer when it fits the 8192px
+    /// texture band, else `ceil(grid_h / 8192)` layers of exactly 8192px — the same banding fine's
+    /// `stg_layer`/`stg_local` mapping assumes. No `RENDER_ATTACHMENT` (a layered target cannot be
+    /// attached), so this is only for surfaces written through fine's storage `output`.
+    pub(crate) fn acquire_grid_target(
+        &mut self,
+        device: &wgpu::Device,
+        w: u32,
+        grid_h: u32,
+        format: wgpu::TextureFormat,
+        extra: wgpu::TextureUsages,
+        label: &str,
+    ) -> wgpu::Texture {
+        const LAYER_PX: u32 = 8192;
+        let (h, layers) = if grid_h <= LAYER_PX { (grid_h, 1) } else { (LAYER_PX, grid_h.div_ceil(LAYER_PX)) };
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | extra;
+        self.acquire(device, PoolKey { w, h, layers, format, usage: usage.bits() }, label)
     }
 
     /// Return a texture for reuse. Its key is read back off the texture, so any texture created through
@@ -3622,8 +3659,8 @@ impl Sink {
                     );
                     let read_edge = |n: usize| -> Option<usize> { read_edge_of(&dag, shp, n) };
                     let mut acquire = || {
-                        let t = self.pool.acquire_target(device, width, grid_h, format, phase_usage, "wv unit scratch");
-                        let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+                        let t = self.pool.acquire_grid_target(device, width, grid_h, format, phase_usage, "wv unit scratch");
+                        let v = layer0_view(&t);
                         let w = storage_array_view(&t);
                         draft_texs.push(t);
                         (w, v)
@@ -4300,7 +4337,7 @@ impl Sink {
         let atlas_usage = self.raster_usage | wgpu::TextureUsages::COPY_SRC;
         let atlas = self.pool.acquire(
             device,
-            PoolKey { w: aw, h: ah, format, usage: atlas_usage.bits() },
+            PoolKey { w: aw, h: ah, layers: 1, format, usage: atlas_usage.bits() },
             "body atlas",
         );
         let atlas_tv = backend.rasterize_target_view(&atlas);
@@ -4409,7 +4446,7 @@ impl Sink {
         let atlas_usage = self.raster_usage | wgpu::TextureUsages::COPY_SRC;
         let atlas = self.pool.acquire(
             device,
-            PoolKey { w: atlas_w, h: atlas_h, format, usage: atlas_usage.bits() },
+            PoolKey { w: atlas_w, h: atlas_h, layers: 1, format, usage: atlas_usage.bits() },
             "spread atlas",
         );
         let atlas_tv = backend.rasterize_target_view(&atlas);
@@ -4603,7 +4640,7 @@ impl Sink {
         let atlas_usage = self.raster_usage | wgpu::TextureUsages::COPY_SRC;
         let atlas = self.pool.acquire(
             device,
-            PoolKey { w: aw, h: ah, format, usage: atlas_usage.bits() },
+            PoolKey { w: aw, h: ah, layers: 1, format, usage: atlas_usage.bits() },
             "fuse atlas",
         );
         let atlas_tv = backend.rasterize_target_view(&atlas);
@@ -4711,7 +4748,7 @@ impl Sink {
 
             let bd_usage =
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC;
-            let bd_atlas = self.pool.acquire(device, PoolKey { w: aw, h: ah, format, usage: bd_usage.bits() }, "gather backdrop atlas");
+            let bd_atlas = self.pool.acquire(device, PoolKey { w: aw, h: ah, layers: 1, format, usage: bd_usage.bits() }, "gather backdrop atlas");
             let bd_view = bd_atlas.create_view(&wgpu::TextureViewDescriptor::default());
             Compositor::clear(enc, &bd_view, bgc, None);
             let m = f64::from(TILE_MARGIN);
@@ -4937,7 +4974,7 @@ impl Sink {
             | wgpu::TextureUsages::COPY_SRC
             | self.raster_usage;
         let texture =
-            self.pool.acquire(device, PoolKey { w, h, format, usage: usage.bits() }, "sink surface");
+            self.pool.acquire(device, PoolKey { w, h, layers: 1, format, usage: usage.bits() }, "sink surface");
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         self.surfaces.insert(key, Surface { texture, view, width: w, height: h });
     }
@@ -4971,7 +5008,7 @@ impl Sink {
         }
         let usage = self.raster_usage | wgpu::TextureUsages::TEXTURE_BINDING;
         let scratch =
-            self.pool.acquire(device, PoolKey { w, h, format, usage: usage.bits() }, "sink accumulate scratch");
+            self.pool.acquire(device, PoolKey { w, h, layers: 1, format, usage: usage.bits() }, "sink accumulate scratch");
         let scratch_view = scratch.create_view(&wgpu::TextureViewDescriptor::default());
         let scratch_tv = backend.rasterize_target_view(&scratch);
         backend.rasterize(scene, device, queue, enc, &scratch_tv, w, h, CLEAR);
@@ -5237,7 +5274,7 @@ impl Sink {
                 | wgpu::TextureUsages::RENDER_ATTACHMENT;
             let tex = self.pool.acquire(
                 device,
-                PoolKey { w: TILE_BUFFER, h: TILE_BUFFER, format, usage: usage.bits() },
+                PoolKey { w: TILE_BUFFER, h: TILE_BUFFER, layers: 1, format, usage: usage.bits() },
                 "blend scratch",
             );
             self.blend_scratch = Some((tex, format));
@@ -5363,7 +5400,7 @@ impl Sink {
                         | wgpu::TextureUsages::COPY_DST
                         | wgpu::TextureUsages::COPY_SRC
                         | self.raster_usage;
-                    let filled = self.pool.acquire(device, PoolKey { w, h, format, usage: usage.bits() }, "clamp fill");
+                    let filled = self.pool.acquire(device, PoolKey { w, h, layers: 1, format, usage: usage.bits() }, "clamp fill");
                     let filled_view = filled.create_view(&wgpu::TextureViewDescriptor::default());
                     self.unit_pipeline.clamp_fill(device, enc, &filled_view, &bd_view, (w as f32, h as f32), rect);
                     if let Some(old) = self.surfaces.insert(write_to, Surface { texture: filled, view: filled_view, width: w, height: h }) {
