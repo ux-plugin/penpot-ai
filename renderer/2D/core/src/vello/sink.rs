@@ -1190,6 +1190,31 @@ impl Sink {
         let frame_rect = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
         let max_grid_h: u32 = (48_000 / width.div_ceil(16)).max(16).min(512) * 16;
         let wlk = crate::vello::walk::walk(&mut dag, frame_rect);
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("WV_DBG_WALK").is_ok() {
+            for p in &wlk.pieces {
+                eprintln!(
+                    "WV_DBG_WALK piece: n={} {:?} rect=({:.0},{:.0})..({:.0},{:.0}) '{}'",
+                    p.node, p.producer, p.rect.x0, p.rect.y0, p.rect.x1, p.rect.y1,
+                    dag.nodes[p.node].label,
+                );
+            }
+            for (reader, covers) in &wlk.coverage {
+                let rs: Vec<String> = covers
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "p{}@({:.0},{:.0})..({:.0},{:.0})",
+                            c.piece, c.rect.x0, c.rect.y0, c.rect.x1, c.rect.y1,
+                        )
+                    })
+                    .collect();
+                eprintln!(
+                    "WV_DBG_WALK cover: reader={} pad={} '{}' <- {}",
+                    reader, dag.nodes[*reader].pad, dag.nodes[*reader].label, rs.join(" "),
+                );
+            }
+        }
         let ask_of: HashMap<u128, f64> = crate::vello::abi::with_scene(|live, _, _| {
             gathers
                 .iter()
@@ -1299,10 +1324,18 @@ impl Sink {
                         .iter()
                         .any(|j| mintable.contains(j) && dropped.contains(j));
                     let Some(r) = dag.nodes[n].reach else {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if std::env::var("WV_DBG_MINT").is_ok() {
+                            eprintln!("WV_DBG_MINT drop(no-reach): n={n} '{}'", dag.nodes[n].label);
+                        }
                         dropped.insert(n);
                         continue;
                     };
                     if broken {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if std::env::var("WV_DBG_MINT").is_ok() {
+                            eprintln!("WV_DBG_MINT drop(broken-input): n={n} '{}'", dag.nodes[n].label);
+                        }
                         dropped.insert(n);
                         continue;
                     }
@@ -1317,12 +1350,23 @@ impl Sink {
                             dag.nodes[n].source = crate::vello::frame_dag::Source::Region(ri);
                         }
                         None => {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if std::env::var("WV_DBG_MINT").is_ok() {
+                                eprintln!(
+                                    "WV_DBG_MINT drop(alloc): n={n} '{}' rect=({:.0},{:.0} {:.0}x{:.0}) k={kq}",
+                                    dag.nodes[n].label, r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0,
+                                );
+                            }
                             dropped.insert(n);
                         }
                     }
                 }
                 if !progressed {
                     for n in next {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if std::env::var("WV_DBG_MINT").is_ok() {
+                            eprintln!("WV_DBG_MINT drop(cycle): n={n} '{}'", dag.nodes[n].label);
+                        }
                         dropped.insert(n);
                     }
                     break;
@@ -2859,6 +2903,10 @@ impl Sink {
                 .to_path(0.1),
             );
             if let DagSource::Region(_) = dag.nodes[s].source {
+                #[cfg(not(target_arch = "wasm32"))]
+                if std::env::var("WV_DBG_SIL").is_ok() {
+                    eprintln!("WV_DBG_SIL: region ground s={s} draws={:?}", region_draws.get(&s));
+                }
                 if let Some(&(txri, lo, hi, seed)) = region_draws.get(&s) {
                     if seed {
                         backend.draw_fill_rect(
