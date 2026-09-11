@@ -172,6 +172,14 @@ impl Ctx<'_> {
     }
 
     fn mint(&mut self, producer: Producer, rect: Rect, op: UnitOp, inputs: Vec<usize>) -> usize {
+        let pad = match producer {
+            Producer::Chain { of }
+                if matches!(self.dag.nodes[of].op, UnitOp::Blur { .. }) =>
+            {
+                self.dag.nodes[of].pad
+            }
+            _ => 0.0,
+        };
         let idx = self.dag.nodes.len();
         self.dag.nodes.push(Node {
             op,
@@ -179,7 +187,7 @@ impl Ctx<'_> {
             source: Source::Region(self.out.pieces.len()),
             label: format!("piece {producer:?} {rect:?}"),
             reach: Some(rect),
-            pad: 0.0,
+            pad,
             inputs,
         });
         self.out.pieces.push(Piece { node: idx, producer, rect });
@@ -214,15 +222,22 @@ impl Ctx<'_> {
             }
             remainder = subtract_all(remainder, *pr);
         }
+        let host_w = (self.frame.width() / PIECE_TILE).floor() * PIECE_TILE;
         for r in remainder {
             let mut news = vec![round_out(r)];
             for (_, pr) in &existing {
                 news = subtract_all(news, *pr);
             }
             for nr in news {
-                let (op, inputs) = mint_new(self, nr);
-                let pi = self.mint(producer, nr, op, inputs);
-                covers.push(Cover { piece: pi, rect: nr.intersect(r) });
+                let mut x0 = nr.x0;
+                while x0 < nr.x1 {
+                    let x1 = (x0 + host_w).min(nr.x1);
+                    let chunk = Rect::new(x0, nr.y0, x1, nr.y1);
+                    let (op, inputs) = mint_new(self, chunk);
+                    let pi = self.mint(producer, chunk, op, inputs);
+                    covers.push(Cover { piece: pi, rect: chunk.intersect(r) });
+                    x0 = x1;
+                }
             }
         }
         covers

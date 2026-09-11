@@ -62,10 +62,48 @@ pub struct Final {
     pub transports: Vec<usize>,
     pub leases: Vec<Option<Lease>>,
     pub wars: Vec<War>,
+    pub blocks: Vec<(usize, Vec<usize>)>,
 }
 
 fn union_rect(rects: impl Iterator<Item = Rect>) -> Option<Rect> {
     rects.reduce(|a, b| a.union(b))
+}
+
+fn sub_rect(a: Rect, b: Rect) -> Vec<Rect> {
+    let i = a.intersect(b);
+    if !(i.x1 > i.x0 && i.y1 > i.y0) {
+        return vec![a];
+    }
+    let mut out = Vec::with_capacity(4);
+    if i.y0 > a.y0 {
+        out.push(Rect::new(a.x0, a.y0, a.x1, i.y0));
+    }
+    if i.y1 < a.y1 {
+        out.push(Rect::new(a.x0, i.y1, a.x1, a.y1));
+    }
+    if i.x0 > a.x0 {
+        out.push(Rect::new(a.x0, i.y0, i.x0, i.y1));
+    }
+    if i.x1 < a.x1 {
+        out.push(Rect::new(i.x1, i.y0, a.x1, i.y1));
+    }
+    out
+}
+
+fn sub_all(rects: Vec<Rect>, b: Rect) -> Vec<Rect> {
+    rects.into_iter().flat_map(|r| sub_rect(r, b)).collect()
+}
+
+/// Tile-align a rect outward, so lease-block chunk offsets stay whole tiles and the block route's
+/// affine lands every chunk exactly where the block frame expects it.
+fn tile_round_out(r: Rect) -> Rect {
+    let t = TILE_PX as f64;
+    Rect::new(
+        (r.x0 / t).floor() * t,
+        (r.y0 / t).floor() * t,
+        (r.x1 / t).ceil() * t,
+        (r.y1 / t).ceil() * t,
+    )
 }
 
 /// Step 1a — per-piece k: the finest ask among the piece's readers (frame readers via coverage,
@@ -120,6 +158,7 @@ fn squeeze(walk: &Walk, k: &mut HashMap<usize, f64>, budget_bytes: u64) {
 struct Fin<'a> {
     dag: &'a mut FrameDag,
     out: Final,
+    host_w: f64,
 }
 
 impl Fin<'_> {
@@ -154,6 +193,38 @@ impl Fin<'_> {
         (cur, kc / k_dst)
     }
 
+    /// The lease contract says every lease owns one texel past the farthest tap, but a
+    /// lease-block's chunks tile only the covers — the bbox holds gap texels no chunk writes.
+    /// Fill a one-tile ring around every chunk with extra copies of that chunk's source (clamped
+    /// content, deterministic), so guard reads never sample stale atlas rows.
+    fn fill_gaps(
+        &mut self,
+        block_rect: Rect,
+        seeds: &[(usize, Rect)],
+        k: f64,
+        chunks: &mut Vec<usize>,
+        label: &str,
+    ) {
+        let t = TILE_PX as f64;
+        let mut covered: Vec<Rect> = seeds.iter().map(|&(_, r)| r).collect();
+        for &(src, cr) in seeds {
+            let band = cr.inflate(t, t).intersect(block_rect);
+            let mut parts = vec![band];
+            for c in &covered {
+                parts = sub_all(parts, *c);
+            }
+            for p in parts {
+                if !(p.x1 > p.x0 && p.y1 > p.y0) {
+                    continue;
+                }
+                let f = self.push_copy(p, vec![src], format!("combine gap fill {label}"));
+                self.out.k.insert(f, k);
+                chunks.push(f);
+                covered.push(p);
+            }
+        }
+    }
+
     /// Step 2 — discharge one reader's coverage into ONE route: a single cover routes directly
     /// (through a ladder if the densities cross); more than one gets a combine transport over the
     /// bounding window, each source laddered to the combine's k first.
@@ -168,6 +239,27 @@ impl Fin<'_> {
             return;
         }
         let rect = union_rect(covers.iter().map(|(_, r)| *r)).unwrap_or_default();
+        if rect.width() > self.host_w {
+            let block_rect = tile_round_out(rect);
+            let mut chunks = Vec::new();
+            let mut seeds = Vec::new();
+            for (node, r) in covers {
+                let k_src = self.out.k.get(node).copied().unwrap_or(1.0);
+                let (t, _) = self.ladder(*node, k_src, k_reader);
+                let jr = self.dag.nodes[*node].reach.unwrap_or(*r);
+                let cr = tile_round_out(jr).intersect(block_rect);
+                let c = self.push_copy(cr, vec![t], format!("combine chunk for {reader}"));
+                self.out.k.insert(c, k_reader);
+                chunks.push(c);
+                seeds.push((t, cr));
+            }
+            self.fill_gaps(block_rect, &seeds, k_reader, &mut chunks, &format!("for {reader}"));
+            let b = self.push_copy(block_rect, chunks.clone(), format!("combine block for {reader}"));
+            self.out.k.insert(b, k_reader);
+            self.out.blocks.push((b, chunks));
+            self.out.routes.push(Route { reader, target: b, rect: block_rect, k: 1.0 });
+            return;
+        }
         let mut inputs = Vec::new();
         for (node, _) in covers {
             let k_src = self.out.k.get(node).copied().unwrap_or(1.0);
@@ -191,10 +283,11 @@ pub fn finalize(
     walk: &Walk,
     asks: &dyn Fn(usize) -> Option<f64>,
     budget_bytes: u64,
+    host_w: f64,
 ) -> Final {
     let mut k = resolve_k(dag, walk, asks);
     squeeze(walk, &mut k, budget_bytes);
-    let mut fin = Fin { dag, out: Final { k, ..Final::default() } };
+    let mut fin = Fin { dag, out: Final { k, ..Final::default() }, host_w };
 
     let mut per_reader: Vec<(usize, Vec<(usize, Rect)>)> = Vec::new();
     for (reader, covers) in &walk.coverage {
@@ -243,7 +336,25 @@ pub fn finalize(
                 .iter()
                 .map(|j| fin.out.k.get(j).copied().unwrap_or(1.0))
                 .fold(K_FLOOR, f64::max);
-            let c = fin.push_copy(rect, group.clone(), format!("combine input of {n}"));
+            let c = if rect.width() > fin.host_w {
+                let block_rect = tile_round_out(rect);
+                let mut chunks = Vec::new();
+                let mut seeds = Vec::new();
+                for &j in &group {
+                    let jr = fin.dag.nodes[j].reach.unwrap_or(block_rect);
+                    let cr = tile_round_out(jr).intersect(block_rect);
+                    let cc = fin.push_copy(cr, vec![j], format!("combine chunk input of {n}"));
+                    fin.out.k.insert(cc, kg);
+                    chunks.push(cc);
+                    seeds.push((j, cr));
+                }
+                fin.fill_gaps(block_rect, &seeds, kg, &mut chunks, &format!("input of {n}"));
+                let b = fin.push_copy(block_rect, chunks.clone(), format!("combine block input of {n}"));
+                fin.out.blocks.push((b, chunks));
+                b
+            } else {
+                fin.push_copy(rect, group.clone(), format!("combine input of {n}"))
+            };
             fin.out.k.insert(c, kg);
             let current = fin.dag.nodes[n].inputs.clone();
             let mut placed = false;
@@ -463,13 +574,13 @@ mod tests {
     #[test]
     fn k_is_finest_ask_and_squeeze_is_uniform() {
         let (mut dag, w) = walked();
-        let fin = finalize(&mut dag, &w, &|_| Some(0.5), u64::MAX);
+        let fin = finalize(&mut dag, &w, &|_| Some(0.5), u64::MAX, FRAME.width());
         for p in &w.pieces {
             let k = fin.k[&p.node];
             assert!(k <= 0.5 + 1e-9, "no piece may exceed the finest ask, got {k}");
         }
         let (mut dag2, w2) = walked();
-        let fin2 = finalize(&mut dag2, &w2, &|_| Some(1.0), 64 * 1024);
+        let fin2 = finalize(&mut dag2, &w2, &|_| Some(1.0), 64 * 1024, FRAME.width());
         let ks: Vec<f64> = w2.pieces.iter().map(|p| fin2.k[&p.node]).collect();
         assert!(ks.iter().any(|&k| k < 1.0), "a tight budget must squeeze k below the asks");
         assert!(ks.iter().all(|&k| k >= K_FLOOR), "the squeeze never breaches the floor");
@@ -491,7 +602,7 @@ mod tests {
             per.iter().filter(|&(_, &c)| c > 1).map(|(&r, _)| r).collect()
         };
         assert!(!multi.is_empty(), "the fixture must have a fragmented reader");
-        let fin = finalize(&mut dag, &w, &|_| None, u64::MAX);
+        let fin = finalize(&mut dag, &w, &|_| None, u64::MAX, FRAME.width());
         for r in &multi {
             let routes: Vec<&Route> = fin.routes.iter().filter(|rt| rt.reader == *r).collect();
             assert_eq!(routes.len(), 1, "reader {r} must end with exactly ONE route");
@@ -541,7 +652,7 @@ mod tests {
                 Some(1.0)
             }
         };
-        let fin = finalize(&mut dag, &w, &asks, u64::MAX);
+        let fin = finalize(&mut dag, &w, &asks, u64::MAX, FRAME.width());
         let route = fin
             .routes
             .iter()
@@ -572,7 +683,7 @@ mod tests {
             "disjoint intervals of one class coalesce onto one slot"
         );
         let (mut dag, w) = walked();
-        let fin = finalize(&mut dag, &w, &|_| None, u64::MAX);
+        let fin = finalize(&mut dag, &w, &|_| None, u64::MAX, FRAME.width());
         for war in &fin.wars {
             assert!(war.overwrite > war.last_read, "overwrite lands after the last reader");
             assert!(war.buyout_px > 0, "every WAR edge carries its buyout price");

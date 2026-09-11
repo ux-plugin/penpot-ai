@@ -1188,7 +1188,7 @@ impl Sink {
             };
         }
         let frame_rect = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
-        let max_grid_h: u32 = (48_000 / width.div_ceil(16)).max(16).min(512) * 16;
+        let max_grid_h: u32 = (120_000 / width.div_ceil(16)).max(16).min(424) * 16;
         let wlk = crate::vello::walk::walk(&mut dag, frame_rect);
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_WALK").is_ok() {
@@ -1259,12 +1259,15 @@ impl Sink {
                 &wlk,
                 &|r| ask_by_node.get(&r).copied(),
                 shelf_budget,
+                f64::from(width),
             )
         });
         let mut rid_of: HashMap<usize, usize> = HashMap::new();
         let mut piece_owner: HashMap<usize, u128> = HashMap::new();
         let mut store_of: HashMap<usize, usize> = HashMap::new();
         if let Some(f) = &fin {
+            let block_set: std::collections::HashSet<usize> =
+                f.blocks.iter().map(|&(b, _)| b).collect();
             let mintable: std::collections::HashSet<usize> = wlk
                 .pieces
                 .iter()
@@ -1344,7 +1347,12 @@ impl Sink {
                         .and_then(|f| f.k.get(&n).copied())
                         .unwrap_or(1.0)
                         .clamp(1.0 / 64.0, 1.0);
-                    match regions.allocate([r.x0, r.y0, r.x1, r.y1], kq) {
+                    let allocated = if block_set.contains(&n) {
+                        regions.allocate_lease_only([r.x0, r.y0, r.x1, r.y1], kq)
+                    } else {
+                        regions.allocate([r.x0, r.y0, r.x1, r.y1], kq)
+                    };
+                    match allocated {
                         Some(ri) => {
                             rid_of.insert(n, ri);
                             dag.nodes[n].source = crate::vello::frame_dag::Source::Region(ri);
@@ -1389,7 +1397,7 @@ impl Sink {
                 })
             };
             for &t in &f.transports {
-                if !rid_of.contains_key(&t) {
+                if !rid_of.contains_key(&t) || block_set.contains(&t) {
                     continue;
                 }
                 let all_ground = dag.nodes[t].inputs.iter().all(|&j| ground_piece(j));
@@ -1400,6 +1408,7 @@ impl Sink {
                 }
             }
             let mut writers: Vec<usize> = rid_of.keys().copied().collect();
+            writers.retain(|w| !block_set.contains(w));
             writers.sort_unstable();
             for w in writers {
                 let rid = rid_of[&w];
@@ -1799,8 +1808,34 @@ impl Sink {
                     v.sort_unstable();
                     v
                 };
-                let mut host_items = Vec::with_capacity(ordered.len());
-                let mut lease_items = Vec::with_capacity(ordered.len());
+                let block_rids: std::collections::HashSet<usize> = f
+                    .blocks
+                    .iter()
+                    .filter_map(|&(b, _)| rid_of.get(&b).copied())
+                    .collect();
+                let mut chunk_rids: HashMap<usize, usize> = HashMap::new();
+                for (b, cs) in &f.blocks {
+                    let Some(&br) = rid_of.get(b) else { continue };
+                    for c in cs {
+                        if let Some(&cr) = rid_of.get(c) {
+                            chunk_rids.insert(cr, br);
+                        }
+                    }
+                }
+                let mut block_birth: HashMap<usize, u32> = HashMap::new();
+                for (&crid, &brid) in &chunk_rids {
+                    let b = nodes_of_rid[&crid]
+                        .iter()
+                        .map(|&n| sched.round[n])
+                        .min()
+                        .unwrap_or(0);
+                    let e = block_birth.entry(brid).or_insert(u32::MAX);
+                    *e = (*e).min(b);
+                }
+                let mut host_items = Vec::new();
+                let mut host_ids = Vec::new();
+                let mut lease_items = Vec::new();
+                let mut lease_ids = Vec::new();
                 for &rid in &ordered {
                     let ns = &nodes_of_rid[&rid];
                     let (w, h) = regions.regions[rid].texel_size();
@@ -1810,15 +1845,83 @@ impl Sink {
                         .iter()
                         .find_map(|n| piece_owner.get(n).copied())
                         .unwrap_or(0);
-                    host_items.push(IntervalRect { w, h, birth, death: windows_end, group: gid });
-                    let death = death_of.get(&rid).copied().unwrap_or(0).max(windows_end);
-                    lease_items.push(IntervalRect { w, h, birth, death, group: 0 });
+                    if !block_rids.contains(&rid) {
+                        host_items.push(IntervalRect { w, h, birth, death: windows_end, group: gid });
+                        host_ids.push(rid);
+                    }
+                    if !chunk_rids.contains_key(&rid) {
+                        let death = death_of.get(&rid).copied().unwrap_or(0).max(windows_end);
+                        let birth = block_birth.get(&rid).copied().unwrap_or(birth).min(birth);
+                        lease_items.push(IntervalRect { w, h, birth, death, group: 0 });
+                        lease_ids.push(rid);
+                    }
                 }
                 let band = regions.band_origin_y();
                 let hosts = interval_shelf(&host_items, width, max_grid_h.saturating_sub(band));
                 let leases = interval_shelf(&lease_items, 8192, 8192);
-                for (idx, &rid) in ordered.iter().enumerate() {
-                    match (hosts[idx], leases[idx]) {
+                let host_of: HashMap<usize, Option<[u32; 2]>> =
+                    host_ids.iter().copied().zip(hosts).collect();
+                let lease_of: HashMap<usize, Option<[u32; 2]>> =
+                    lease_ids.iter().copied().zip(leases).collect();
+                let mut chunks_of_block: HashMap<usize, Vec<usize>> = HashMap::new();
+                for (&crid, &brid) in &chunk_rids {
+                    chunks_of_block.entry(brid).or_default().push(crid);
+                }
+                let mut placed_blocks: std::collections::HashSet<usize> =
+                    std::collections::HashSet::new();
+                for &rid in &ordered {
+                    if !block_rids.contains(&rid) {
+                        continue;
+                    }
+                    let whole = chunks_of_block.get(&rid).is_some_and(|cs| {
+                        cs.iter().all(|c| host_of.get(c).copied().flatten().is_some())
+                    });
+                    match lease_of.get(&rid).copied().flatten().filter(|_| whole) {
+                        Some(lp) => {
+                            regions.place_lease_only(rid, lp);
+                            placed_blocks.insert(rid);
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if std::env::var("WV_DBG_ALLOC").is_ok() {
+                                let r = &regions.regions[rid];
+                                eprintln!(
+                                    "WV_DBG_ALLOC block: rid={rid} src=({:.0},{:.0}) k={} lease={:?} nodes={:?}",
+                                    r.source[0], r.source[1], r.k, r.lease, nodes_of_rid[&rid],
+                                );
+                            }
+                        }
+                        None => {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if std::env::var("WV_DBG_ALLOC").is_ok() {
+                                let (w, h) = regions.regions[rid].texel_size();
+                                eprintln!("WV_DBG_ALLOC drop(block-lease): rid={rid} {w}x{h} nodes={:?}", nodes_of_rid[&rid]);
+                            }
+                            for n in nodes_of_rid[&rid].clone() {
+                                rid_of.remove(&n);
+                            }
+                        }
+                    }
+                }
+                for &rid in &ordered {
+                    if block_rids.contains(&rid) {
+                        continue;
+                    }
+                    let hp = host_of.get(&rid).copied().flatten();
+                    let lp = match chunk_rids.get(&rid) {
+                        Some(&brid) if placed_blocks.contains(&brid) => {
+                            let (bs, bl, bk) = {
+                                let br = &regions.regions[brid];
+                                ([br.source[0], br.source[1]], br.lease, br.k)
+                            };
+                            let cs = regions.regions[rid].source;
+                            Some([
+                                bl[0] + ((cs[0] - bs[0]) * bk).round() as u32,
+                                bl[1] + ((cs[1] - bs[1]) * bk).round() as u32,
+                            ])
+                        }
+                        Some(_) => None,
+                        None => lease_of.get(&rid).copied().flatten(),
+                    };
+                    match (hp, lp) {
                         (Some(hp), Some(lp)) => {
                             regions.place(rid, [hp[0], hp[1] + band], lp);
                             #[cfg(not(target_arch = "wasm32"))]
@@ -1831,8 +1934,55 @@ impl Sink {
                             }
                         }
                         _ => {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if std::env::var("WV_DBG_ALLOC").is_ok() {
+                                let (w, h) = regions.regions[rid].texel_size();
+                                let rounds: Vec<u32> = nodes_of_rid[&rid].iter().map(|&n| sched.round[n]).collect();
+                                eprintln!(
+                                    "WV_DBG_ALLOC drop(place): rid={rid} {w}x{h} rounds={rounds:?} host={hp:?} lease={lp:?} chunk={} nodes={:?}",
+                                    chunk_rids.contains_key(&rid), nodes_of_rid[&rid],
+                                );
+                            }
                             for n in nodes_of_rid[&rid].clone() {
                                 rid_of.remove(&n);
+                            }
+                        }
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if std::env::var("WV_DBG_LEASECHECK").is_ok() {
+                    let live: std::collections::HashSet<usize> = rid_of.values().copied().collect();
+                    let mut spans: Vec<(usize, [u32; 2], u32, u32, u32, u32)> = Vec::new();
+                    for (li, &rid) in lease_ids.iter().enumerate() {
+                        if !live.contains(&rid) {
+                            continue;
+                        }
+                        let it = lease_items[li];
+                        spans.push((rid, regions.regions[rid].lease, it.w, it.h, it.birth, it.death));
+                    }
+                    for (&crid, &brid) in &chunk_rids {
+                        if !live.contains(&crid) || !placed_blocks.contains(&brid) {
+                            continue;
+                        }
+                        let (w, h) = regions.regions[crid].texel_size();
+                        let birth = nodes_of_rid[&crid].iter().map(|&n| sched.round[n]).min().unwrap_or(0);
+                        let death = death_of.get(&brid).copied().unwrap_or(birth);
+                        spans.push((crid, regions.regions[crid].lease, w, h, birth, death));
+                    }
+                    for (ai, a) in spans.iter().enumerate() {
+                        for b in &spans[ai + 1..] {
+                            let ox = a.1[0] < b.1[0] + b.2 && b.1[0] < a.1[0] + a.2;
+                            let oy = a.1[1] < b.1[1] + b.3 && b.1[1] < a.1[1] + a.3;
+                            let ot = a.4 <= b.5 && b.4 <= a.5;
+                            let sibling = chunk_rids.contains_key(&a.0)
+                                && chunk_rids.get(&a.0) == chunk_rids.get(&b.0);
+                            let parent = chunk_rids.get(&a.0) == Some(&b.0)
+                                || chunk_rids.get(&b.0) == Some(&a.0);
+                            if ox && oy && ot && !sibling && !parent {
+                                eprintln!(
+                                    "WV_DBG_LEASECHECK overlap: rid={} lease={:?} {}x{} r[{}..{}] vs rid={} lease={:?} {}x{} r[{}..{}]",
+                                    a.0, a.1, a.2, a.3, a.4, a.5, b.0, b.1, b.2, b.3, b.4, b.5,
+                                );
                             }
                         }
                     }
@@ -1910,11 +2060,16 @@ impl Sink {
                 let routed = fin.routes.iter().any(|r| r.target == n);
                 any && !routed
             };
+            let block_nodes: std::collections::HashSet<usize> =
+                fin.blocks.iter().map(|&(b, _)| b).collect();
             let mut at: HashMap<u128, usize> = HashMap::new();
             let mut nodes_in_order: Vec<usize> = rid_of.keys().copied().collect();
             nodes_in_order.sort_unstable();
             let mut new_marks: Vec<(u128, UnitMark)> = Vec::new();
             for n in nodes_in_order {
+                if block_nodes.contains(&n) {
+                    continue;
+                }
                 let Some(&gid) = owner.get(&n) else { continue };
                 let rid = rid_of[&n];
                 let g = grid_of(n);
@@ -2145,6 +2300,14 @@ impl Sink {
                             None,
                         );
                         stamp_field_anchor(&desc, &mut rec);
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if std::env::var("WV_DBG_CHAIN").is_ok() {
+                            eprintln!(
+                                "WV_DBG_CHAIN blur n={n} rid={rid} grid={:?} dev=({:.0},{:.0} {:.0}x{:.0}) in={:?} rec8={:?} rec10={:?} rec11={:?}",
+                                grid_of(n), dev_of(n).x0, dev_of(n).y0, dev_of(n).width(), dev_of(n).height(),
+                                dag.nodes[n].inputs, rec[8], rec[10], rec[11],
+                            );
+                        }
                         new_marks.push((gid, UnitMark {
                             node: n,
                             round: sched.round[n],

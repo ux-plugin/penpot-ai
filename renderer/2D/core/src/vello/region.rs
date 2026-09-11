@@ -82,6 +82,28 @@ impl RegionTable {
         Some(self.regions.len() - 1)
     }
 
+    /// Register a lease-only region: a combine block wider than the grid. It owns store rows but
+    /// no grid host — its content arrives through chunk regions whose leases tile its span — so
+    /// the grid-width gate does not apply. `None` only when degenerate or wider than the store.
+    pub fn allocate_lease_only(&mut self, source: [f64; 4], k: f64) -> Option<usize> {
+        let w = (((source[2] - source[0]) * k).ceil() as u32).div_ceil(TILE_PX) * TILE_PX;
+        let h = (((source[3] - source[1]) * k).ceil() as u32).div_ceil(TILE_PX) * TILE_PX;
+        if w == 0 || h == 0 || w > 8192 {
+            return None;
+        }
+        self.regions.push(RegionDesc { source, k, grid: [0, 0, w, h], lease: [0, 0] });
+        Some(self.regions.len() - 1)
+    }
+
+    /// Land a lease-only region's store address. The grid keeps its size-only origin form —
+    /// nothing ever draws into this region directly, so it rents no host rows;
+    /// [`Self::atlas_height`] still accounts its lease rows.
+    pub fn place_lease_only(&mut self, i: usize, lease: [u32; 2]) {
+        let (_, h) = self.regions[i].texel_size();
+        self.regions[i].lease = lease;
+        self.atlas_h = self.atlas_h.max(lease[1] + h);
+    }
+
     /// Land region `i`'s packed addresses: `host` is its grid origin (absolute, at or below
     /// [`Self::band_origin_y`]), `lease` its atlas origin.
     pub fn place(&mut self, i: usize, host: [u32; 2], lease: [u32; 2]) {
@@ -155,36 +177,46 @@ pub struct IntervalRect {
 pub fn interval_shelf(items: &[IntervalRect], width: u32, cap: u32) -> Vec<Option<[u32; 2]>> {
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_by_key(|&i| (items[i].birth, i));
-    let mut slots: std::collections::HashMap<(u32, u32), Vec<(u32, u128, [u32; 2])>> =
-        std::collections::HashMap::new();
-    let (mut cur_x, mut cur_y, mut row_h) = (0u32, 0u32, 0u32);
+    let mut slots: Vec<(u32, u128, [u32; 2], u32, u32)> = Vec::new();
+    let mut rows: Vec<(u32, u32, u32)> = Vec::new();
+    let mut cur_y = 0u32;
     let mut out = vec![None; items.len()];
     for &i in &order {
         let it = items[i];
         if it.w == 0 || it.h == 0 || it.w > width {
             continue;
         }
-        let class = slots.entry((it.w, it.h)).or_default();
-        if let Some(s) = class
-            .iter_mut()
-            .find(|(until, group, _)| *until < it.birth && *group == it.group)
-        {
-            s.0 = it.death;
-            out[i] = Some(s.2);
+        let fit = slots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.0 < it.birth && s.1 == it.group && s.3 == it.w && s.4 == it.h)
+            .min_by_key(|(_, s)| u64::from(s.3) * u64::from(s.4))
+            .map(|(j, _)| j);
+        if let Some(j) = fit {
+            slots[j].0 = it.death;
+            out[i] = Some(slots[j].2);
             continue;
         }
-        if cur_x + it.w > width {
-            cur_y += row_h;
-            cur_x = 0;
-            row_h = 0;
-        }
-        if cur_y + it.h > cap {
-            continue;
-        }
-        let pos = [cur_x, cur_y];
-        cur_x += it.w;
-        row_h = row_h.max(it.h);
-        class.push((it.death, it.group, pos));
+        let row = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.1 >= it.h && r.2 + it.w <= width)
+            .min_by_key(|(_, r)| r.1)
+            .map(|(j, _)| j);
+        let row = match row {
+            Some(j) => j,
+            None => {
+                if cur_y + it.h > cap {
+                    continue;
+                }
+                rows.push((cur_y, it.h, 0));
+                cur_y += it.h;
+                rows.len() - 1
+            }
+        };
+        let pos = [rows[row].2, rows[row].0];
+        rows[row].2 += it.w;
+        slots.push((it.death, it.group, pos, it.w, it.h));
         out[i] = Some(pos);
     }
     out

@@ -2199,6 +2199,13 @@ pub extern "C" fn load_bgblur_stack3_scene(radius: u32) -> u32 {
     install_fixture(crate::parity::build_bgblur_stack3_scene(radius as f32))
 }
 
+/// Install the **blend-under-bgblur** fixture ([`crate::parity::build_blend_under_bgblur_scene`]) —
+/// a Multiply-blend band leaf under a background-blur panel, the ground-piece blend-fidelity gate.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_blend_under_bgblur_scene(radius: u32) -> u32 {
+    install_fixture(crate::parity::build_blend_under_bgblur_scene(radius as f32))
+}
+
 /// Install the **drop grid** ([`crate::parity::build_drop_grid_scene`]) — `n` blobs each with one soft
 /// drop shadow, the shadow counterpart of the blur grid, for scheduler-driven round sharing.
 #[unsafe(no_mangle)]

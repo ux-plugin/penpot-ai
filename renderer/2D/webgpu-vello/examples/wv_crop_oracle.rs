@@ -42,6 +42,7 @@ enum Doc {
     Editor,
     BgblurStack,
     BgblurStackDeep,
+    BlendUnderBgblur,
     DropShadow,
     ShadowUnderBgblur,
 }
@@ -73,6 +74,8 @@ fn cases() -> Vec<Case> {
         c("shadow-right", Doc::DropShadow, 8.0, (-1.0, -63.0)),
         c("shadow-writer-bottom", Doc::ShadowUnderBgblur, 4.0, (-1.0, 21.5)),
         c("bgblur-stack-right", Doc::BgblurStack, 2.0, (0.0, 0.0)),
+        c("blend-under-bottom", Doc::BlendUnderBgblur, 2.0, (0.0, 0.0)),
+        c("blend-under-z4", Doc::BlendUnderBgblur, 4.0, (-530.0, -288.5)),
         c("bgblur-stack-deep", Doc::BgblurStackDeep, 2.0, (0.0, 0.0)),
     ]
 }
@@ -190,6 +193,9 @@ fn main() {
                 Doc::Editor => {
                     let rep = replay_util::replay(EDITOR_FIXTURE);
                     println!("(editor fixture: {} calls replayed)", rep.applied);
+                }
+                Doc::BlendUnderBgblur => {
+                    render_core::vello::abi::load_blend_under_bgblur_scene(24);
                 }
                 Doc::BgblurStack => {
                     render_core::vello::abi::load_bgblur_stack_scene(24);

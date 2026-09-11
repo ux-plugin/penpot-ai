@@ -1910,6 +1910,37 @@ pub fn build_bgblur_stack3_scene(radius: f32) -> (Scene, Vec<(usize, &'static st
     b.finish()
 }
 
+/// The [`build_bgblur_stack_scene`] backdrop with a Multiply-blend leaf under the blur panel:
+/// the panel's off-frame taps must see the blend applied against the true below state — the
+/// ground-piece fidelity fixture for non-normal band blends.
+pub fn build_blend_under_bgblur_scene(radius: f32) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    b.advance("blend under bgblur");
+    let (w, h) = (1680.0_f64, 800.0_f64);
+    let stripe = 120.0_f64;
+    let cols = [col(200, 60, 40), col(40, 90, 200), col(240, 220, 90)];
+    let nx = (w / stripe).ceil() as usize;
+    for gx in 0..nx {
+        let mut node = Node::new(b.id(), ShapeKind::Rect);
+        let x = gx as f64 * stripe;
+        node.bounds = Rect::new(x, 0.0, x + stripe, h);
+        node.fills = vec![Paint::plain(Brush::Solid(cols[gx % 3]))];
+        b.root(node);
+    }
+    let mut m = Node::new(b.id(), ShapeKind::Rect);
+    m.bounds = Rect::new(200.0, 300.0, 1500.0, 700.0);
+    m.fills = vec![Paint::plain(Brush::Solid(col(210, 235, 255)))];
+    m.blend = crate::peniko::BlendMode::new(crate::peniko::Mix::Multiply, crate::peniko::Compose::SrcOver);
+    m.opacity = 0.6;
+    b.root(m);
+    let mut p = Node::new(b.id(), ShapeKind::Rect);
+    p.bounds = Rect::new(400.0, 200.0, 1300.0, 560.0);
+    p.corners = Some(RoundedRectRadii::from_single_radius(12.0));
+    p.background_blur = Some(radius);
+    b.root(p);
+    b.finish()
+}
+
 pub fn build_backdrop_tint_grid_scene(n: usize) -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
     let cols = (n as f64).sqrt().ceil() as usize;
