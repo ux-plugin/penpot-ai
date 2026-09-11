@@ -154,10 +154,13 @@ impl RegionTable {
 }
 
 /// One item for [`interval_shelf`]: a `w × h` rect alive over rounds `[birth, death]` (inclusive).
-/// `group` scopes slot reuse: a freed slot is retaken only by an item of the same group. Host
-/// packing groups by owner gid — the per-tile PTCL walk early-breaks at the first marker past the
-/// window, so a tile's marker rounds must be stream-monotone, which holds within one gid's
-/// round-sorted marks and cannot be promised across gids. Lease packing passes one group for all.
+/// `group` ORDERS slot reuse: a freed slot is retaken only by an item whose group is ≥ the
+/// tenant's. The per-tile PTCL walk early-breaks at the first marker past the window, so a tile's
+/// marker rounds must be stream-monotone; host packing passes the owner gid's GATHER INDEX — a
+/// stream-later gid whose rounds start after the tenant's death keeps the tile monotone, so
+/// ordered reuse is sound where same-gid-only reuse was needlessly narrow. `u128::MAX` marks an
+/// unknown owner: it never reuses and is never reused. Lease packing passes zero for all (leases
+/// carry no markers, any disjoint interval may share).
 #[derive(Clone, Copy, Debug)]
 pub struct IntervalRect {
     pub w: u32,
@@ -175,6 +178,19 @@ pub struct IntervalRect {
 /// peak concurrency, or wider than `width`).
 #[must_use]
 pub fn interval_shelf(items: &[IntervalRect], width: u32, cap: u32) -> Vec<Option<[u32; 2]>> {
+    interval_shelf_ext(items, width, cap, false)
+}
+
+/// [`interval_shelf`] with `loose` slot reuse: a dead slot may be retaken by a SMALLER item
+/// (up to 2× slot area waste) instead of only an exact size match. Hosts pack loose — windows
+/// dispatch only the region's own tiles, so a larger slot's idle remainder costs rows, not
+/// correctness; leases stay exact, their guard reads must never touch a stale margin.
+pub fn interval_shelf_ext(
+    items: &[IntervalRect],
+    width: u32,
+    cap: u32,
+    loose: bool,
+) -> Vec<Option<[u32; 2]>> {
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_by_key(|&i| (items[i].birth, i));
     let mut slots: Vec<(u32, u128, [u32; 2], u32, u32)> = Vec::new();
@@ -189,11 +205,21 @@ pub fn interval_shelf(items: &[IntervalRect], width: u32, cap: u32) -> Vec<Optio
         let fit = slots
             .iter()
             .enumerate()
-            .filter(|(_, s)| s.0 < it.birth && s.1 == it.group && s.3 == it.w && s.4 == it.h)
+            .filter(|(_, s)| {
+                let size_ok = if loose {
+                    s.3 >= it.w
+                        && s.4 >= it.h
+                        && u64::from(s.3) * u64::from(s.4) <= 4 * u64::from(it.w) * u64::from(it.h)
+                } else {
+                    s.3 == it.w && s.4 == it.h
+                };
+                s.0 < it.birth && it.group < u128::MAX && s.1 <= it.group && size_ok
+            })
             .min_by_key(|(_, s)| u64::from(s.3) * u64::from(s.4))
             .map(|(j, _)| j);
         if let Some(j) = fit {
             slots[j].0 = it.death;
+            slots[j].1 = it.group;
             out[i] = Some(slots[j].2);
             continue;
         }
@@ -281,12 +307,18 @@ mod tests {
         assert_ne!(out[0], out[2], "overlapping intervals get distinct slots");
         assert_ne!(out[0], out[3], "an equal-round pair never shares (no barrier between)");
         assert!(out.iter().all(Option::is_some));
-        let cross = [
+        let back = [
+            IntervalRect { w: 96, h: 32, birth: 1, death: 2, group: 9 },
+            IntervalRect { w: 96, h: 32, birth: 3, death: 4, group: 7 },
+        ];
+        let b = interval_shelf(&back, 256, 1024);
+        assert_ne!(b[0], b[1], "a slot never flows to a stream-earlier group");
+        let fwd = [
             IntervalRect { w: 96, h: 32, birth: 1, death: 2, group: 7 },
             IntervalRect { w: 96, h: 32, birth: 3, death: 4, group: 9 },
         ];
-        let c = interval_shelf(&cross, 256, 1024);
-        assert_ne!(c[0], c[1], "a slot never crosses gid groups");
+        let f = interval_shelf(&fwd, 256, 1024);
+        assert_eq!(f[0], f[1], "a dead slot flows forward in stream order");
     }
 
     #[test]

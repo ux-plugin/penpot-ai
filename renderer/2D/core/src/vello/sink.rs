@@ -1845,8 +1845,12 @@ impl Sink {
                         .iter()
                         .find_map(|n| piece_owner.get(n).copied())
                         .unwrap_or(0);
+                    let seq = gathers
+                        .iter()
+                        .position(|&(_, g, _)| g == gid)
+                        .map_or(u128::MAX, |i| i as u128);
                     if !block_rids.contains(&rid) {
-                        host_items.push(IntervalRect { w, h, birth, death: windows_end, group: gid });
+                        host_items.push(IntervalRect { w, h, birth, death: windows_end, group: seq });
                         host_ids.push(rid);
                     }
                     if !chunk_rids.contains_key(&rid) {
@@ -1857,7 +1861,29 @@ impl Sink {
                     }
                 }
                 let band = regions.band_origin_y();
-                let hosts = interval_shelf(&host_items, width, max_grid_h.saturating_sub(band));
+                #[cfg(not(target_arch = "wasm32"))]
+                if std::env::var("WV_DBG_ALLOC").is_ok() {
+                    let area: u64 = host_items.iter().map(|i| u64::from(i.w) * u64::from(i.h)).sum();
+                    let peak: u64 = {
+                        let maxr = host_items.iter().map(|i| i.death).max().unwrap_or(0);
+                        (0..=maxr)
+                            .map(|r| {
+                                host_items
+                                    .iter()
+                                    .filter(|i| i.birth <= r && r <= i.death)
+                                    .map(|i| u64::from(i.w) * u64::from(i.h))
+                                    .sum()
+                            })
+                            .max()
+                            .unwrap_or(0)
+                    };
+                    eprintln!(
+                        "WV_DBG_ALLOC host demand: items={} area={area} peak_live={peak} capacity={}",
+                        host_items.len(),
+                        u64::from(width) * u64::from(max_grid_h.saturating_sub(band)),
+                    );
+                }
+                let hosts = crate::vello::region::interval_shelf_ext(&host_items, width, max_grid_h.saturating_sub(band), false);
                 let leases = interval_shelf(&lease_items, 8192, 8192);
                 let host_of: HashMap<usize, Option<[u32; 2]>> =
                     host_ids.iter().copied().zip(hosts).collect();
@@ -2009,6 +2035,12 @@ impl Sink {
                 (r.grid[0] as f32 - r.lease[0] as f32, r.grid[1] as f32 - r.lease[1] as f32)
             };
             let dev_of = |n: usize| dag.nodes[n].reach.unwrap_or(frame_rect);
+            let regrid_anchor = |rid: usize, rec: &mut [[f32; 4]; 12]| {
+                let a = regions.device_to_grid(rid);
+                let p = a * crate::kurbo::Point::new(f64::from(rec[6][1]), f64::from(rec[6][2]));
+                rec[6][1] = p.x as f32;
+                rec[6][2] = p.y as f32;
+            };
             let k_of = |n: usize| {
                 let n = writer_of.get(&n).copied().unwrap_or(n);
                 fin.k.get(&n).copied().unwrap_or(1.0)
@@ -2188,6 +2220,7 @@ impl Sink {
                             colour,
                         );
                         stamp_field_anchor(&desc, &mut vrec);
+                        regrid_anchor(rid, &mut vrec);
                         new_marks.push((gid, UnitMark {
                             node: n,
                             round: sched.round[n],
@@ -2300,6 +2333,7 @@ impl Sink {
                             None,
                         );
                         stamp_field_anchor(&desc, &mut rec);
+                        regrid_anchor(rid, &mut rec);
                         #[cfg(not(target_arch = "wasm32"))]
                         if std::env::var("WV_DBG_CHAIN").is_ok() {
                             eprintln!(
@@ -2339,6 +2373,7 @@ impl Sink {
                             None,
                         );
                         stamp_field_anchor(&desc, &mut rec);
+                        regrid_anchor(rid, &mut rec);
                         new_marks.push((gid, UnitMark {
                             node: n,
                             round: sched.round[n],
@@ -2406,6 +2441,16 @@ impl Sink {
                     if !owns && !fused {
                         continue;
                     }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if std::env::var("WV_ABLATE_GLASS_ROUTES").is_ok()
+                        && matches!(
+                            dag.nodes[r.reader].op,
+                            crate::vello::units::UnitOp::Warp(_)
+                                | crate::vello::units::UnitOp::Scatter(_)
+                        )
+                    {
+                        continue;
+                    }
                     let t = &regions.regions[trid];
                     route_rec(
                         r.target,
@@ -2413,6 +2458,13 @@ impl Sink {
                         1.0,
                         &mut m.rec,
                     );
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if std::env::var("WV_DBG_ROUTESTAMP").is_ok() {
+                        eprintln!(
+                            "WV_DBG_ROUTESTAMP reader={} target={} trid={trid} mark_node={} owns={owns} op={:?}",
+                            r.reader, r.target, m.node, dag.nodes[m.node].op,
+                        );
+                    }
                 }
             }
         }
