@@ -757,6 +757,7 @@ impl FrameDag {
         let mut reach: Vec<Option<Rect>> = vec![None; ncomp];
         let mut is_effect = vec![false; ncomp];
         let mut foot = vec![0u64; ncomp];
+        let dm = self.demands(Rect::new(-1e15, -1e15, 1e15, 1e15));
         for (i, node) in self.nodes.iter().enumerate() {
             let c = comp[i];
             first[c] = first[c].min(i);
@@ -782,6 +783,21 @@ impl FrameDag {
         let mut span = vec![0u32; ncomp];
         for i in 0..n {
             span[comp[i]] = span[comp[i]].max(off[i]);
+        }
+
+        let mut reloads: Vec<Vec<(u32, Rect)>> = vec![Vec::new(); ncomp];
+        let mut writers: Vec<Vec<(u32, Rect)>> = vec![Vec::new(); ncomp];
+        for (i, node) in self.nodes.iter().enumerate() {
+            if matches!(node.op, UnitOp::Reload) {
+                if let Some(d) = dm[i] {
+                    reloads[comp[i]].push((off[i], d));
+                }
+            }
+            if node.writes_accumulator() {
+                if let Some(r) = node.reach {
+                    writers[comp[i]].push((off[i], r));
+                }
+            }
         }
 
         let mut sig: Vec<Vec<(u32, BindingShape)>> = vec![Vec::new(); ncomp];
@@ -842,6 +858,20 @@ impl FrameDag {
             let c = corder[idx];
             let mut b = 0u32;
             for &d in &corder[..idx] {
+                for &(ro, dr) in &reloads[c] {
+                    for &(wo, wr) in &writers[d] {
+                        if reach_overlap(Some(dr), Some(wr), tile) {
+                            b = b.max((base[d] + wo + 1).saturating_sub(ro));
+                        }
+                    }
+                }
+                for &(wo, wr) in &writers[c] {
+                    for &(ro, dr) in &reloads[d] {
+                        if reach_overlap(Some(wr), Some(dr), tile) {
+                            b = b.max((base[d] + ro + 1).saturating_sub(wo));
+                        }
+                    }
+                }
                 if is_effect[c] && !is_effect[d] {
                     continue;
                 }

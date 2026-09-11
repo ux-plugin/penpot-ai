@@ -8,6 +8,9 @@
 
 use render_core::vello::frame_dag::{self, Barrier, Category, FrameDag, Node, TILE_PX};
 
+#[path = "util/replay.rs"]
+mod replay_util;
+
 const CLASSDEFS: &str = "  classDef bg fill:#9fe1cb,stroke:#0f6e56,color:#04342c;\n  classDef paint fill:#b5d4f4,stroke:#185fa5,color:#042c53;\n  classDef draft fill:#d3d1c7,stroke:#5f5e5a,color:#2c2c2a;\n  classDef backdrop fill:#fac775,stroke:#854f0b,color:#412402;\n  classDef composite fill:#cecbf6,stroke:#534ab7,color:#26215c;\n";
 
 fn node_decl(i: usize, n: &Node) -> String {
@@ -76,6 +79,17 @@ fn to_mermaid_scheduled(dag: &FrameDag) -> String {
 
 fn main() {
     let scene = std::env::var("SCENE").unwrap_or_else(|_| "combined".to_string());
+    if let Some(path) = scene.strip_prefix("replay:") {
+        let rep = replay_util::replay(path);
+        eprintln!("(replayed {} calls)", rep.applied);
+        if let Ok(zoom) = std::env::var("WV_ZOOM") {
+            render_core::vello::abi::set_view(
+                zoom.parse().unwrap_or(1.0),
+                std::env::var("WV_PANX").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                std::env::var("WV_PANY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            );
+        }
+    } else {
     match scene.as_str() {
         "combined" => render_core::vello::abi::load_combined_scene(),
         "inner-shadow" => render_core::vello::abi::load_inner_shadow_scene(),
@@ -96,6 +110,7 @@ fn main() {
         ),
         _ => render_core::vello::abi::load_combined_scene(),
     };
+    }
 
     let dag = frame_dag::build_frame_dag_installed();
     let naive = dag.levels().iter().copied().max().unwrap_or(0) + 1;

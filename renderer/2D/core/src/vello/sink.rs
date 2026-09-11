@@ -1392,6 +1392,12 @@ impl Sink {
             .map_or(256 * 1024 * 1024, |mb| mb.saturating_mul(1024 * 1024).max(1));
         let _tsched0 = crate::vello::prof::now();
         let sched = dag.schedule(16.0, scratch_budget);
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("WV_DBG_SCHED").is_ok() {
+            for (i, n) in dag.nodes.iter().enumerate() {
+                eprintln!("WV_DBG_SCHED n{i} r{} pad={} reach={:?} {:?}", sched.round[i], n.pad, n.reach.map(|r| [r.x0 as i32, r.y0 as i32, r.x1 as i32, r.y1 as i32]), n.label);
+            }
+        }
         let _tsched1 = crate::vello::prof::now();
 
         /// One CMD_EFFECT mark per dispatch-relevant DAG node — desc, chain control, coverage choice —
