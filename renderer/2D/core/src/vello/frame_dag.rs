@@ -800,10 +800,19 @@ impl FrameDag {
             }
         }
 
+        let compose_sentinel = BindingShape {
+            base: Slot::None,
+            input: Slot::None,
+            to_draft: false,
+            draft_taps: true,
+            region_out: false,
+        };
         let mut sig: Vec<Vec<(u32, BindingShape)>> = vec![Vec::new(); ncomp];
         for i in 0..n {
             if let Some(cl) = self.binding_shape(i) {
                 sig[comp[i]].push((off[i], cl));
+            } else if matches!(self.nodes[i].op, UnitOp::Compose { .. }) {
+                sig[comp[i]].push((off[i], compose_sentinel));
             }
         }
 
@@ -892,7 +901,12 @@ impl FrameDag {
                 }
             }
             loop {
-                if !sig[c].iter().all(|&(o, cl)| shape_at.get(&(b + o)).is_none_or(|&e| e == cl)) {
+                let compat = |e: BindingShape, cl: BindingShape| {
+                    e == cl
+                        || (e == compose_sentinel && !cl.to_draft)
+                        || (cl == compose_sentinel && !e.to_draft)
+                };
+                if !sig[c].iter().all(|&(o, cl)| shape_at.get(&(b + o)).is_none_or(|&e| compat(e, cl))) {
                     b += 1;
                     continue;
                 }
@@ -920,7 +934,10 @@ impl FrameDag {
                 }
             }
             for &(o, cl) in &sig[c] {
-                shape_at.insert(b + o, cl);
+                let slot = shape_at.entry(b + o).or_insert(cl);
+                if *slot == compose_sentinel {
+                    *slot = cl;
+                }
             }
             base[c] = b;
         }
