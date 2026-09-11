@@ -1877,7 +1877,8 @@ impl Sink {
                         let mut desc = [0.0f32; 26];
                         desc[0] = crate::vello::bake::bits::RAW as f32;
                         if matches!(dag.nodes[n].target, crate::vello::plan::Target::Store) {
-                            rec[0] = [0.0, sh.0, sh.1, 0.0];
+                            rec[0] = [2.0, sh.0, sh.1, 0.0];
+                            rec[8][2] = sh.1 - 8192.0;
                         } else if let Some(&j) = dag.nodes[n].inputs.first() {
                             if rid_of.contains_key(&j) {
                                 let r = rect_in_grid(n, j);
@@ -3106,37 +3107,34 @@ impl Sink {
             let h = regions.atlas_height().max(draft_atlas_h);
             (h > 0).then_some(h)
         };
-        let region_atlas_tex = region_dims.map(|h| {
-            self.pool.acquire_target(
+        let store_tex = region_dims.map(|h| {
+            self.pool.acquire(
                 device,
-                8192,
-                h,
-                format,
-                wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC,
-                "wv region atlas",
+                PoolKey {
+                    w: 8192,
+                    h,
+                    layers: 2,
+                    format: wgpu::TextureFormat::R32Uint,
+                    usage: (wgpu::TextureUsages::STORAGE_BINDING
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT)
+                        .bits(),
+                },
+                "wv region store",
             )
         });
-        let region_back_tex = region_dims.map(|h| {
-            self.pool.acquire_target(
-                device,
-                8192,
-                h,
-                wgpu::TextureFormat::R32Uint,
-                wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                "wv region back",
-            )
-        });
-        let region_atlas =
-            region_atlas_tex.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
-        let region_back =
-            region_back_tex.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
-        let region_atlas_w = region_atlas_tex.as_ref().map(storage_array_view);
-        let region_back_w = region_back_tex.as_ref().map(storage_array_view);
+        let store_layer_view = |t: &wgpu::Texture, layer: u32| {
+            t.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                base_array_layer: layer,
+                array_layer_count: Some(1),
+                ..Default::default()
+            })
+        };
+        let region_back = store_tex.as_ref().map(|t| store_layer_view(t, 0));
+        let region_atlas = store_tex.as_ref().map(|t| store_layer_view(t, 1));
+        let store_w = store_tex.as_ref().map(storage_array_view);
         for v in region_atlas.iter().chain(region_back.iter()) {
             Compositor::clear(&mut enc, v, [0.0, 0.0, 0.0, 0.0], None);
         }
@@ -3622,6 +3620,7 @@ impl Sink {
         let _tpl = crate::vello::prof::now();
         let mut window_lo = 0u32;
         let mut seeded = false;
+        let mut store_served: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let seed_clear = |enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
             let bg = crate::vello::abi::background().premultiply().to_rgba8().to_u32();
             Compositor::clear(enc, view, [f64::from(bg), 0.0, 0.0, 0.0], None);
@@ -3676,7 +3675,7 @@ impl Sink {
                         match region_back.clone().filter(|_| draft_placed.contains(&node)) {
                             Some(v) => {
                                 backend.phase_scratch_origins([OOB, OOB], [0, 0]);
-                                (region_back_w.clone().expect("a placed draft's atlas has a paired array view"), v)
+                                (store_w.clone().expect("a placed draft's store has an array view"), v)
                             }
                             None => acquire(),
                         }
@@ -3699,9 +3698,12 @@ impl Sink {
                         let dv = if shp.region_out {
                             backend.phase_scratch_origins([OOB, OOB], [0, 0]);
                             if shp.base == Slot::Source {
-                                match (region_atlas.clone(), region_back.clone(), region_atlas_w.as_ref()) {
-                                    (Some(av), Some(bv), Some(aw)) => {
-                                        backend.phased_fine_segment_loadu_store(device, queue, &mut enc, window_lo, hi, &bv, aw);
+                                match (region_atlas.clone(), store_w.as_ref()) {
+                                    (Some(av), Some(sw)) => {
+                                        backend.phased_fine_segment_stg_chain(device, queue, &mut enc, window_lo, hi, false, &acc, sw);
+                                        for &n in unit_nodes {
+                                            store_served.insert(n);
+                                        }
                                         av
                                     }
                                     _ => acquire().1,
@@ -3710,13 +3712,13 @@ impl Sink {
                                 let bv = region_back
                                     .clone()
                                     .expect("a region round scheduled without a region atlas");
-                                let bw = region_back_w
+                                let sw = store_w
                                     .as_ref()
                                     .expect("a region round scheduled without a region atlas");
                                 if shp.base == Slot::None {
-                                    backend.phased_fine_segment_stg(device, queue, &mut enc, window_lo, hi, bw);
+                                    backend.phased_fine_segment_stg(device, queue, &mut enc, window_lo, hi, sw);
                                 } else {
-                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, None, bw);
+                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, None, sw);
                                 }
                                 bv
                             }
@@ -3808,12 +3810,12 @@ impl Sink {
                             Slot::Draft(_) if shp.draft_taps => {
                                 let e = read_edge(rep).expect("draft aliased for the round");
                                 src = node_scratch.get(&e).expect("draft aliased for the round").clone();
-                                Some((true, draft_placed.contains(&e), &src))
+                                Some((true, draft_placed.contains(&e) || store_served.contains(&e), &src))
                             }
                             Slot::Draft(_) | Slot::Source => {
                                 let e = read_edge(rep).expect("slot-10 source bound");
                                 src = node_scratch.get(&e).expect("slot-10 source bound").clone();
-                                Some((false, draft_placed.contains(&e), &src))
+                                Some((false, draft_placed.contains(&e) || store_served.contains(&e), &src))
                             }
                             Slot::None => None,
                             other => panic!("unit dispatch: unexpected composite input {other:?}"),
@@ -3984,7 +3986,7 @@ impl Sink {
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Ok(dir) = std::env::var("WV_DUMP_ATLAS") {
-            let dump = |tex: &wgpu::Texture, name: &str| {
+            let dump = |tex: &wgpu::Texture, layer: u32, name: &str| {
                 let (w, h) = (tex.width(), tex.height());
                 let padded = (w * 4).div_ceil(256) * 256;
                 let buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -3995,7 +3997,12 @@ impl Sink {
                 });
                 let mut e = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
                 e.copy_texture_to_buffer(
-                    tex.as_image_copy(),
+                    wgpu::TexelCopyTextureInfo {
+                        texture: tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                        aspect: wgpu::TextureAspect::All,
+                    },
                     wgpu::TexelCopyBufferInfo {
                         buffer: &buf,
                         layout: wgpu::TexelCopyBufferLayout {
@@ -4022,19 +4029,14 @@ impl Sink {
                 let _ = std::fs::write(&path, &out);
                 eprintln!("WV_DUMP_ATLAS: wrote {path}");
             };
-            if let Some(t) = region_atlas_tex.as_ref() {
-                dump(t, "atlas");
-            }
-            if let Some(t) = region_back_tex.as_ref() {
-                dump(t, "back");
+            if let Some(t) = store_tex.as_ref() {
+                dump(t, 0, "store-l0");
+                dump(t, 1, "store-l1");
             }
         }
         self.frame_transient.push(acc_tex);
         self.frame_transient.push(snap_tex);
-        if let Some(t) = region_atlas_tex {
-            self.frame_transient.push(t);
-        }
-        if let Some(t) = region_back_tex {
+        if let Some(t) = store_tex {
             self.frame_transient.push(t);
         }
         backend.phase_region_atlas(None);

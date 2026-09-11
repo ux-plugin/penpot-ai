@@ -347,22 +347,6 @@ pub trait RasterBackend {
         unimplemented!("phased session is classic-only")
     }
 
-    /// Dispatch the region STORE window (`fine_area_loadu_store`): `base` is the packed staging
-    /// store read at the store mark's lease, `out` the region atlas — the atlas is never bound as
-    /// the route atlas in this window. Classic-only; default panics.
-    fn phased_fine_segment_loadu_store(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _enc: &mut wgpu::CommandEncoder,
-        _seg_lo: u32,
-        _seg_target: u32,
-        _base: &wgpu::TextureView,
-        _out: &wgpu::TextureView,
-    ) {
-        unimplemented!("phased session is classic-only")
-    }
-
     /// Dispatch a RASTERIZE window into the packed r32uint staging store (`fine_area_stg`):
     /// transparent init, stores land packed at their OUTPUT-record leases. Classic-only; default
     /// panics.

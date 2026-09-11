@@ -584,7 +584,7 @@ impl ClassicBackend {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: wgpu::TextureFormat::R32Uint,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
@@ -1121,23 +1121,6 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
             .expect("phased_fine_segment_rwu_into");
     }
 
-    fn phased_fine_segment_loadu_store(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        seg_lo: u32,
-        seg_target: u32,
-        base: &wgpu::TextureView,
-        out: &wgpu::TextureView,
-    ) {
-        let session = self.phased_session.as_mut().expect("phased_fine_segment_loadu_store without phased_begin");
-        self.renderer
-            .inner
-            .phased_fine_segment_loadu_store_into(session, device, queue, enc, seg_lo, seg_target, base, out)
-            .expect("phased_fine_segment_loadu_store_into");
-    }
-
     fn phased_fine_segment_stg(
         &mut self,
         device: &wgpu::Device,
@@ -1165,11 +1148,10 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         sdf: Option<&wgpu::TextureView>,
         out: &wgpu::TextureView,
     ) {
-        let region = self.region_view(device);
         let session = self.phased_session.as_mut().expect("phased_fine_segment_stg_load without phased_begin");
         self.renderer
             .inner
-            .phased_fine_segment_stg_load_into(session, device, queue, enc, seg_lo, seg_target, base, sdf, &region, out)
+            .phased_fine_segment_stg_load_into(session, device, queue, enc, seg_lo, seg_target, base, sdf, out)
             .expect("phased_fine_segment_stg_load_into");
     }
 
@@ -1184,11 +1166,10 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         base: &wgpu::TextureView,
         out: &wgpu::TextureView,
     ) {
-        let region = self.region_view(device);
         let session = self.phased_session.as_mut().expect("phased_fine_segment_stg_chain without phased_begin");
         self.renderer
             .inner
-            .phased_fine_segment_stg_chain_into(session, device, queue, enc, seg_lo, seg_target, is_draft, base, &region, out)
+            .phased_fine_segment_stg_chain_into(session, device, queue, enc, seg_lo, seg_target, is_draft, base, out)
             .expect("phased_fine_segment_stg_chain_into");
     }
 
