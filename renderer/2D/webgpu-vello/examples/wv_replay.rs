@@ -88,7 +88,17 @@ fn main() {
     let mut sink = Sink::new(&device, FORMAT);
     backend.sync_fonts();
     backend.upload_pending_images();
-    sink.render_whole_viewport(&mut backend, &device, &queue, &target, Affine::IDENTITY, w, h, true);
+    if std::env::var("WV_TILED").is_ok_and(|v| v == "1") {
+        let root = Affine::IDENTITY;
+        let full_view = render_core::vello::abi::effective_view(root);
+        let (dirty_all, dirty_rects) = render_core::vello::abi::take_dirty();
+        let dirty = sink.plan_frame(full_view, w, h, dirty_all, &dirty_rects);
+        let dirty_set: std::collections::HashSet<_> = dirty.iter().copied().collect();
+        let schedule = render_core::vello::abi::build_schedule(root, &dirty_set, dirty_all);
+        sink.execute(&schedule, &dirty, &mut backend, &device, &queue, &target, root, w, h);
+    } else {
+        sink.render_whole_viewport(&mut backend, &device, &queue, &target, Affine::IDENTITY, w, h, true);
+    }
     device
         .poll(wgpu::PollType::Wait { submission_index: None, timeout: None })
         .expect("poll");

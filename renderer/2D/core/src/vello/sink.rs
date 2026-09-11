@@ -1777,6 +1777,14 @@ impl Sink {
                     match (hosts[idx], leases[idx]) {
                         (Some(hp), Some(lp)) => {
                             regions.place(rid, [hp[0], hp[1] + band], lp);
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if std::env::var("WV_DBG_ALLOC").is_ok() {
+                                let r = &regions.regions[rid];
+                                eprintln!(
+                                    "WV_DBG_ALLOC region: rid={rid} src=({:.0},{:.0}) k={} grid={:?} lease={:?} nodes={:?}",
+                                    r.source[0], r.source[1], r.k, r.grid, r.lease, nodes_of_rid[&rid],
+                                );
+                            }
                         }
                         _ => {
                             for n in nodes_of_rid[&rid].clone() {
@@ -2927,7 +2935,23 @@ impl Sink {
                     };
                     let mr = m.rect.unwrap_or(reaches[j]);
                     let (mid, mt) = m.mark_shape.map_or((gid, root), |(sh, t)| (sh, t));
+                    let fenced = m.mark_shape.is_some();
+                    if fenced {
+                        scene.set_transform(Affine::IDENTITY);
+                        scene.push_clip_layer(
+                            &Rect::new(
+                                f64::from(mr[0]),
+                                f64::from(mr[1]),
+                                f64::from(mr[2]),
+                                f64::from(mr[3]),
+                            )
+                            .to_path(0.1),
+                        );
+                    }
                     backend.draw_effect_marker(&mut scene, mt, mid, eid, z, r, m.off, mr, m.ctl);
+                    if fenced {
+                        scene.pop_layer();
+                    }
                     marker_rects.push((r, mr));
                     if is_fence(m) {
                         emit_sil_draws(backend, &mut scene, m.node, mr);
@@ -2988,7 +3012,23 @@ impl Sink {
                             };
                             let mr = m.rect.unwrap_or(reaches[j]);
                             let (mid, mt) = m.mark_shape.map_or((gid, root), |(sh, t)| (sh, t));
+                            let fenced = m.mark_shape.is_some();
+                            if fenced {
+                                scene.set_transform(Affine::IDENTITY);
+                                scene.push_clip_layer(
+                                    &Rect::new(
+                                        f64::from(mr[0]),
+                                        f64::from(mr[1]),
+                                        f64::from(mr[2]),
+                                        f64::from(mr[3]),
+                                    )
+                                    .to_path(0.1),
+                                );
+                            }
                             backend.draw_effect_marker(&mut scene, mt, mid, eid, z, m.round, m.off, mr, m.ctl);
+                            if fenced {
+                                scene.pop_layer();
+                            }
                             marker_rects.push((m.round, mr));
                             if is_fence(m) {
                                 emit_sil_draws(backend, &mut scene, m.node, mr);
@@ -3035,7 +3075,23 @@ impl Sink {
                         };
                         let mr = m.rect.unwrap_or(reaches[j]);
                         let (mid, mt) = m.mark_shape.map_or((gid, root), |(sh, t)| (sh, t));
+                        let fenced = m.mark_shape.is_some();
+                        if fenced {
+                            scene.set_transform(Affine::IDENTITY);
+                            scene.push_clip_layer(
+                                &Rect::new(
+                                    f64::from(mr[0]),
+                                    f64::from(mr[1]),
+                                    f64::from(mr[2]),
+                                    f64::from(mr[3]),
+                                )
+                                .to_path(0.1),
+                            );
+                        }
                         backend.draw_effect_marker(&mut scene, mt, mid, eid, z, m.round, m.off, mr, m.ctl);
+                        if fenced {
+                            scene.pop_layer();
+                        }
                         marker_rects.push((m.round, mr));
                         if is_fence(m) {
                             emit_sil_draws(backend, &mut scene, m.node, mr);
@@ -3379,6 +3435,10 @@ impl Sink {
                 if eligible {
                     for &(round, rect) in &marker_rects {
                         if in_window(round) {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if std::env::var("WV_DBG_MARKRECT").is_ok_and(|v| v == lo.to_string()) {
+                                eprintln!("WV_DBG_MARKRECT: window={lo} round={round} rect={rect:?}");
+                            }
                             let tx0 = ((rect[0].max(0.0) as u32) / TILE_PX).min(wt.saturating_sub(1));
                             let ty0 = ((rect[1].max(0.0) as u32) / TILE_PX).min(ht.saturating_sub(1));
                             let tx1 = ((rect[2].max(0.0).ceil() as u32).div_ceil(TILE_PX)).clamp(tx0 + 1, wt);
@@ -3839,6 +3899,57 @@ impl Sink {
                         backend.phase_snap_copy(device, queue, &mut enc, &refresh, &acc, &snap);
                     }
                     backend.phased_fine_segment_rwu(device, queue, &mut enc, window_lo, hi, &snap, None, &acc_w);
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Ok(spec) = std::env::var("WV_DUMP_ATLAS_WIN") {
+                    let mut it = spec.rsplitn(3, ':');
+                    let whi: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                    let wlo: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                    let dir = it.next().unwrap_or(".").to_string();
+                    if window_lo >= wlo && window_lo <= whi {
+                        for (t, tag) in store_tex.iter().map(|t| (t, "l0")).chain(std::iter::once((&acc_tex, "acc"))) {
+                            Self::submit_batch(&mut enc, device, queue, backend);
+                            let (w, h) = (t.width(), t.height());
+                            let padded = (w * 4).div_ceil(256) * 256;
+                            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                                label: Some("wv win dump"),
+                                size: u64::from(padded) * u64::from(h),
+                                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                                mapped_at_creation: false,
+                            });
+                            let mut e = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                            e.copy_texture_to_buffer(
+                                wgpu::TexelCopyTextureInfo {
+                                    texture: t,
+                                    mip_level: 0,
+                                    origin: wgpu::Origin3d::ZERO,
+                                    aspect: wgpu::TextureAspect::All,
+                                },
+                                wgpu::TexelCopyBufferInfo {
+                                    buffer: &buf,
+                                    layout: wgpu::TexelCopyBufferLayout {
+                                        offset: 0,
+                                        bytes_per_row: Some(padded),
+                                        rows_per_image: Some(h),
+                                    },
+                                },
+                                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                            );
+                            queue.submit([e.finish()]);
+                            let slice = buf.slice(..);
+                            slice.map_async(wgpu::MapMode::Read, |_| {});
+                            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+                            let data = slice.get_mapped_range();
+                            let mut out = Vec::with_capacity((w * h * 4) as usize);
+                            for row in 0..h {
+                                let s = (row * padded) as usize;
+                                out.extend_from_slice(&data[s..s + (w * 4) as usize]);
+                            }
+                            let path = format!("{dir}/w{window_lo:03}-{tag}-{w}x{h}.raw");
+                            let _ = std::fs::write(&path, &out);
+                            eprintln!("WV_DUMP_ATLAS_WIN: wrote {path}");
+                        }
+                    }
                 }
                 window_lo = r;
             } else if !seeded {
