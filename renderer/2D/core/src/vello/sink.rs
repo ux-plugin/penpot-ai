@@ -2213,7 +2213,46 @@ impl Sink {
                         }));
                     }
                     (U::Rasterize(_), _) => {
-                        region_draws.insert(n, (rid, 0, below, true));
+                        let body_of = {
+                            let mut shape = None;
+                            let mut all_body = !dag.nodes[n].inputs.is_empty();
+                            for &j in &dag.nodes[n].inputs {
+                                let w = writer_of.get(&j).copied().unwrap_or(j);
+                                let of = piece_idx.get(&w).and_then(|&i| {
+                                    match wlk.pieces[i].producer {
+                                        crate::vello::walk::Producer::Chain { of }
+                                            if matches!(dag.nodes[of].op, U::Rasterize(_)) =>
+                                        {
+                                            match dag.nodes[of].source {
+                                                DagSource::Effect { shape, .. } => Some(shape),
+                                                crate::vello::frame_dag::Source::Body(shape) => {
+                                                    Some(shape)
+                                                }
+                                                _ => None,
+                                            }
+                                        }
+                                        _ => None,
+                                    }
+                                });
+                                match (of, shape) {
+                                    (Some(sh), None) => shape = Some(sh),
+                                    (Some(sh), Some(prev)) if sh == prev => {}
+                                    _ => {
+                                        all_body = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            shape.filter(|_| all_body).and_then(|sh| gi_of0.get(&sh)).copied()
+                        };
+                        match body_of {
+                            Some(bgi) => {
+                                region_draws.insert(n, (rid, bgi, bgi + 1, false));
+                            }
+                            None => {
+                                region_draws.insert(n, (rid, 0, below, true));
+                            }
+                        }
                         new_marks.push((gid, UnitMark {
                             node: n,
                             round: sched.round[n],
@@ -2427,6 +2466,10 @@ impl Sink {
                         continue;
                     }
                     #[cfg(not(target_arch = "wasm32"))]
+                    if std::env::var("WV_ABLATE_ROUTES").is_ok() {
+                        continue;
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
                     if std::env::var("WV_ABLATE_GLASS_ROUTES").is_ok()
                         && matches!(
                             dag.nodes[r.reader].op,
@@ -2629,8 +2672,8 @@ impl Sink {
                 let ms = &marks[&gid];
                 let mut elig: Vec<(usize, u8)> = ms
                     .iter()
+                    .filter(|m| m.lease_route.is_none())
                     .filter_map(|m| depth_of.get(&m.node).map(|&d| (m.node, d)))
-
                     .collect();
                 if elig.is_empty() {
                     continue;
@@ -2740,9 +2783,9 @@ impl Sink {
             for (gid, ms) in &marks {
                 for m in ms {
                     eprintln!(
-                        "WV_DBG_MARKS: gid={:04x} node={} op={:?} round={} ctl={} masked={} band={} bits={} u1=({}, {}) a={} route={:?} clamp={:?}",
+                        "WV_DBG_MARKS: gid={:04x} node={} op={:?} round={} ctl={} masked={} band={} bits={} u1=({}, {}) a={} rect={:?} after={:?} lr={:?} route={:?}",
                         (gid & 0xffff) as u16, m.node, dag.nodes[m.node].op, m.round, m.ctl, m.masked, m.band,
-                        m.desc[0], m.desc[6], m.desc[7], m.desc[17], m.rec[10], m.rec[11],
+                        m.desc[0], m.desc[6], m.desc[7], m.desc[17], m.rect, m.after, m.lease_route, m.rec[10],
                     );
                 }
             }
@@ -3089,6 +3132,14 @@ impl Sink {
                                 }
                             }
                             if let Some((t, origin, kq)) = m.lease_route {
+                                #[cfg(not(target_arch = "wasm32"))]
+                                if std::env::var("WV_DBG_PATCH").is_ok() {
+                                    eprintln!(
+                                        "WV_DBG_PATCH node={} t={t} rid={:?} origin={origin:?} kq={kq}",
+                                        m.node,
+                                        rid_of.get(&t),
+                                    );
+                                }
                                 if let Some(&trid) = rid_of.get(&t) {
                                     let tr = &regions.regions[trid];
                                     let z = (k_late(t) / kq) as f32;
@@ -4328,7 +4379,11 @@ impl Sink {
                     let wlo: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
                     let dir = it.next().unwrap_or(".").to_string();
                     if window_lo >= wlo && window_lo <= whi {
-                        for (t, tag) in store_tex.iter().map(|t| (t, "l0")).chain(std::iter::once((&acc_tex, "acc"))) {
+                        for (t, tag, layer) in store_tex
+                            .iter()
+                            .flat_map(|t| [(t, "l0", 0u32), (t, "l1", 1u32)])
+                            .chain(std::iter::once((&acc_tex, "acc", 0u32)))
+                        {
                             Self::submit_batch(&mut enc, device, queue, backend);
                             let (w, h) = (t.width(), t.height());
                             let padded = (w * 4).div_ceil(256) * 256;
@@ -4343,7 +4398,7 @@ impl Sink {
                                 wgpu::TexelCopyTextureInfo {
                                     texture: t,
                                     mip_level: 0,
-                                    origin: wgpu::Origin3d::ZERO,
+                                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer.min(t.depth_or_array_layers().saturating_sub(1)) },
                                     aspect: wgpu::TextureAspect::All,
                                 },
                                 wgpu::TexelCopyBufferInfo {
