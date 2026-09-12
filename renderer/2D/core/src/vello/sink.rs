@@ -1978,6 +1978,15 @@ impl Sink {
         let grid_h = regions.grid_height();
         let mut scene = backend.new_scene(width as u16, grid_h as u16);
         let mut region_draws: HashMap<usize, (usize, usize, usize, bool)> = HashMap::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("WV_DBG_DAG").is_ok() {
+            for (i, n) in dag.nodes.iter().enumerate() {
+                eprintln!(
+                    "WV_DBG_DAG node={i} op={:?} source={:?} inputs={:?} round={}",
+                    n.op, n.source, n.inputs, sched.round[i],
+                );
+            }
+        }
         if let Some(fin) = &fin {
             use crate::vello::bake::{blur_arm, stamp_field_anchor, Policy};
             use crate::vello::frame_dag::Source as DagSource;
