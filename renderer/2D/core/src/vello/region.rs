@@ -99,18 +99,28 @@ impl RegionTable {
     /// nothing ever draws into this region directly, so it rents no host rows;
     /// [`Self::atlas_height`] still accounts its lease rows.
     pub fn place_lease_only(&mut self, i: usize, lease: [u32; 2]) {
-        let (_, h) = self.regions[i].texel_size();
-        self.regions[i].lease = lease;
-        self.atlas_h = self.atlas_h.max(lease[1] + h);
+        self.set_lease(i, lease);
     }
 
     /// Land region `i`'s packed addresses: `host` is its grid origin (absolute, at or below
     /// [`Self::band_origin_y`]), `lease` its atlas origin.
     pub fn place(&mut self, i: usize, host: [u32; 2], lease: [u32; 2]) {
+        self.place_host(i, host);
+        self.set_lease(i, lease);
+    }
+
+    /// Land only region `i`'s grid host; its lease stays unresolved until [`Self::set_lease`] —
+    /// hosts are settled before mark emission, leases only once the executed round order exists.
+    pub fn place_host(&mut self, i: usize, host: [u32; 2]) {
         let (w, h) = self.regions[i].texel_size();
         self.regions[i].grid = [host[0], host[1], host[0] + w, host[1] + h];
-        self.regions[i].lease = lease;
         self.host_h = self.host_h.max(host[1] + h - self.band_origin_y());
+    }
+
+    /// Land region `i`'s atlas lease and account its rows.
+    pub fn set_lease(&mut self, i: usize, lease: [u32; 2]) {
+        let (_, h) = self.regions[i].texel_size();
+        self.regions[i].lease = lease;
         self.atlas_h = self.atlas_h.max(lease[1] + h);
     }
 

@@ -1188,7 +1188,23 @@ impl Sink {
             };
         }
         let frame_rect = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
-        let max_grid_h: u32 = (120_000 / width.div_ceil(16)).max(16).min(424) * 16;
+        let staging_budget = std::env::var("WV_STAGING_BUDGET_MB")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map_or(256 * 1024 * 1024, |mb| mb.saturating_mul(1024 * 1024).max(1));
+        let frame_band = height.div_ceil(16) * 16;
+        let width_tiles = u64::from(width.div_ceil(16)).max(1);
+        let row_bytes = u64::from(width).max(1) * 4 * 16;
+        let texture_rows = (u64::from(device.limits().max_texture_dimension_2d) / 16)
+            .saturating_sub(u64::from(frame_band / 16));
+        let ptcl_tile_bytes = 2048;
+        let ptcl_rows = (u64::from(device.limits().max_storage_buffer_binding_size)
+            / ptcl_tile_bytes
+            / width_tiles)
+            .saturating_sub(u64::from(frame_band / 16));
+        let headroom_rows = (staging_budget / row_bytes).min(texture_rows).min(ptcl_rows) as u32;
+        let max_grid_h: u32 = frame_band + headroom_rows * 16;
+        let staging_bytes = u64::from(headroom_rows) * row_bytes;
         let wlk = crate::vello::walk::walk(&mut dag, frame_rect);
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_WALK").is_ok() {
@@ -1249,10 +1265,7 @@ impl Sink {
                 ask_of.get(&shape).map(|&a| (*r, a))
             })
             .collect();
-        let shelf_budget = u64::from(max_grid_h.saturating_sub(height.div_ceil(16) * 16))
-            .saturating_mul(u64::from(width))
-            .saturating_mul(4)
-            .max(1);
+        let shelf_budget = staging_bytes.max(1);
         let fin = (!wlk.pieces.is_empty()).then(|| {
             crate::vello::finalize::finalize(
                 &mut dag,
@@ -1439,12 +1452,8 @@ impl Sink {
         }
         backend.set_frame_extent(width, acc_h);
         let dag = dag;
-        let scratch_budget = std::env::var("WV_SCRATCH_BUDGET_MB")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .map_or(256 * 1024 * 1024, |mb| mb.saturating_mul(1024 * 1024).max(1));
         let _tsched0 = crate::vello::prof::now();
-        let sched = dag.schedule(16.0, scratch_budget);
+        let sched = dag.schedule(16.0, staging_bytes.max(1));
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_SCHED").is_ok() {
             for (i, n) in dag.nodes.iter().enumerate() {
@@ -1478,6 +1487,12 @@ impl Sink {
             /// Scene draws spliced after this mark inside its window: `(lease region, z lo, z hi)`
             /// under the lease's region transform — the content between a compose window's arms.
             after: Option<(usize, usize, usize)>,
+            /// Lease-address fixup: the node whose region shift fills rec[8] (and the store rows)
+            /// once the lease shelf lands addresses — emission writes placeholders, never leases.
+            lease_shift: Option<usize>,
+            /// Lease-address fixup: `(target, origin, k_self)` for rec[10]/rec[11], applied with
+            /// the target's landed lease by the same pass.
+            lease_route: Option<(usize, [f32; 2], f64)>,
         }
         let mut marks: HashMap<u128, Vec<UnitMark>> = HashMap::new();
         let sil_fold = true;
@@ -1535,6 +1550,8 @@ impl Sink {
                                     rect: None,
                                     mark_shape: None,
                                     after: None,
+                                    lease_shift: None,
+                                    lease_route: None,
                                 });
                             }
                             continue;
@@ -1559,6 +1576,8 @@ impl Sink {
                                     rect: None,
                                     mark_shape: None,
                                 after: None,
+                                lease_shift: None,
+                                lease_route: None,
                             });
                         }
                         continue;
@@ -1593,6 +1612,8 @@ impl Sink {
                             rect: None,
                             mark_shape: None,
                             after: None,
+                            lease_shift: None,
+                            lease_route: None,
                         });
                         continue;
                     }
@@ -1642,6 +1663,8 @@ impl Sink {
                                     rect: None,
                                     mark_shape: None,
                                     after: None,
+                                    lease_shift: None,
+                                    lease_route: None,
                                 });
                             }
                         }
@@ -1730,7 +1753,7 @@ impl Sink {
                             rec[4][0] = 2.0;
                         }
                         crate::vello::bake::stamp_field_anchor(&desc, &mut rec);
-                        out.push(UnitMark { node: i, round: sched.round[i], desc, rec, ctl, masked, band, off: 0, rect: None, mark_shape: None, after: None });
+                        out.push(UnitMark { node: i, round: sched.round[i], desc, rec, ctl, masked, band, off: 0, rect: None, mark_shape: None, after: None , lease_shift: None, lease_route: None });
                     }
                     if let Some(er) = frags
                         .iter()
@@ -1774,34 +1797,10 @@ impl Sink {
         let dag = dag;
         if let Some(f) = &fin {
             if !rid_of.is_empty() {
-                use crate::vello::region::{interval_shelf, IntervalRect};
-                let gid_max: HashMap<u128, u32> = marks
-                    .iter()
-                    .map(|(&g, ms)| (g, ms.iter().map(|m| m.round).max().unwrap_or(0)))
-                    .collect();
+                use crate::vello::region::IntervalRect;
                 let mut nodes_of_rid: HashMap<usize, Vec<usize>> = HashMap::new();
                 for (&n, &rid) in &rid_of {
                     nodes_of_rid.entry(rid).or_default().push(n);
-                }
-                let mut death_of: HashMap<usize, u32> = HashMap::new();
-                for (i, nd) in dag.nodes.iter().enumerate() {
-                    for &j in &nd.inputs {
-                        if let Some(&rid) = rid_of.get(&j) {
-                            let e = death_of.entry(rid).or_insert(0);
-                            *e = (*e).max(sched.round[i]);
-                        }
-                    }
-                }
-                for r in &f.routes {
-                    let Some(&rid) = rid_of.get(&r.target) else { continue };
-                    let mut d = sched.round[r.reader];
-                    if let crate::vello::frame_dag::Source::Effect { shape, .. } =
-                        dag.nodes[r.reader].source
-                    {
-                        d = d.max(gid_max.get(&shape).copied().unwrap_or(0));
-                    }
-                    let e = death_of.entry(rid).or_insert(0);
-                    *e = (*e).max(d);
                 }
                 let ordered: Vec<usize> = {
                     let mut v: Vec<usize> = nodes_of_rid.keys().copied().collect();
@@ -1822,21 +1821,12 @@ impl Sink {
                         }
                     }
                 }
-                let mut block_birth: HashMap<usize, u32> = HashMap::new();
-                for (&crid, &brid) in &chunk_rids {
-                    let b = nodes_of_rid[&crid]
-                        .iter()
-                        .map(|&n| sched.round[n])
-                        .min()
-                        .unwrap_or(0);
-                    let e = block_birth.entry(brid).or_insert(u32::MAX);
-                    *e = (*e).min(b);
-                }
                 let mut host_items = Vec::new();
                 let mut host_ids = Vec::new();
-                let mut lease_items = Vec::new();
-                let mut lease_ids = Vec::new();
                 for &rid in &ordered {
+                    if block_rids.contains(&rid) {
+                        continue;
+                    }
                     let ns = &nodes_of_rid[&rid];
                     let (w, h) = regions.regions[rid].texel_size();
                     let birth = ns.iter().map(|&n| sched.round[n]).min().unwrap_or(0);
@@ -1849,16 +1839,8 @@ impl Sink {
                         .iter()
                         .position(|&(_, g, _)| g == gid)
                         .map_or(u128::MAX, |i| i as u128);
-                    if !block_rids.contains(&rid) {
-                        host_items.push(IntervalRect { w, h, birth, death: windows_end, group: seq });
-                        host_ids.push(rid);
-                    }
-                    if !chunk_rids.contains_key(&rid) {
-                        let death = death_of.get(&rid).copied().unwrap_or(0).max(windows_end);
-                        let birth = block_birth.get(&rid).copied().unwrap_or(birth).min(birth);
-                        lease_items.push(IntervalRect { w, h, birth, death, group: 0 });
-                        lease_ids.push(rid);
-                    }
+                    host_items.push(IntervalRect { w, h, birth, death: windows_end, group: seq });
+                    host_ids.push(rid);
                 }
                 let band = regions.band_origin_y();
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1883,134 +1865,56 @@ impl Sink {
                         u64::from(width) * u64::from(max_grid_h.saturating_sub(band)),
                     );
                 }
-                let hosts = crate::vello::region::interval_shelf_ext(&host_items, width, max_grid_h.saturating_sub(band), false);
-                let leases = interval_shelf(&lease_items, 8192, 8192);
+                let hosts = crate::vello::region::interval_shelf_ext(
+                    &host_items,
+                    width,
+                    max_grid_h.saturating_sub(band),
+                    false,
+                );
                 let host_of: HashMap<usize, Option<[u32; 2]>> =
                     host_ids.iter().copied().zip(hosts).collect();
-                let lease_of: HashMap<usize, Option<[u32; 2]>> =
-                    lease_ids.iter().copied().zip(leases).collect();
                 let mut chunks_of_block: HashMap<usize, Vec<usize>> = HashMap::new();
                 for (&crid, &brid) in &chunk_rids {
                     chunks_of_block.entry(brid).or_default().push(crid);
                 }
-                let mut placed_blocks: std::collections::HashSet<usize> =
-                    std::collections::HashSet::new();
-                for &rid in &ordered {
-                    if !block_rids.contains(&rid) {
-                        continue;
-                    }
-                    let whole = chunks_of_block.get(&rid).is_some_and(|cs| {
-                        cs.iter().all(|c| host_of.get(c).copied().flatten().is_some())
-                    });
-                    match lease_of.get(&rid).copied().flatten().filter(|_| whole) {
-                        Some(lp) => {
-                            regions.place_lease_only(rid, lp);
-                            placed_blocks.insert(rid);
-                            #[cfg(not(target_arch = "wasm32"))]
-                            if std::env::var("WV_DBG_ALLOC").is_ok() {
-                                let r = &regions.regions[rid];
-                                eprintln!(
-                                    "WV_DBG_ALLOC block: rid={rid} src=({:.0},{:.0}) k={} lease={:?} nodes={:?}",
-                                    r.source[0], r.source[1], r.k, r.lease, nodes_of_rid[&rid],
-                                );
-                            }
-                        }
-                        None => {
-                            #[cfg(not(target_arch = "wasm32"))]
-                            if std::env::var("WV_DBG_ALLOC").is_ok() {
-                                let (w, h) = regions.regions[rid].texel_size();
-                                eprintln!("WV_DBG_ALLOC drop(block-lease): rid={rid} {w}x{h} nodes={:?}", nodes_of_rid[&rid]);
-                            }
-                            for n in nodes_of_rid[&rid].clone() {
-                                rid_of.remove(&n);
-                            }
-                        }
-                    }
-                }
+                let mut dead: Vec<usize> = Vec::new();
                 for &rid in &ordered {
                     if block_rids.contains(&rid) {
+                        let whole = chunks_of_block.get(&rid).is_some_and(|cs| {
+                            cs.iter().all(|c| host_of.get(c).copied().flatten().is_some())
+                        });
+                        if !whole {
+                            dead.push(rid);
+                            dead.extend(chunks_of_block.get(&rid).into_iter().flatten().copied());
+                        }
                         continue;
                     }
-                    let hp = host_of.get(&rid).copied().flatten();
-                    let lp = match chunk_rids.get(&rid) {
-                        Some(&brid) if placed_blocks.contains(&brid) => {
-                            let (bs, bl, bk) = {
-                                let br = &regions.regions[brid];
-                                ([br.source[0], br.source[1]], br.lease, br.k)
-                            };
-                            let cs = regions.regions[rid].source;
-                            Some([
-                                bl[0] + ((cs[0] - bs[0]) * bk).round() as u32,
-                                bl[1] + ((cs[1] - bs[1]) * bk).round() as u32,
-                            ])
-                        }
-                        Some(_) => None,
-                        None => lease_of.get(&rid).copied().flatten(),
-                    };
-                    match (hp, lp) {
-                        (Some(hp), Some(lp)) => {
-                            regions.place(rid, [hp[0], hp[1] + band], lp);
-                            #[cfg(not(target_arch = "wasm32"))]
-                            if std::env::var("WV_DBG_ALLOC").is_ok() {
-                                let r = &regions.regions[rid];
-                                eprintln!(
-                                    "WV_DBG_ALLOC region: rid={rid} src=({:.0},{:.0}) k={} grid={:?} lease={:?} nodes={:?}",
-                                    r.source[0], r.source[1], r.k, r.grid, r.lease, nodes_of_rid[&rid],
+                    match host_of.get(&rid).copied().flatten() {
+                        Some(hp) => regions.place_host(rid, [hp[0], hp[1] + band]),
+                        None => {
+                            dead.push(rid);
+                            if let Some(&brid) = chunk_rids.get(&rid) {
+                                dead.push(brid);
+                                dead.extend(
+                                    chunks_of_block.get(&brid).into_iter().flatten().copied(),
                                 );
-                            }
-                        }
-                        _ => {
-                            #[cfg(not(target_arch = "wasm32"))]
-                            if std::env::var("WV_DBG_ALLOC").is_ok() {
-                                let (w, h) = regions.regions[rid].texel_size();
-                                let rounds: Vec<u32> = nodes_of_rid[&rid].iter().map(|&n| sched.round[n]).collect();
-                                eprintln!(
-                                    "WV_DBG_ALLOC drop(place): rid={rid} {w}x{h} rounds={rounds:?} host={hp:?} lease={lp:?} chunk={} nodes={:?}",
-                                    chunk_rids.contains_key(&rid), nodes_of_rid[&rid],
-                                );
-                            }
-                            for n in nodes_of_rid[&rid].clone() {
-                                rid_of.remove(&n);
                             }
                         }
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
-                if std::env::var("WV_DBG_LEASECHECK").is_ok() {
-                    let live: std::collections::HashSet<usize> = rid_of.values().copied().collect();
-                    let mut spans: Vec<(usize, [u32; 2], u32, u32, u32, u32)> = Vec::new();
-                    for (li, &rid) in lease_ids.iter().enumerate() {
-                        if !live.contains(&rid) {
-                            continue;
-                        }
-                        let it = lease_items[li];
-                        spans.push((rid, regions.regions[rid].lease, it.w, it.h, it.birth, it.death));
+                dead.sort_unstable();
+                dead.dedup();
+                for rid in dead {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if std::env::var("WV_DBG_ALLOC").is_ok() {
+                        let (w, h) = regions.regions[rid].texel_size();
+                        eprintln!(
+                            "WV_DBG_ALLOC drop(host): rid={rid} {w}x{h} nodes={:?}",
+                            nodes_of_rid[&rid],
+                        );
                     }
-                    for (&crid, &brid) in &chunk_rids {
-                        if !live.contains(&crid) || !placed_blocks.contains(&brid) {
-                            continue;
-                        }
-                        let (w, h) = regions.regions[crid].texel_size();
-                        let birth = nodes_of_rid[&crid].iter().map(|&n| sched.round[n]).min().unwrap_or(0);
-                        let death = death_of.get(&brid).copied().unwrap_or(birth);
-                        spans.push((crid, regions.regions[crid].lease, w, h, birth, death));
-                    }
-                    for (ai, a) in spans.iter().enumerate() {
-                        for b in &spans[ai + 1..] {
-                            let ox = a.1[0] < b.1[0] + b.2 && b.1[0] < a.1[0] + a.2;
-                            let oy = a.1[1] < b.1[1] + b.3 && b.1[1] < a.1[1] + a.3;
-                            let ot = a.4 <= b.5 && b.4 <= a.5;
-                            let sibling = chunk_rids.contains_key(&a.0)
-                                && chunk_rids.get(&a.0) == chunk_rids.get(&b.0);
-                            let parent = chunk_rids.get(&a.0) == Some(&b.0)
-                                || chunk_rids.get(&b.0) == Some(&a.0);
-                            if ox && oy && ot && !sibling && !parent {
-                                eprintln!(
-                                    "WV_DBG_LEASECHECK overlap: rid={} lease={:?} {}x{} r[{}..{}] vs rid={} lease={:?} {}x{} r[{}..{}]",
-                                    a.0, a.1, a.2, a.3, a.4, a.5, b.0, b.1, b.2, b.3, b.4, b.5,
-                                );
-                            }
-                        }
+                    for n in nodes_of_rid[&rid].clone() {
+                        rid_of.remove(&n);
                     }
                 }
             }
@@ -2030,10 +1934,7 @@ impl Sink {
             let writer_of: HashMap<usize, usize> =
                 store_of.iter().map(|(&w, &s)| (s, w)).collect();
             let grid_of = |n: usize| regions.regions[rid_of[&n]].grid;
-            let shift_of = |n: usize| {
-                let r = &regions.regions[rid_of[&n]];
-                (r.grid[0] as f32 - r.lease[0] as f32, r.grid[1] as f32 - r.lease[1] as f32)
-            };
+
             let dev_of = |n: usize| dag.nodes[n].reach.unwrap_or(frame_rect);
             let regrid_anchor = |rid: usize, rec: &mut [[f32; 4]; 12]| {
                 let a = regions.device_to_grid(rid);
@@ -2044,27 +1945,6 @@ impl Sink {
             let k_of = |n: usize| {
                 let n = writer_of.get(&n).copied().unwrap_or(n);
                 fin.k.get(&n).copied().unwrap_or(1.0)
-            };
-            let route_rec = |target: usize,
-                             origin: [f32; 2],
-                             k_self: f64,
-                             rec: &mut [[f32; 4]; 12]| {
-                let t = &regions.regions[rid_of[&target]];
-                let z = (k_of(target) / k_self) as f32;
-                let lo = [t.lease[0] as f32, t.lease[1] as f32];
-                rec[10] = [
-                    crate::vello::bake::SRC_REGION,
-                    lo[0] - origin[0] * z,
-                    lo[1] - origin[1] * z,
-                    z,
-                ];
-                let (tw, th) = t.texel_size();
-                rec[11] = [
-                    lo[0],
-                    lo[1],
-                    lo[0] + tw as f32 - 1.0,
-                    lo[1] + th as f32 - 1.0,
-                ];
             };
             let rect_in_grid = |n: usize, j: usize| -> [f32; 4] {
                 let gn = grid_of(n);
@@ -2108,20 +1988,19 @@ impl Sink {
                 let grect = [g[0] as f32, g[1] as f32, g[2] as f32, g[3] as f32];
                 let below = gi_of0.get(&gid).copied().unwrap_or(0);
                 let mut rec = [[0.0f32; 4]; 12];
-                let sh = shift_of(n);
-                rec[8] = [1.0, sh.0, sh.1, 0.0];
+                rec[8] = [1.0, 0.0, 0.0, 0.0];
                 let producer = piece_idx.get(&n).map(|&i| wlk.pieces[i].producer);
                 match (dag.nodes[n].op.clone(), producer) {
                     (U::Copy, _) => {
                         let mut desc = [0.0f32; 26];
                         desc[0] = crate::vello::bake::bits::RAW as f32;
-                        if matches!(dag.nodes[n].target, crate::vello::plan::Target::Store) {
-                            rec[0] = [2.0, sh.0, sh.1, 0.0];
-                            rec[8][2] = sh.1 - 8192.0;
-                        } else if let Some(&j) = dag.nodes[n].inputs.first() {
-                            if rid_of.contains_key(&j) {
-                                let r = rect_in_grid(n, j);
-                                route_rec(j, [r[0], r[1]], k_of(n), &mut rec);
+                        let mut route_fix = None;
+                        if !matches!(dag.nodes[n].target, crate::vello::plan::Target::Store) {
+                            if let Some(&j) = dag.nodes[n].inputs.first() {
+                                if rid_of.contains_key(&j) {
+                                    let r = rect_in_grid(n, j);
+                                    route_fix = Some((j, [r[0], r[1]], k_of(n)));
+                                }
                             }
                         }
                         new_marks.push((gid, UnitMark {
@@ -2136,6 +2015,8 @@ impl Sink {
                             rect: Some(grect),
                             mark_shape: None,
                             after: None,
+                            lease_shift: Some(n),
+                            lease_route: route_fix,
                         }));
                     }
                     (U::Rasterize(_), Some(crate::vello::walk::Producer::Step { writer })) => {
@@ -2157,6 +2038,8 @@ impl Sink {
                             rect: Some(grect),
                             mark_shape: None,
                             after: None,
+                            lease_shift: Some(n),
+                            lease_route: None,
                         }));
                         let v = dag.nodes[writer]
                             .inputs
@@ -2203,11 +2086,11 @@ impl Sink {
                         let kn = k_of(n);
                         let vs = vs * kn as f32;
                         let mut vrec = [[0.0f32; 4]; 12];
-                        vrec[8] = [1.0, sh.0, sh.1, 0.0];
-                        if let Some(x) = x_target {
+                        vrec[8] = [1.0, 0.0, 0.0, 0.0];
+                        let route_fix = x_target.map(|x| {
                             let r = rect_in_grid(n, x);
-                            route_rec(x, [r[0], r[1]], kn, &mut vrec);
-                        }
+                            (x, [r[0], r[1]], kn)
+                        });
                         let desc = blur_arm(
                             vs,
                             vl,
@@ -2235,6 +2118,8 @@ impl Sink {
                                 .is_none()
                                 .then(|| (wshape, regions.device_to_grid(rid) * root)),
                             after: Some((rid, w_gi, below)),
+                            lease_shift: Some(n),
+                            lease_route: route_fix.map(|(x, o, kk)| (x, o, f64::from(kk))),
                         }));
                     }
                     (U::Rasterize(_), _) => {
@@ -2251,6 +2136,8 @@ impl Sink {
                             rect: Some(grect),
                             mark_shape: None,
                             after: None,
+                            lease_shift: Some(n),
+                            lease_route: None,
                         }));
                         if piece_idx.contains_key(&n) {
                             continue;
@@ -2292,9 +2179,9 @@ impl Sink {
                             desc[8] = irect[2];
                             desc[9] = irect[3];
                             let mut crec = [[0.0f32; 4]; 12];
-                            crec[8] = [1.0, sh.0, sh.1, 0.0];
+                            crec[8] = [1.0, 0.0, 0.0, 0.0];
                             let r = rect_in_grid(n, j);
-                            route_rec(j, [r[0], r[1]], kn, &mut crec);
+                            let route_fix = Some((j, [r[0], r[1]], kn));
                             new_marks.push((gid, UnitMark {
                                 node: n,
                                 round: sched.round[n],
@@ -2307,6 +2194,8 @@ impl Sink {
                                 rect: Some(irect),
                                 mark_shape: None,
                                 after: None,
+                                lease_shift: Some(n),
+                                lease_route: route_fix,
                             }));
                         }
                     }
@@ -2316,10 +2205,11 @@ impl Sink {
                         }
                         let kn = k_of(n);
                         let sigma = sigma * kn as f32;
+                        let mut route_fix = None;
                         if let Some(&j) = dag.nodes[n].inputs.first() {
                             if rid_of.contains_key(&j) {
                                 let r = rect_in_grid(n, j);
-                                route_rec(j, [r[0], r[1]], kn, &mut rec);
+                                route_fix = Some((j, [r[0], r[1]], kn));
                             }
                         }
                         let desc = blur_arm(
@@ -2354,6 +2244,8 @@ impl Sink {
                             rect: Some(grect),
                             mark_shape: None,
                             after: None,
+                            lease_shift: Some(n),
+                            lease_route: route_fix,
                         }));
                     }
                     (
@@ -2361,10 +2253,11 @@ impl Sink {
                         | U::EraseBy(_) | U::ClipToSource(_)),
                         _,
                     ) => {
+                        let mut route_fix = None;
                         if let Some(&j) = dag.nodes[n].inputs.first() {
                             if rid_of.contains_key(&j) {
                                 let r = rect_in_grid(n, j);
-                                route_rec(j, [r[0], r[1]], k_of(n), &mut rec);
+                                route_fix = Some((j, [r[0], r[1]], k_of(n)));
                             }
                         }
                         let desc = crate::vello::bake::arm_descriptor(
@@ -2386,6 +2279,8 @@ impl Sink {
                             rect: Some(grect),
                             mark_shape: None,
                             after: None,
+                            lease_shift: Some(n),
+                            lease_route: route_fix,
                         }));
                     }
                     (_, _) => {}
@@ -2452,12 +2347,8 @@ impl Sink {
                         continue;
                     }
                     let t = &regions.regions[trid];
-                    route_rec(
-                        r.target,
-                        [t.source[0] as f32, t.source[1] as f32],
-                        1.0,
-                        &mut m.rec,
-                    );
+                    m.lease_route =
+                        Some((r.target, [t.source[0] as f32, t.source[1] as f32], 1.0));
                     #[cfg(not(target_arch = "wasm32"))]
                     if std::env::var("WV_DBG_ROUTESTAMP").is_ok() {
                         eprintln!(
@@ -2519,6 +2410,8 @@ impl Sink {
                     rect: None,
                     mark_shape: None,
                     after: None,
+                    lease_shift: None,
+                    lease_route: None,
                 });
             }
         }
@@ -2626,10 +2519,10 @@ impl Sink {
             let hoist_budget = std::env::var("WV_SIL_HOIST_MB")
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
-                .map_or(scratch_budget, |mb| mb.saturating_mul(1024 * 1024).max(1));
+                .map_or(staging_budget, |mb| mb.saturating_mul(1024 * 1024).max(1));
             #[cfg(target_arch = "wasm32")]
-            let hoist_budget = scratch_budget;
-            let cap_px = (hoist_budget / 4).min(scratch_budget / 4).min(8192 * 8192 / 2);
+            let hoist_budget = staging_budget;
+            let cap_px = (hoist_budget / 4).min(staging_budget / 4).min(8192 * 8192 / 2);
             let area_of = |gid: u128| -> u64 {
                 let r = reach_by_gid[&gid];
                 let x0 = (r[0].max(0.0) as u32 / TILE_PX) * TILE_PX;
@@ -2898,17 +2791,13 @@ impl Sink {
             }
             let mut origin: HashMap<usize, (f32, f32)> = HashMap::new();
             let mut lease_rect_s: HashMap<usize, [f32; 4]> = HashMap::new();
-            if !lives.is_empty() {
+            if !lives.is_empty() || !rid_of.is_empty() {
                 use crate::vello::region::{interval_shelf, IntervalRect};
-                let base_h = {
-                    let h = regions.atlas_height();
-                    if h > 0 { h + TILE_PX } else { 0 }
-                };
                 let class = |x: u32| {
                     let padded = x + TILE_PX;
                     if padded <= 512 { padded.next_power_of_two() } else { padded.next_multiple_of(256) }
                 };
-                let items: Vec<IntervalRect> = lives
+                let mut items: Vec<IntervalRect> = lives
                     .iter()
                     .map(|l| IntervalRect {
                         w: class(l.w).min(8192).max(l.w),
@@ -2918,8 +2807,74 @@ impl Sink {
                         group: 0,
                     })
                     .collect();
-                let placed = interval_shelf(&items, 8192, 8192u32.saturating_sub(base_h));
-                for (k, pos) in placed.iter().enumerate() {
+                let draft_n = items.len();
+                let mut lease_rids: Vec<usize> = Vec::new();
+                let mut chunk_of: HashMap<usize, usize> = HashMap::new();
+                let mut block_set: std::collections::HashSet<usize> = std::collections::HashSet::new();
+                if let Some(f) = &fin {
+                    for (b, cs) in &f.blocks {
+                        let Some(&br) = rid_of.get(b) else { continue };
+                        block_set.insert(br);
+                        for c in cs {
+                            if let Some(&cr) = rid_of.get(c) {
+                                chunk_of.insert(cr, br);
+                            }
+                        }
+                    }
+                    let mut lo_of: HashMap<usize, u32> = HashMap::new();
+                    let mut hi_of: HashMap<usize, u32> = HashMap::new();
+                    for ms in marks.values() {
+                        for m in ms {
+                            if let Some(nn) = m.lease_shift {
+                                if let Some(&rid) = rid_of.get(&nn) {
+                                    let e = lo_of.entry(rid).or_insert(u32::MAX);
+                                    *e = (*e).min(m.round);
+                                    let e = hi_of.entry(rid).or_insert(0);
+                                    *e = (*e).max(m.round);
+                                }
+                            }
+                            if let Some((t, _, _)) = m.lease_route {
+                                if let Some(&rid) = rid_of.get(&t) {
+                                    let e = hi_of.entry(rid).or_insert(0);
+                                    *e = (*e).max(m.round);
+                                }
+                            }
+                            if let Some((arid, _, _)) = m.after {
+                                let e = hi_of.entry(arid).or_insert(0);
+                                *e = (*e).max(m.round);
+                            }
+                        }
+                    }
+                    let mut rids: Vec<usize> = {
+                        let set: std::collections::HashSet<usize> =
+                            rid_of.values().copied().collect();
+                        set.into_iter().collect()
+                    };
+                    rids.sort_unstable();
+                    for &rid in &rids {
+                        if chunk_of.contains_key(&rid) {
+                            continue;
+                        }
+                        let (w, h) = regions.regions[rid].texel_size();
+                        let mut birth = lo_of.get(&rid).copied().unwrap_or(u32::MAX);
+                        let mut death = hi_of.get(&rid).copied().unwrap_or(0);
+                        if block_set.contains(&rid) {
+                            for (&crid, &brid) in &chunk_of {
+                                if brid == rid {
+                                    birth = birth.min(lo_of.get(&crid).copied().unwrap_or(u32::MAX));
+                                    death = death.max(hi_of.get(&crid).copied().unwrap_or(0));
+                                }
+                            }
+                        }
+                        if birth == u32::MAX {
+                            continue;
+                        }
+                        items.push(IntervalRect { w, h, birth, death: death.max(birth), group: 0 });
+                        lease_rids.push(rid);
+                    }
+                }
+                let placed = interval_shelf(&items, 8192, 8192);
+                for (k, pos) in placed.iter().take(draft_n).enumerate() {
                     let Some([lx, ly]) = *pos else {
                         #[cfg(not(target_arch = "wasm32"))]
                         if std::env::var("WV_DBG_ALLOC").is_ok() {
@@ -2931,7 +2886,7 @@ impl Sink {
                         continue;
                     };
                     let (node, dx0, dy0) = jobs[k];
-                    let ay = base_h + ly;
+                    let ay = ly;
                     #[cfg(not(target_arch = "wasm32"))]
                     if std::env::var("WV_DBG_ALLOC").is_ok() {
                         eprintln!(
@@ -2950,6 +2905,120 @@ impl Sink {
                     ]);
                     draft_placed.insert(node);
                     draft_atlas_h = draft_atlas_h.max(ay + items[k].h);
+                }
+                let mut dead_rids: Vec<usize> = Vec::new();
+                for (i, &rid) in lease_rids.iter().enumerate() {
+                    match placed[draft_n + i] {
+                        Some(lp) => {
+                            if block_set.contains(&rid) {
+                                regions.place_lease_only(rid, lp);
+                            } else {
+                                regions.set_lease(rid, lp);
+                            }
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if std::env::var("WV_DBG_ALLOC").is_ok() {
+                                let r = &regions.regions[rid];
+                                eprintln!(
+                                    "WV_DBG_ALLOC lease: rid={rid} src=({:.0},{:.0}) k={} grid={:?} lease={:?} block={} rounds=[{},{}]",
+                                    r.source[0], r.source[1], r.k, r.grid, r.lease,
+                                    block_set.contains(&rid),
+                                    items[draft_n + i].birth, items[draft_n + i].death,
+                                );
+                            }
+                        }
+                        None => dead_rids.push(rid),
+                    }
+                }
+                {
+                    let live: std::collections::HashSet<usize> = rid_of.values().copied().collect();
+                    for rid in live {
+                        if !chunk_of.contains_key(&rid)
+                            && !lease_rids.contains(&rid)
+                            && !dead_rids.contains(&rid)
+                        {
+                            dead_rids.push(rid);
+                        }
+                    }
+                }
+                for (&crid, &brid) in &chunk_of {
+                    if dead_rids.contains(&brid) {
+                        dead_rids.push(crid);
+                        continue;
+                    }
+                    let (bs, bl, bk) = {
+                        let br = &regions.regions[brid];
+                        ([br.source[0], br.source[1]], br.lease, br.k)
+                    };
+                    let cs = regions.regions[crid].source;
+                    regions.set_lease(crid, [
+                        bl[0] + ((cs[0] - bs[0]) * bk).round() as u32,
+                        bl[1] + ((cs[1] - bs[1]) * bk).round() as u32,
+                    ]);
+                }
+                if !dead_rids.is_empty() {
+                    let dead_nodes: std::collections::HashSet<usize> = rid_of
+                        .iter()
+                        .filter(|&(_, r)| dead_rids.contains(r))
+                        .map(|(&n, _)| n)
+                        .collect();
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if std::env::var("WV_DBG_ALLOC").is_ok() {
+                        eprintln!("WV_DBG_ALLOC drop(lease): rids={dead_rids:?} nodes={dead_nodes:?}");
+                    }
+                    for n in &dead_nodes {
+                        rid_of.remove(n);
+                        region_draws.remove(n);
+                    }
+                    for ms in marks.values_mut() {
+                        ms.retain(|m| !dead_nodes.contains(&m.node));
+                    }
+                }
+                {
+                    let writer_back: HashMap<usize, usize> =
+                        store_of.iter().map(|(&w, &sn)| (sn, w)).collect();
+                    let k_late = |n: usize| -> f64 {
+                        let n = writer_back.get(&n).copied().unwrap_or(n);
+                        fin.as_ref().and_then(|f| f.k.get(&n)).copied().unwrap_or(1.0)
+                    };
+                    for ms in marks.values_mut() {
+                        for m in ms.iter_mut() {
+                            if let Some(nn) = m.lease_shift {
+                                if let Some(&rid) = rid_of.get(&nn) {
+                                    let rg = &regions.regions[rid];
+                                    let sh = (
+                                        rg.grid[0] as f32 - rg.lease[0] as f32,
+                                        rg.grid[1] as f32 - rg.lease[1] as f32,
+                                    );
+                                    m.rec[8][1] = sh.0;
+                                    m.rec[8][2] = sh.1;
+                                    if matches!(dag.nodes[nn].target, crate::vello::plan::Target::Store) {
+                                        m.rec[0] = [2.0, sh.0, sh.1, 0.0];
+                                        m.rec[8][2] = sh.1 - 8192.0;
+                                    }
+                                }
+                            }
+                            if let Some((t, origin, kq)) = m.lease_route {
+                                if let Some(&trid) = rid_of.get(&t) {
+                                    let tr = &regions.regions[trid];
+                                    let z = (k_late(t) / kq) as f32;
+                                    let lo = [tr.lease[0] as f32, tr.lease[1] as f32];
+                                    m.rec[10] = [
+                                        crate::vello::bake::SRC_REGION,
+                                        lo[0] - origin[0] * z,
+                                        lo[1] - origin[1] * z,
+                                        z,
+                                    ];
+                                    let (tw, th) = tr.texel_size();
+                                    m.rec[11] = [
+                                        lo[0],
+                                        lo[1],
+                                        lo[0] + tw as f32 - 1.0,
+                                        lo[1] + th as f32 - 1.0,
+                                    ];
+                                }
+                            }
+                        }
+                    }
                 }
                 let reads_of = |r: usize| -> Vec<usize> {
                     let mut out = Vec::new();
@@ -3022,10 +3091,10 @@ impl Sink {
                     }
                 }
                 draft_atlas_h = 0;
-                for (k, pos) in placed.iter().enumerate() {
+                for (k, pos) in placed.iter().take(draft_n).enumerate() {
                     if let Some([_, ly]) = *pos {
                         if draft_placed.contains(&jobs[k].0) {
-                            draft_atlas_h = draft_atlas_h.max(base_h + ly + items[k].h);
+                            draft_atlas_h = draft_atlas_h.max(ly + items[k].h);
                         }
                     }
                 }
