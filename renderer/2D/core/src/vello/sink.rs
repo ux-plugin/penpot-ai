@@ -1977,13 +1977,22 @@ impl Sink {
         }
         let grid_h = regions.grid_height();
         let mut scene = backend.new_scene(width as u16, grid_h as u16);
-        let mut region_draws: HashMap<usize, (usize, usize, usize, bool)> = HashMap::new();
+        /// What a region window redraws to fill its lease. Derived once, from the value the
+        /// window reproduces — never re-derived at draw time.
+        #[derive(Clone, Copy, Debug)]
+        enum RegionDraw {
+            /// Scene roots `lo..hi`, preceded by a background fill when `seed`.
+            Roots { lo: usize, hi: usize, seed: bool },
+            /// The shadow silhouette of `shape`'s effect-stack entry `slot`.
+            Silhouette { shape: u128, slot: usize },
+        }
+        let mut region_draws: HashMap<usize, (usize, RegionDraw)> = HashMap::new();
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_DAG").is_ok() {
             for (i, n) in dag.nodes.iter().enumerate() {
                 eprintln!(
-                    "WV_DBG_DAG node={i} op={:?} source={:?} inputs={:?} round={}",
-                    n.op, n.source, n.inputs, sched.round[i],
+                    "WV_DBG_DAG node={i} op={:?} target={:?} source={:?} inputs={:?} round={}",
+                    n.op, n.target, n.source, n.inputs, sched.round[i],
                 );
             }
         }
@@ -2096,7 +2105,7 @@ impl Sink {
                             continue;
                         };
                         let w_gi = gi_of0.get(&wshape).copied().unwrap_or(0);
-                        region_draws.insert(n, (rid, 0, w_gi, true));
+                        region_draws.insert(n, (rid, RegionDraw::Roots { lo: 0, hi: w_gi, seed: true }));
                         new_marks.push((gid, UnitMark {
                             node: n,
                             round: sched.round[n],
@@ -2193,75 +2202,49 @@ impl Sink {
                             lease_route: route_fix.map(|(x, o, kk)| (x, o, f64::from(kk))),
                         }));
                     }
-                    (U::Rasterize(_), Some(crate::vello::walk::Producer::Chain { of }))
-                        if matches!(dag.nodes[of].op, U::Rasterize(_)) =>
-                    {
-                        let shape = match dag.nodes[of].source {
-                            DagSource::Effect { shape, .. } => Some(shape),
-                            crate::vello::frame_dag::Source::Body(shape) => Some(shape),
-                            _ => None,
-                        };
-                        let bgi = shape.and_then(|sh| gi_of0.get(&sh)).copied();
-                        if let Some(bgi) = bgi {
-                            region_draws.insert(n, (rid, bgi, bgi + 1, false));
-                        }
-                        new_marks.push((gid, UnitMark {
-                            node: n,
-                            round: sched.round[n],
-                            desc: [0.0f32; 26],
-                            rec,
-                            ctl: 0,
-                            masked: false,
-                            band: false,
-                            off: 0,
-                            rect: Some(grect),
-                            mark_shape: None,
-                            after: None,
-                            lease_shift: Some(n),
-                            lease_route: None,
-                        }));
-                    }
                     (U::Rasterize(_), _) => {
-                        let body_of = {
-                            let mut shape = None;
-                            let mut all_body = !dag.nodes[n].inputs.is_empty();
+                        let of_piece = |w: usize| {
+                            piece_idx.get(&w).and_then(|&i| match wlk.pieces[i].producer {
+                                crate::vello::walk::Producer::Chain { of } => Some(of),
+                                _ => None,
+                            })
+                        };
+                        let origin = of_piece(n).or_else(|| {
+                            let mut o = None;
+                            if dag.nodes[n].inputs.is_empty() {
+                                return None;
+                            }
                             for &j in &dag.nodes[n].inputs {
                                 let w = writer_of.get(&j).copied().unwrap_or(j);
-                                let of = piece_idx.get(&w).and_then(|&i| {
-                                    match wlk.pieces[i].producer {
-                                        crate::vello::walk::Producer::Chain { of }
-                                            if matches!(dag.nodes[of].op, U::Rasterize(_)) =>
-                                        {
-                                            match dag.nodes[of].source {
-                                                DagSource::Effect { shape, .. } => Some(shape),
-                                                crate::vello::frame_dag::Source::Body(shape) => {
-                                                    Some(shape)
-                                                }
-                                                _ => None,
-                                            }
-                                        }
-                                        _ => None,
-                                    }
-                                });
-                                match (of, shape) {
-                                    (Some(sh), None) => shape = Some(sh),
-                                    (Some(sh), Some(prev)) if sh == prev => {}
-                                    _ => {
-                                        all_body = false;
-                                        break;
-                                    }
+                                match (of_piece(w), o) {
+                                    (Some(x), None) => o = Some(x),
+                                    (Some(x), Some(p)) if x == p => {}
+                                    _ => return None,
                                 }
                             }
-                            shape.filter(|_| all_body).and_then(|sh| gi_of0.get(&sh)).copied()
-                        };
-                        match body_of {
-                            Some(bgi) => {
-                                region_draws.insert(n, (rid, bgi, bgi + 1, false));
+                            o
+                        });
+                        let recipe = origin.and_then(|o| {
+                            match (&dag.nodes[o].op, &dag.nodes[o].source) {
+                                (
+                                    U::Rasterize(crate::vello::units::RasterSource::Coverage {
+                                        ..
+                                    }),
+                                    DagSource::Effect { shape, slot },
+                                ) => Some(RegionDraw::Silhouette { shape: *shape, slot: *slot }),
+                                (
+                                    U::Rasterize(_),
+                                    DagSource::Effect { shape, .. } | DagSource::Body(shape),
+                                ) => gi_of0
+                                    .get(shape)
+                                    .map(|&g| RegionDraw::Roots { lo: g, hi: g + 1, seed: false }),
+                                _ => None,
                             }
-                            None => {
-                                region_draws.insert(n, (rid, 0, below, true));
-                            }
-                        }
+                        });
+                        region_draws.insert(
+                            n,
+                            (rid, recipe.unwrap_or(RegionDraw::Roots { lo: 0, hi: below, seed: true })),
+                        );
                         new_marks.push((gid, UnitMark {
                             node: n,
                             round: sched.round[n],
@@ -3322,6 +3305,26 @@ impl Sink {
                     backend.draw_scene_range(scene, t, lo, hi);
                 }
             };
+        let sil_class = |shape: u128, slot: usize| -> (usize, bool) {
+            let inset = dag.nodes.iter().any(|m| {
+                matches!(m.op, crate::vello::units::UnitOp::EraseBy(_))
+                    && matches!(m.source, crate::vello::frame_dag::Source::Effect { shape: s2, slot: sl2 } if s2 == shape && sl2 == slot)
+            });
+            let class_idx = crate::vello::abi::with_scene(|live, _, _| {
+                live.get(shape).map(|n| {
+                    crate::effect::effect_stack(n)
+                        .iter()
+                        .take(slot)
+                        .filter(|e| {
+                            matches!(e.source, crate::effect::Source::Coverage { .. })
+                                && (e.compose == crate::effect::Compose::Over) == inset
+                        })
+                        .count()
+                })
+            })
+            .unwrap_or(slot);
+            (class_idx, inset)
+        };
         let emit_sil_draws = |backend: &mut B, scene: &mut B::Scene, s: usize, clip: [f32; 4]| {
             let _ts = crate::vello::prof::now();
             use crate::vello::frame_dag::Source as DagSource;
@@ -3340,17 +3343,27 @@ impl Sink {
                 if std::env::var("WV_DBG_SIL").is_ok() {
                     eprintln!("WV_DBG_SIL: region ground s={s} draws={:?}", region_draws.get(&s));
                 }
-                if let Some(&(txri, lo, hi, seed)) = region_draws.get(&s) {
-                    if seed {
-                        backend.draw_fill_rect(
-                            scene,
-                            clip,
-                            crate::vello::abi::background().components,
-                        );
-                    }
-                    if hi > lo {
-                        let t = regions.device_to_grid(txri) * root;
-                        backend.draw_scene_range(scene, t, lo, hi);
+                if let Some(&(txri, draw)) = region_draws.get(&s) {
+                    let t = regions.device_to_grid(txri) * root;
+                    match draw {
+                        RegionDraw::Roots { lo, hi, seed } => {
+                            if seed {
+                                backend.draw_fill_rect(
+                                    scene,
+                                    clip,
+                                    crate::vello::abi::background().components,
+                                );
+                            }
+                            if hi > lo {
+                                backend.draw_scene_range(scene, t, lo, hi);
+                            }
+                        }
+                        RegionDraw::Silhouette { shape, slot } => {
+                            let (class_idx, inset) = sil_class(shape, slot);
+                            backend.build_shadow_silhouette(
+                                scene, t, shape, class_idx, inset, true, false,
+                            );
+                        }
                     }
                 }
             } else if let crate::vello::units::UnitOp::Rasterize(
@@ -3366,23 +3379,7 @@ impl Sink {
                     backend.draw_scene_range(scene, t, gi, gi + 1);
                 }
             } else if let DagSource::Effect { shape, slot } = dag.nodes[s].source {
-                let inset = dag.nodes.iter().any(|m| {
-                    matches!(m.op, crate::vello::units::UnitOp::EraseBy(_))
-                        && matches!(m.source, DagSource::Effect { shape: s2, slot: sl2 } if s2 == shape && sl2 == slot)
-                });
-                let class_idx = crate::vello::abi::with_scene(|live, _, _| {
-                    live.get(shape).map(|n| {
-                        crate::effect::effect_stack(n)
-                            .iter()
-                            .take(slot)
-                            .filter(|e| {
-                                matches!(e.source, crate::effect::Source::Coverage { .. })
-                                    && (e.compose == crate::effect::Compose::Over) == inset
-                            })
-                            .count()
-                    })
-                })
-                .unwrap_or(slot);
+                let (class_idx, inset) = sil_class(shape, slot);
                 backend.build_shadow_silhouette(scene, root, shape, class_idx, inset, true, false);
             }
             scene.pop_layer();
