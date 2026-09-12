@@ -1993,6 +1993,12 @@ impl Sink {
 
             let dev_of = |n: usize| dag.nodes[n].reach.unwrap_or(frame_rect);
             let regrid_anchor = |rid: usize, rec: &mut [[f32; 4]; 12]| {
+                #[cfg(not(target_arch = "wasm32"))]
+                if std::env::var("WV_ABLATE_ANCHORS").is_ok() {
+                    rec[6][1] = 99999.0;
+                    rec[6][2] = 99999.0;
+                    return;
+                }
                 let a = regions.device_to_grid(rid);
                 let p = a * crate::kurbo::Point::new(f64::from(rec[6][1]), f64::from(rec[6][2]));
                 rec[6][1] = p.x as f32;
@@ -2176,6 +2182,34 @@ impl Sink {
                             after: Some((rid, w_gi, below)),
                             lease_shift: Some(n),
                             lease_route: route_fix.map(|(x, o, kk)| (x, o, f64::from(kk))),
+                        }));
+                    }
+                    (U::Rasterize(_), Some(crate::vello::walk::Producer::Chain { of }))
+                        if matches!(dag.nodes[of].op, U::Rasterize(_)) =>
+                    {
+                        let shape = match dag.nodes[of].source {
+                            DagSource::Effect { shape, .. } => Some(shape),
+                            crate::vello::frame_dag::Source::Body(shape) => Some(shape),
+                            _ => None,
+                        };
+                        let bgi = shape.and_then(|sh| gi_of0.get(&sh)).copied();
+                        if let Some(bgi) = bgi {
+                            region_draws.insert(n, (rid, bgi, bgi + 1, false));
+                        }
+                        new_marks.push((gid, UnitMark {
+                            node: n,
+                            round: sched.round[n],
+                            desc: [0.0f32; 26],
+                            rec,
+                            ctl: 0,
+                            masked: false,
+                            band: false,
+                            off: 0,
+                            rect: Some(grect),
+                            mark_shape: None,
+                            after: None,
+                            lease_shift: Some(n),
+                            lease_route: None,
                         }));
                     }
                     (U::Rasterize(_), _) => {
