@@ -1265,7 +1265,63 @@ impl Sink {
                 ask_of.get(&shape).map(|&a| (*r, a))
             })
             .collect();
-        let shelf_budget = staging_bytes.max(1);
+        let draft_px_estimate: u64 = {
+            let quantized = |a: f64| {
+                if a <= 0.26 {
+                    0.25f64
+                } else if a <= 0.51 {
+                    0.5
+                } else {
+                    1.0
+                }
+            };
+            let mut per_gid: HashMap<u128, u64> = HashMap::new();
+            for i in 0..dag.nodes.len() {
+                let crate::vello::frame_dag::Source::Effect { shape, .. } = dag.nodes[i].source
+                else {
+                    continue;
+                };
+                if dag.binding_shape(i).is_some_and(|sh| sh.to_draft && !sh.region_out) {
+                    *per_gid.entry(shape).or_insert(0) += 1;
+                }
+            }
+            gathers
+                .iter()
+                .enumerate()
+                .map(|(j, &(_, gid, _))| {
+                    let n = per_gid.get(&gid).copied().unwrap_or(0);
+                    if n == 0 {
+                        return 0;
+                    }
+                    let r = reaches[j];
+                    let w = f64::from(r[2].min(width as f32).max(0.0) - r[0].max(0.0)).max(0.0);
+                    let h = f64::from(r[3].min(height as f32).max(0.0) - r[1].max(0.0)).max(0.0);
+                    let k = ask_of
+                        .get(&gid)
+                        .copied()
+                        .map(quantized)
+                        .filter(|&k| k < 1.0)
+                        .unwrap_or_else(|| {
+                            if soft_of.get(&gid).is_some_and(|&(f, sg)| f >= 2.0 || sg >= 2.0) {
+                                0.5
+                            } else {
+                                1.0
+                            }
+                        });
+                    (w * h * k * k) as u64 * n
+                })
+                .sum()
+        };
+        let atlas_px: u64 = 8192 * 8192;
+        let shelf_budget = staging_bytes
+            .min(atlas_px.saturating_sub(draft_px_estimate).saturating_mul(4))
+            .max(1);
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("WV_DBG_ALLOC").is_ok() {
+            eprintln!(
+                "WV_DBG_ALLOC budget: staging={staging_bytes} draft_est_px={draft_px_estimate} shelf={shelf_budget}",
+            );
+        }
         let fin = (!wlk.pieces.is_empty()).then(|| {
             crate::vello::finalize::finalize(
                 &mut dag,
@@ -1839,7 +1895,7 @@ impl Sink {
                         .iter()
                         .position(|&(_, g, _)| g == gid)
                         .map_or(u128::MAX, |i| i as u128);
-                    host_items.push(IntervalRect { w, h, birth, death: windows_end, group: seq });
+                    host_items.push(IntervalRect { tier: 0, w, h, birth, death: windows_end, group: seq });
                     host_ids.push(rid);
                 }
                 let band = regions.band_origin_y();
@@ -1869,7 +1925,7 @@ impl Sink {
                     &host_items,
                     width,
                     max_grid_h.saturating_sub(band),
-                    false,
+                    true,
                 );
                 let host_of: HashMap<usize, Option<[u32; 2]>> =
                     host_ids.iter().copied().zip(hosts).collect();
@@ -2800,6 +2856,7 @@ impl Sink {
                 let mut items: Vec<IntervalRect> = lives
                     .iter()
                     .map(|l| IntervalRect {
+                        tier: 0,
                         w: class(l.w).min(8192).max(l.w),
                         h: class(l.h),
                         birth: l.birth,
@@ -2869,7 +2926,7 @@ impl Sink {
                         if birth == u32::MAX {
                             continue;
                         }
-                        items.push(IntervalRect { w, h, birth, death: death.max(birth), group: 0 });
+                        items.push(IntervalRect { tier: 1, w, h, birth, death: death.max(birth), group: 0 });
                         lease_rids.push(rid);
                     }
                 }
@@ -3083,9 +3140,7 @@ impl Sink {
                         .collect();
                     for n in group {
                         #[cfg(not(target_arch = "wasm32"))]
-                        if std::env::var("WV_DBG_ALLOC").is_ok() {
-                            eprintln!("WV_DBG_ALLOC evict: node={n} (capacity cascade, whole round)");
-                        }
+                        eprintln!("WV_DBG_ALLOC evict: node={n} (capacity cascade, whole round)");
                         draft_placed.remove(&n);
                         origin.remove(&n);
                     }

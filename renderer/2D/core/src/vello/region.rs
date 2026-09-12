@@ -171,8 +171,14 @@ impl RegionTable {
 /// ordered reuse is sound where same-gid-only reuse was needlessly narrow. `u128::MAX` marks an
 /// unknown owner: it never reuses and is never reused. Lease packing passes zero for all (leases
 /// carry no markers, any disjoint interval may share).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct IntervalRect {
+    /// Placement priority: lower tiers pack first regardless of birth, so on overflow the
+    /// higher tier is what fails. Drafts pack at tier 0 (an evicted draft re-runs its chain at a
+    /// different density — an interior-wide difference); region leases at tier 1 (a dropped
+    /// lease only costs an edge-band clamp). Processing order never affects reuse soundness —
+    /// interval disjointness is checked per pair.
+    pub tier: u32,
     pub w: u32,
     pub h: u32,
     pub birth: u32,
@@ -202,7 +208,7 @@ pub fn interval_shelf_ext(
     loose: bool,
 ) -> Vec<Option<[u32; 2]>> {
     let mut order: Vec<usize> = (0..items.len()).collect();
-    order.sort_by_key(|&i| (items[i].birth, i));
+    order.sort_by_key(|&i| (items[i].tier, items[i].birth, i));
     let mut slots: Vec<(u32, u128, [u32; 2], u32, u32)> = Vec::new();
     let mut rows: Vec<(u32, u32, u32)> = Vec::new();
     let mut cur_y = 0u32;
@@ -307,10 +313,10 @@ mod tests {
     #[test]
     fn interval_shelf_reuses_disjoint_intervals_and_separates_live_ones() {
         let items = [
-            IntervalRect { w: 96, h: 32, birth: 1, death: 2, group: 7 },
-            IntervalRect { w: 96, h: 32, birth: 3, death: 4, group: 7 },
-            IntervalRect { w: 96, h: 32, birth: 2, death: 5, group: 7 },
-            IntervalRect { w: 96, h: 32, birth: 2, death: 2, group: 7 },
+            IntervalRect { tier: 0, w: 96, h: 32, birth: 1, death: 2, group: 7 },
+            IntervalRect { tier: 0, w: 96, h: 32, birth: 3, death: 4, group: 7 },
+            IntervalRect { tier: 0, w: 96, h: 32, birth: 2, death: 5, group: 7 },
+            IntervalRect { tier: 0, w: 96, h: 32, birth: 2, death: 2, group: 7 },
         ];
         let out = interval_shelf(&items, 256, 1024);
         assert_eq!(out[0], out[1], "disjoint intervals share one slot");
@@ -318,14 +324,14 @@ mod tests {
         assert_ne!(out[0], out[3], "an equal-round pair never shares (no barrier between)");
         assert!(out.iter().all(Option::is_some));
         let back = [
-            IntervalRect { w: 96, h: 32, birth: 1, death: 2, group: 9 },
-            IntervalRect { w: 96, h: 32, birth: 3, death: 4, group: 7 },
+            IntervalRect { tier: 0, w: 96, h: 32, birth: 1, death: 2, group: 9 },
+            IntervalRect { tier: 0, w: 96, h: 32, birth: 3, death: 4, group: 7 },
         ];
         let b = interval_shelf(&back, 256, 1024);
         assert_ne!(b[0], b[1], "a slot never flows to a stream-earlier group");
         let fwd = [
-            IntervalRect { w: 96, h: 32, birth: 1, death: 2, group: 7 },
-            IntervalRect { w: 96, h: 32, birth: 3, death: 4, group: 9 },
+            IntervalRect { tier: 0, w: 96, h: 32, birth: 1, death: 2, group: 7 },
+            IntervalRect { tier: 0, w: 96, h: 32, birth: 3, death: 4, group: 9 },
         ];
         let f = interval_shelf(&fwd, 256, 1024);
         assert_eq!(f[0], f[1], "a dead slot flows forward in stream order");
@@ -334,9 +340,9 @@ mod tests {
     #[test]
     fn interval_shelf_caps_and_wraps() {
         let items = [
-            IntervalRect { w: 200, h: 64, birth: 0, death: 9, group: 0 },
-            IntervalRect { w: 200, h: 64, birth: 0, death: 9, group: 0 },
-            IntervalRect { w: 200, h: 64, birth: 0, death: 9, group: 0 },
+            IntervalRect { tier: 0, w: 200, h: 64, birth: 0, death: 9, group: 0 },
+            IntervalRect { tier: 0, w: 200, h: 64, birth: 0, death: 9, group: 0 },
+            IntervalRect { tier: 0, w: 200, h: 64, birth: 0, death: 9, group: 0 },
         ];
         let out = interval_shelf(&items, 256, 100);
         assert!(out[0].is_some());
