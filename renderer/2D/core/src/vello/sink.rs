@@ -60,7 +60,7 @@ const CLEAR: Color = TRANSPARENT;
 /// at its origin. Mirrors the tiled path's `device_rect` + the gather path's scoped bbox.
 /// A `D2` view of `t`'s layer 0, for sampled bindings — explicit because the default view of a
 /// multi-layer texture infers `D2Array`, which a `texture_2d` binding rejects.
-fn layer0_view(t: &wgpu::Texture) -> wgpu::TextureView {
+pub(crate) fn layer0_view(t: &wgpu::Texture) -> wgpu::TextureView {
     t.create_view(&wgpu::TextureViewDescriptor {
         dimension: Some(wgpu::TextureViewDimension::D2),
         base_array_layer: 0,
@@ -72,7 +72,7 @@ fn layer0_view(t: &wgpu::Texture) -> wgpu::TextureView {
 /// A `D2Array` view of `t`, for binding at fine's layered `output` slot. Fine's output is a
 /// `texture_storage_2d_array`; every texture bound there — including plain one-layer targets —
 /// must be viewed as an array, while sampled uses of the same texture keep their default `D2` view.
-fn storage_array_view(t: &wgpu::Texture) -> wgpu::TextureView {
+pub(crate) fn storage_array_view(t: &wgpu::Texture) -> wgpu::TextureView {
     t.create_view(&wgpu::TextureViewDescriptor {
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
@@ -486,7 +486,7 @@ const fn wv_pass_flush_budget() -> u32 {
 
 /// The scheduler's GPU production sink. Owns the per-frame surface map and the SrcOver compositor.
 pub struct Sink {
-    compositor: Compositor,
+    pub(crate) compositor: Compositor,
     unit_pipeline: UnitPipeline,
     /// Instanced batch pipelines (blur H/V + per-round composite), built on first batched frame.
     /// Physical surface per logical ref, this frame. Slice-1 allocates fresh each frame (no
@@ -514,19 +514,19 @@ pub struct Sink {
     /// [`RasterBackend::rasterize_target_usage`]). Captured at the top of [`Self::execute`] so the
     /// non-generic allocation helpers (`ensure_surface`, the atlas + scratch textures) can OR it in
     /// without threading the backend through. Hybrid renders as an attachment; classic adds storage.
-    raster_usage: wgpu::TextureUsages,
+    pub(crate) raster_usage: wgpu::TextureUsages,
 
     /// Recycled render-target textures, so a dirty frame reuses last frame's surfaces instead of
     /// `create_texture` per tile/effect/scratch. Fed at frame boundaries + on tile eviction/replace.
-    pool: TexturePool,
+    pub(crate) pool: TexturePool,
     /// Textures allocated for this frame that live outside the surface map (the body/spread atlases and
     /// the accumulate scratch): held here until the next frame drains them into [`Self::pool`], so
     /// their in-flight GPU work has flushed before they are reused.
-    frame_transient: Vec<wgpu::Texture>,
+    pub(crate) frame_transient: Vec<wgpu::Texture>,
     /// Frame-scratch VIEWS that must outlive the frame's single submit (their textures ride in
     /// `frame_transient`): the co-located silhouette/body sources the round loop binds. Dropped
     /// (cleared) each frame.
-    frame_transient_views: Vec<wgpu::TextureView>,
+    pub(crate) frame_transient_views: Vec<wgpu::TextureView>,
 
     /// DEBUG: an atlas captured this frame (view, w, h) to blit over the swapchain so the batched
     /// gather's intermediates can be inspected. Selected by `abi::debug_atlas()`.
@@ -535,8 +535,8 @@ pub struct Sink {
     /// Real GPU execution time for the frame, bracketed across every pass this sink records. `None`
     /// when the device lacks `TIMESTAMP_QUERY`. Built lazily on the first `execute` because the
     /// queue (needed for the tick period) is not available at construction.
-    gpu_timer: Option<crate::vello::gputime::GpuTimer>,
-    gpu_timer_tried: bool,
+    pub(crate) gpu_timer: Option<crate::vello::gputime::GpuTimer>,
+    pub(crate) gpu_timer_tried: bool,
 
     /// Per-pass GPU timing for the effect graph (lens displacement/refraction/blur/composite), when
     /// `abi::prof_passes()` is set. Shares the lazy build with `gpu_timer`. Threaded into
@@ -553,7 +553,7 @@ pub struct Sink {
     /// The view the *previous* frame ran at, for zoom/pan-proxy settle detection: a frame whose view
     /// differs from this is "actively navigating" and gets a cheap transformed re-blit of the retained
     /// canvas; a frame whose view matches it has settled, so the real render runs and re-sharpens.
-    last_view: Option<Affine>,
+    pub(crate) last_view: Option<Affine>,
 
     /// A reusable `TILE_BUFFER²` scratch for the non-`SrcOver` `Composite` path: the target tile buffer
     /// is copied here so the blend shader can sample the destination it is about to overwrite (WebGL2
@@ -565,7 +565,9 @@ pub struct Sink {
     /// The signed-distance-field bake pipeline for shape-following (`Sampled`) glass — a lens on a path
     /// or other non-box shape reads a baked SDF of its real outline instead of the analytic rounded
     /// box. Built once, lazily (the first sampled lens), since most frames have none.
-    sdf_baker: Option<crate::vello::sdf::SdfBaker>,
+    pub(crate) sdf_baker: Option<crate::vello::sdf::SdfBaker>,
+    /// The store fill/copy pipeline the plan executor runs its `Clear` and `Copy` passes with.
+    pub(crate) store_ops: Option<crate::vello::store::StoreOps>,
 }
 
 impl Sink {
@@ -592,6 +594,7 @@ impl Sink {
             last_view: None,
             blend_scratch: None,
             sdf_baker: None,
+            store_ops: None,
         }
     }
 

@@ -73,6 +73,8 @@ pub mod fine_mode {
     pub const KEEP_COV: u32 = 128;
     /// Marks may replace the register from the value slot (`src_value == 2`, scatter, atomic reads).
     pub const VALUE_READS: u32 = 256;
+    /// The `base` slot is a rect of the store itself, placed by [`super::RasterBackend::phase_base_rect`].
+    pub const BASE_STORE: u32 = 512;
 }
 
 pub trait RasterBackend {
@@ -238,6 +240,16 @@ pub trait RasterBackend {
     ) {
         unimplemented!("phased session is classic-only")
     }
+
+    /// Fill exactly one node's outline, dilated by `spread` page px, in solid white into `scene`
+    /// at `root` (composed with the viewport as [`Self::draw_scene_range`] does) — a coverage draw
+    /// item. Text draws its glyph coverage. Default no-op.
+    fn draw_coverage(&mut self, _scene: &mut Self::Scene, _root: Affine, _id: u128, _spread: f32) {}
+
+    /// Place the `base` slot for the NEXT [`Self::phased_fine`] call inside the store: the rect at
+    /// `at` (store texels) holds the frame-space region `[org, org + ext)`. Consumed by that one
+    /// dispatch. Default no-op.
+    fn phase_base_rect(&mut self, _org: [u32; 2], _ext: [u32; 2], _at: [u32; 2]) {}
 
     /// Set the reach-crop origins for the NEXT [`Self::phased_fine`] call: `scratch_out` shifts where
     /// the producer writes `output`, `scratch_in` where the consumer samples its scratch (`draft`/

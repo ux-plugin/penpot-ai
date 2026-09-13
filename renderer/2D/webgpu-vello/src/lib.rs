@@ -878,6 +878,37 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         vello::set_frame(width, height);
     }
 
+    fn draw_coverage(&mut self, scene: &mut ClassicCtx, root: Affine, id: u128, spread: f32) {
+        let text = &mut self.text;
+        render_core::vello::abi::with_scene(|model, viewport, modifiers| {
+            let Some(node) = model.get(id) else { return };
+            let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+            let matrix = root * viewport * modifier * node.effective_transform();
+            if node.kind == render_core::model::ShapeKind::Text {
+                let mut resources = ();
+                render_core::vello::text::draw_text_block(
+                    scene, &mut resources, &mut text.font_cx, &mut text.layout_cx, &ClassicEnv, node, matrix,
+                    Some(vello_common::color::palette::css::WHITE),
+                );
+                return;
+            }
+            scene.set_transform(matrix);
+            scene.set_paint(vello_common::color::palette::css::WHITE);
+            let path = if spread > 0.0 {
+                render_core::geometry::spread_outline(node, f64::from(spread))
+            } else {
+                render_core::geometry::outline(node)
+            };
+            scene.fill_path(&path);
+        });
+    }
+
+    fn phase_base_rect(&mut self, org: [u32; 2], ext: [u32; 2], at: [u32; 2]) {
+        if let Some(session) = self.phased_session.as_mut() {
+            session.set_base_rect(org, ext, at);
+        }
+    }
+
     fn phase_region_atlas(&mut self, atlas: Option<&wgpu::TextureView>) {
         self.region_atlas = atlas.cloned();
     }
