@@ -36,6 +36,26 @@ const GROW_MODES: ReadonlyArray<{ value: GrowType; label: string }> = [
   { value: 'auto-height', label: 'Auto height' },
 ]
 
+/** The W3C mix modes the renderer implements, in the order designers expect to scan them. */
+const BLEND_MODES: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'normal', label: 'Normal' },
+  { value: 'darken', label: 'Darken' },
+  { value: 'multiply', label: 'Multiply' },
+  { value: 'color-burn', label: 'Color burn' },
+  { value: 'lighten', label: 'Lighten' },
+  { value: 'screen', label: 'Screen' },
+  { value: 'color-dodge', label: 'Color dodge' },
+  { value: 'overlay', label: 'Overlay' },
+  { value: 'soft-light', label: 'Soft light' },
+  { value: 'hard-light', label: 'Hard light' },
+  { value: 'difference', label: 'Difference' },
+  { value: 'exclusion', label: 'Exclusion' },
+  { value: 'hue', label: 'Hue' },
+  { value: 'saturation', label: 'Saturation' },
+  { value: 'color', label: 'Color' },
+  { value: 'luminosity', label: 'Luminosity' },
+]
+
 type Corners = { r1: number; r2: number; r3: number; r4: number }
 type Margin = { m1: number; m2: number; m3: number; m4: number }
 
@@ -256,6 +276,24 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
     [readOnly, nodeId],
   )
 
+  const blendMode = (initialNode as { blendMode?: string }).blendMode ?? 'normal'
+
+  const commitBlendMode = useCallback(
+    async (next: string) => {
+      if (readOnly) return
+      const before = getCommittedNodeOnActivePage(nodeId)
+      const pid = getActiveOrSinglePageId()
+      if (!before || !pid) return
+      await commitNodePartialUpdate(
+        nodeId,
+        before,
+        { blendMode: next } as Partial<PenpotNode>,
+        pid,
+      )
+    },
+    [readOnly, nodeId],
+  )
+
   // Margin — gated on parent layout.
   const doc = useSnapshot(docProxy)
   const parentId = (initialNode as { parentId?: string }).parentId
@@ -409,6 +447,27 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                   )}
                 </>
               )}
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="rsp-blend">Blend</Label>
+              <Select value={blendMode} onValueChange={commitBlendMode} disabled={readOnly}>
+                <SelectTrigger
+                  id="rsp-blend"
+                  size="sm"
+                  className="w-full min-w-0"
+                  aria-label="Blend mode"
+                >
+                  <SelectValue placeholder="Normal" />
+                </SelectTrigger>
+                <SelectContent>
+                  {BLEND_MODES.map((b) => (
+                    <SelectItem key={b.value} value={b.value}>
+                      {b.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             {showRadius && radiusToken && (
