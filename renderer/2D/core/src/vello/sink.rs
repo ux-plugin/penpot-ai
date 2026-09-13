@@ -1551,12 +1551,14 @@ impl Sink {
             lease_route: Option<(usize, [f32; 2], f64)>,
         }
         let mut marks: HashMap<u128, Vec<UnitMark>> = HashMap::new();
+        let mut noop_gathers: std::collections::HashSet<u128> = std::collections::HashSet::new();
         let sil_fold = true;
         {
             use crate::vello::bake::{bake_unit, bits, spread_arm, Policy};
             use crate::vello::frame_dag::Source as DagSource;
             use crate::vello::units::UnitOp;
             for &(_, gid, _) in &gathers {
+                let mut noop = false;
                 let mut by_slot: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
                 for (i, n) in dag.nodes.iter().enumerate() {
                     if let DagSource::Effect { shape, slot } = n.source {
@@ -1588,6 +1590,7 @@ impl Sink {
                         .last()
                         .expect("a compose reads its chain tail");
                     if frags.is_empty() || op(anchor).is_structural() {
+                        let before = out.len();
                         let root = root_of(anchor);
                         if matches!(op(root), UnitOp::Reload) {
                             if let Some(c) = colour {
@@ -1610,6 +1613,7 @@ impl Sink {
                                     lease_route: None,
                                 });
                             }
+                            noop |= out.len() == before;
                             continue;
                         }
                         if over
@@ -1636,6 +1640,7 @@ impl Sink {
                                 lease_route: None,
                             });
                         }
+                        noop |= out.len() == before;
                         continue;
                     }
                     let root = root_of(anchor);
@@ -1845,7 +1850,11 @@ impl Sink {
                         }
                     }
                 }
-                if !out.is_empty() {
+                if out.is_empty() {
+                    if noop {
+                        noop_gathers.insert(gid);
+                    }
+                } else {
                     marks.insert(gid, out);
                 }
             }
@@ -2542,8 +2551,8 @@ impl Sink {
         }
         for &(_, gid, kind) in &gathers {
             assert!(
-                kind == FX_STACK || marks.contains_key(&gid),
-                "gid {gid:x}: every gather chain lowers to unit marks — a gather with none is a planner bug"
+                kind == FX_STACK || marks.contains_key(&gid) || noop_gathers.contains(&gid),
+                "gid {gid:x}: every gather chain lowers to unit marks, or to nothing at all — a gather with neither is a planner bug"
             );
         }
         let body_key = |m: &UnitMark, ms: &[UnitMark]| -> (i64, u8) {
@@ -3592,8 +3601,9 @@ impl Sink {
                         }
                     }
                 } else {
-                    unreachable!(
-                        "gid {gid:x}: every effect chain emits unit marks — a marker with none is a planner bug"
+                    assert!(
+                        noop_gathers.contains(&gid),
+                        "gid {gid:x}: every effect chain emits unit marks, or lowers to nothing at all — a marker with neither is a planner bug"
                     );
                 }
             }
