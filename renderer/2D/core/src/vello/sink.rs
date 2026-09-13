@@ -24,7 +24,8 @@ use crate::peniko::color::palette::css::TRANSPARENT;
 use crate::peniko::Color;
 use crate::effect::Source;
 use crate::schedule::{
-    first_write_paints, GatherPlan, LayerPaint, PaintOp, Schedule, Step, SurfaceRef, SurfaceRole,
+    affected_page_rect, first_write_paints, GatherPlan, LayerPaint, PaintOp, Schedule, Step,
+    SurfaceRef, SurfaceRole,
 };
 #[cfg(feature = "tiled-scheduler")]
 use crate::tile_cache::TileCache;
@@ -325,6 +326,11 @@ const FX_STACK: u8 = 1;
 /// Vello's fine-rasterization tile, in device pixels. Regions that must not influence one another
 /// have to be tile-disjoint, because `fine` resolves a whole tile at a time.
 const TILE_PX: u32 = 16;
+
+/// Slack on the "does frame content reach the band rows" test that decides whether frame draws need
+/// the band-guard clip. Antialiasing and effect spill put ink a little past a node's own reach, and a
+/// decision taken this close to the boundary must not flip on framing alone.
+const CLIP_GUARD_PX: f64 = 64.0;
 
 /// Per-key free list buckets are capped so a burst of one-off sizes can't grow the pool without bound.
 const MAX_POOL_PER_KEY: usize = 32;
@@ -3302,7 +3308,17 @@ impl Sink {
         let sil_emit_ms = std::cell::Cell::new(0.0f64);
         let gi_of: HashMap<u128, usize> = gathers.iter().map(|&(gi, gid, _)| (gid, gi)).collect();
         let frame_clip = (regions.regions.len() > 1 && !std::env::var("WV_NO_CLIP").is_ok())
-            .then(|| Rect::new(0.0, 0.0, f64::from(width), f64::from(regions.band_origin_y())));
+            .then(|| Rect::new(0.0, 0.0, f64::from(width), f64::from(regions.band_origin_y())))
+            .filter(|c| {
+                crate::vello::abi::with_scene(|live, viewport, modifiers| {
+                    let to_device = root * viewport;
+                    live.iter_nodes().any(|n| {
+                        let m = modifiers.get(&n.id).copied().unwrap_or(Affine::IDENTITY);
+                        let d = to_device.transform_rect_bbox(affected_page_rect(n, m));
+                        d.y1 + CLIP_GUARD_PX > c.y1 && d.x1 > 0.0 && d.x0 < c.x1
+                    })
+                })
+            });
         let draw_frame_range =
             |backend: &mut B, scene: &mut B::Scene, t: Affine, lo: usize, hi: usize| {
                 if let Some(c) = frame_clip {
