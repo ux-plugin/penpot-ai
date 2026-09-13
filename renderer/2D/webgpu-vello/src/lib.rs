@@ -364,10 +364,10 @@ impl RenderingContext for ClassicCtx {
     }
 
     fn push_clip_layer(&mut self, path: &BezPath) {
-        self.scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, self.transform, path);
+        self.scene.push_clip_layer(Fill::NonZero, self.transform, path);
     }
     fn push_clip_path(&mut self, path: &BezPath) {
-        self.scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, self.transform, path);
+        self.scene.push_clip_layer(Fill::NonZero, self.transform, path);
     }
     fn push_layer(
         &mut self,
