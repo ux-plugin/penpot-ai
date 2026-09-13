@@ -1,11 +1,10 @@
 //! Frame-time bench for a HEAVY document under continuous zoom + pan: the `scale` fixture at N shapes
 //! with a mix of effects (drop / blur / inner shadow / custom tint / STACK GLASS, one every `EVERY`
-//! shapes), rendered over many frames while the view orbits and breathes. Times the DAG-edge executor
-//! (the default) against the forced-legacy `WindowRole`/batched path (`WV_DAG=0 WV_DAG_EXEC=0`).
+//! shapes), rendered over many frames while the view orbits and breathes.
 //!
-//! This is the case the per-frame DAG rebuild is stressed by: a moving view re-runs `build_frame_dag`
-//! + `fill_lens_uniforms` every frame (topology caching is parked), so a zoom/pan sweep measures
-//! whether that fixed CPU cost is amortised by the heavy per-frame GPU work.
+//! This is the case the per-frame graph rebuild is stressed by: a moving view rebuilds the frame
+//! graph and plan every frame, so a zoom/pan sweep measures whether that fixed CPU cost is
+//! amortised by the heavy per-frame GPU work.
 //!
 //! Run: `SHAPES=20000 EVERY=40 FRAMES=60 cargo run --release --example wv_motion_bench`.
 

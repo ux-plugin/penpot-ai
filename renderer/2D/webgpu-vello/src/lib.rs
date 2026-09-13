@@ -571,10 +571,10 @@ impl ClassicRenderer {
 impl ClassicBackend {
     /// The region atlas view for a fine dispatch, or a persistent 1x1 dummy when none is bound
     /// (the binding layout always carries the slot).
-    fn region_dummy_view(&mut self, device: &wgpu::Device) -> wgpu::TextureView {
-        if self.region_dummy.is_none() {
+    fn dummy_view(&mut self, device: &wgpu::Device) -> wgpu::TextureView {
+        if self.dummy_u32.is_none() {
             let t = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("wv region dummy"),
+                label: Some("wv dummy u32"),
                 size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
@@ -583,9 +583,9 @@ impl ClassicBackend {
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
-            self.region_dummy = Some(t.create_view(&wgpu::TextureViewDescriptor::default()));
+            self.dummy_u32 = Some(t.create_view(&wgpu::TextureViewDescriptor::default()));
         }
-        self.region_dummy.clone().expect("dummy just built")
+        self.dummy_u32.clone().expect("dummy just built")
     }
 
     /// SPIKE accessor — reach the vello renderer from the focus renderer. Throwaway.
@@ -683,10 +683,8 @@ pub struct ClassicBackend {
     /// The in-progress persistent phased render, live between `phased_begin` and `phased_finish` so
     /// the sink can drive phases one at a time with a gather's effect recorded between them.
     phased_session: Option<vello::low_level::PhasedSession>,
-    /// The frame's region atlas view — the one lease store, bound read-only by every
-    /// backdrop-tapping fine dispatch; a 1x1 dummy rides an empty slot.
-    region_atlas: Option<wgpu::TextureView>,
-    region_dummy: Option<wgpu::TextureView>,
+    /// A 1x1 r32uint sampled view bound wherever a fine slot is unused.
+    dummy_u32: Option<wgpu::TextureView>,
     /// Encoded leaf-body fragments spliced by the whole-viewport walk — see [`walk::BodyCache`].
     body_cache: crate::walk::BodyCache,
     /// DEBUG (native only): the phased session's bump-buffer resource id + a device/queue clone, so
@@ -710,8 +708,7 @@ impl ClassicBackend {
             inline_images: std::collections::HashMap::new(),
             next_inline: 0,
             phased_session: None,
-            region_atlas: None,
-            region_dummy: None,
+            dummy_u32: None,
             body_cache: crate::walk::BodyCache::default(),
             #[cfg(not(target_arch = "wasm32"))]
             debug_bump_id: None,
@@ -909,10 +906,6 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         }
     }
 
-    fn phase_region_atlas(&mut self, atlas: Option<&wgpu::TextureView>) {
-        self.region_atlas = atlas.cloned();
-    }
-
 
     fn draw_fill_rect(&mut self, scene: &mut ClassicCtx, rect: [f32; 4], color: [f32; 4]) {
         let r = Rect::new(f64::from(rect[0]), f64::from(rect[1]), f64::from(rect[2]), f64::from(rect[3]));
@@ -1026,9 +1019,7 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         out: &wgpu::TextureView,
     ) {
         let _trd = render_core::vello::prof::now();
-        let dummy = self.region_dummy_view(device);
-        let staged = mode & render_core::vello::rasterize::fine_mode::STAGING != 0;
-        let region = self.region_atlas.clone().filter(|_| !staged).unwrap_or_else(|| dummy.clone());
+        let dummy = self.dummy_view(device);
         let session = self.phased_session.as_mut().expect("phased_fine without phased_begin");
         self.renderer
             .inner
@@ -1042,7 +1033,6 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
                 mode,
                 base.unwrap_or(&dummy),
                 input.unwrap_or(&dummy),
-                &region,
                 out,
             )
             .expect("phased_fine_into");

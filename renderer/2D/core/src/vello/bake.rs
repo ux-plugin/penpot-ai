@@ -5,7 +5,7 @@
 //! `ShadowRole`-driven `eid` choice, and the intra-effect round layout (`schedule_shadows`, the frost
 //! five-round block). That scaffolding exists only to reconcile four per-effect planners against one
 //! marker stream. `bake` dissolves it: it owns the effect→descriptor encoding (`arm_descriptor`,
-//! `blur_arm`), so the scheduler's emitter (`FrameDag::arms_for`) is a flat loop over `frame_dag`'s
+//! `blur_arm`), so the scheduler's emitter is a flat loop over the graph's
 //! markers — each descriptor already carrying its `eid` and its round offset.
 //!
 //! The descriptor is the seam `fine.wgsl` reads: `[bits, program, 6×vec4 u]` = 26 floats, packed into
@@ -69,22 +69,12 @@ pub mod bits {
     pub const VALUE_OVER: u32 = 16384;
 }
 
-/// The number of operand records every arm carries after its 26-float header. Record 5 is the
-/// OVERFLOW role: where the value input's out-of-frame taps resolve. Its base row is a source row
-/// like every other — `[source, x, y, param]` = [`SRC_REGION`], the affine offset mapping a tap
-/// position into the region atlas (`atlas = pos * k + (x, y)`), and the density ratio `k` the
-/// reader's bilinear taps absorb; its extension row is the lease's atlas texel rect
-/// `[lo_x, lo_y, hi_x, hi_y]` (hi inclusive-minus-one) that clamps straying taps. Zero (the
-/// default) means no serving: escaped taps keep the edge-extend clamp.
+/// The number of operand records every arm carries after its 26-float header. Record 5 is
+/// unused since the region atlas went; it stays zero.
 pub const REC_COUNT: usize = 6;
 
-/// Record `source` code for the region atlas — the lease store rented below the frame. A record
-/// whose source is this reads `region_atlas` at `pos * param + window`, clamped to the extension
-/// row's texel rect.
-pub const SRC_REGION: f32 = 4.0;
 /// Floats per operand record: a base row `[source, window x, window y, param]` plus an extension
-/// row for source kinds that need more than four facts (the OVERFLOW record's lease clamp rect;
-/// don't-care zeros elsewhere) — the ABI's "a wider source kind widens the stride constant for
+/// row for source kinds that need more than four facts (don't-care zeros today) — the ABI's "a wider source kind widens the stride constant for
 /// everyone". Record `i` sits at `off + 26 + i * REC_STRIDE` (vec4 `2i` in the kernel's view).
 /// Roles: record 0 = the VALUE the arm transforms, record 1 = the REFERENCE (`orig`) binary
 /// pointwise units compare against, record 2 = the composite's COVERAGE, record 3 = the FIELD's

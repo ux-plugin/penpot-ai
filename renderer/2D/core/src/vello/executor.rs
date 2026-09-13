@@ -78,7 +78,6 @@ impl Sink {
         let store_l0 = crate::vello::sink::layer0_view(&store_tex);
         let store_sz = (sw as f32, store_tex.height() as f32);
         backend.set_frame_extent(width, height);
-        backend.phase_region_atlas(None);
         let params: Vec<u8> = plan.params.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         let t_enc = crate::vello::prof::now();
@@ -127,13 +126,8 @@ impl Sink {
                 Pass::Present { from } => {
                     backend.phase_flush(&mut enc);
                     let f = texels(*from);
-                    self.compositor.blit_packed(device, &mut enc, &sw_view, sz, &crate::vello::blend::Blit {
-                        src: &store_l0,
-                        dst: (0.0, 0.0, sz.0, sz.1),
-                        src_rect: (f[0] as f32, f[1] as f32, (f[2] - f[0]) as f32, (f[3] - f[1]) as f32),
-                        src_size: store_sz,
-                        alpha: 1.0,
-                    });
+                    assert_eq!(f, [0, 0, width, height], "the frame rows are what is presented");
+                    self.present_final(&mut enc, device, &sw_view, &store_l0, width, height, wgpu::TextureFormat::Rgba8Unorm, sz, store_sz, full_view);
                 }
             }
         }
@@ -166,7 +160,6 @@ impl Sink {
         }
         crate::vello::frame_log::end();
         self.frame_transient.push(store_tex);
-        backend.phase_region_atlas(None);
         backend.set_frame_extent(0, 0);
     }
 

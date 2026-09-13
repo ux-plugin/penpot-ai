@@ -25,7 +25,7 @@ use wgpu::util::DeviceExt;
 /// One operation in the frame — the SINGLE alphabet, shared by the scheduler and the executor. The
 /// fragment units below (warp … custom) are what a fine arm runs, and several fuse into one fragment
 /// ([`fuse`]); the three STRUCTURAL ops ([`UnitOp::Rasterize`]/[`UnitOp::Reload`]/[`UnitOp::Compose`])
-/// are the plumbing the whole-frame DAG ([`crate::vello::frame_dag`]) needs to express dependency and
+/// are the plumbing the whole-frame DAG (the frame graph) needs to express dependency and
 /// barrier structure — they are not fragment snippets and never enter `fuse`/`units()`. Keeping both
 /// kinds in one enum is what lets the DAG node BE the operation the executor runs, with no separate
 /// scheduler alphabet to translate through. For a fragment unit the discriminant selects its snippet

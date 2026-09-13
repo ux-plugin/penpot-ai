@@ -155,14 +155,6 @@ pub trait RasterBackend {
     /// frame == target. Default no-op — only the phased (classic) backend distinguishes the two.
     fn set_frame_extent(&mut self, _width: u32, _height: u32) {}
 
-    /// Bind the region atlas for subsequent backdrop-tapping fine dispatches — the one lease
-    /// store every route record (record 5) resolves into. Region window dispatches write a
-    /// separate staging texture the sink blits back, so this binding is read-only everywhere and
-    /// needs no per-dispatch swapping. `None` unbinds (a dummy rides the slot). Default no-op —
-    /// only the phased (classic) backend routes escaped taps.
-    fn phase_region_atlas(&mut self, _atlas: Option<&wgpu::TextureView>) {}
-
-
     /// Fill `rect` (device px, identity transform) with a solid premul-straight `color` — the page
     /// ground an interest region's content composites over. Default no-op.
     fn draw_fill_rect(&mut self, _scene: &mut Self::Scene, _rect: [f32; 4], _color: [f32; 4]) {}
@@ -223,7 +215,7 @@ pub trait RasterBackend {
     /// Dispatch the effects `fine` for the window `[seg_lo, seg_target)` of the shared PTCL built by
     /// [`Self::phased_frontend_full`], writing the packed r32uint store `out` in place. `mode` is a
     /// [`fine_mode`] word; `base` and `input` are the r32uint sampled slots it names (`None` binds
-    /// the backend's dummy), the region atlas rides [`Self::phase_region_atlas`]. [`SEG_ALL`] as
+    /// the backend's dummy). [`SEG_ALL`] as
     /// `seg_target` removes the upper bound. Classic-only; default panics.
     #[expect(clippy::too_many_arguments, reason = "one dispatch, one binding set")]
     fn phased_fine(
