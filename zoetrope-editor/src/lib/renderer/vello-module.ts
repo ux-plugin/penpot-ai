@@ -285,6 +285,23 @@ export async function loadVelloModule(gluePath: string = VELLO_GLUE_PATH): Promi
     // The backend is a preview behind `?renderer=vello`; a handle makes it inspectable from the
     // console without digging it out of the store.
     ;(window as unknown as { velloModule?: VelloModule }).velloModule = module
+
+    // Per-frame performance log. `wvPerf(true)` from the console, or `?perf=1` to catch the very
+    // first frames; `wvPerf(true, true)` adds the GPU role split, which costs a timestamp query
+    // per pass and is off unless asked for.
+    const m = module as unknown as {
+      _set_frame_log?: (on: number) => void
+      _set_prof_passes?: (on: number) => void
+    }
+    const wvPerf = (on = true, passes = false): void => {
+      m._set_frame_log?.(on ? 1 : 0)
+      m._set_prof_passes?.(on && passes ? 1 : 0)
+    }
+    ;(window as unknown as { wvPerf?: typeof wvPerf }).wvPerf = wvPerf
+    const perf = new URLSearchParams(window.location.search).get('perf')
+    if (perf != null && perf !== '0') {
+      wvPerf(true, perf === 'gpu')
+    }
   }
 
   return module

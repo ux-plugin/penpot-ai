@@ -872,6 +872,7 @@ impl Sink {
         height: u32,
         content_dirty: bool,
     ) {
+        crate::vello::frame_log::begin();
         let format = wgpu::TextureFormat::Rgba8Unorm;
         self.raster_usage = backend.rasterize_target_usage();
         for tex in self.frame_transient.drain(..) {
@@ -3627,6 +3628,26 @@ impl Sink {
             (b, mb, z)
         };
         let total_draws = backend.draw_object_count(&scene);
+        if crate::vello::frame_log::enabled() {
+            let t_enc_end = crate::vello::prof::now();
+            crate::vello::frame_log::set_phases(crate::vello::frame_log::Phases {
+                walk: _tsched0 - _tenc,
+                schedule: _tsched1 - _tsched0,
+                marks: _tlease0 - _tsched1,
+                lease: _tplan - _tlease0,
+                encode: t_enc_end - _tplan,
+            });
+            crate::vello::frame_log::set_shape(crate::vello::frame_log::Shape {
+                dag_nodes: dag.nodes.len() as u32,
+                rounds: sched.round.iter().copied().max().map_or(0, |r| r + 1),
+                gathers: gathers.len() as u32,
+                regions: regions.regions.len() as u32,
+                leases: regions.regions.iter().filter(|r| r.grid[2] > r.grid[0]).count() as u32,
+                marks: marks.values().map(Vec::len).sum::<usize>() as u32,
+                draws: total_draws,
+                windows: 0,
+            });
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_ENC").is_ok() {
             let t = crate::vello::prof::now();
@@ -4199,6 +4220,7 @@ impl Sink {
                 note_passes(2);
                 #[cfg(not(target_arch = "wasm32"))]
                 if std::env::var("WV_DBG_WIN").is_ok() { eprintln!("WV_DBG_WIN: [{window_lo},{hi}) nodes={:?} seeded={seeded}", round_nodes.get(&window_lo)); }
+                crate::vello::frame_log::note_window();
                 if round_nodes.get(&window_lo).is_some_and(|nodes| {
                     dag.binding_shape(nodes[0]).is_some_and(|shp| {
                         shp.region_out && shp.base == crate::vello::frame_dag::Slot::Source
@@ -4603,6 +4625,7 @@ impl Sink {
         if let Some(p) = self.pass_prof.as_mut() {
             p.after_submit();
         }
+        crate::vello::frame_log::end();
         #[cfg(not(target_arch = "wasm32"))]
         if let Ok(dir) = std::env::var("WV_DUMP_ATLAS") {
             let dump = |tex: &wgpu::Texture, layer: u32, name: &str| {

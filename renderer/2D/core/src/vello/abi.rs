@@ -913,6 +913,14 @@ pub extern "C" fn set_prof_passes(on: u32) {
     PROF_PASSES.with(|c| c.set(on != 0));
 }
 
+/// Per-frame performance logging: one line per frame naming where the frame's time went and what
+/// shape it had. Off by default. Pairs with `set_prof_passes` — with that on, the line also carries
+/// the GPU role split (crop/displace/refract/blur/composite/stamp/swap).
+#[unsafe(no_mangle)]
+pub extern "C" fn set_frame_log(on: u32) {
+    crate::vello::frame_log::set_enabled(on != 0);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn set_present_on_demand(on: u32) {
     PRESENT_ON_DEMAND.with(|c| c.set(on != 0));

@@ -1198,6 +1198,7 @@ dependencies = [
  "usvg",
  "vello_common",
  "vello_example_scenes",
+ "wasm-bindgen",
  "web-sys",
  "wgpu",
 ]
