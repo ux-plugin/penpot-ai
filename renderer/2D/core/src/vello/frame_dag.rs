@@ -427,10 +427,7 @@ impl FrameDag {
     #[must_use]
     pub fn folded_source(&self, j: usize) -> bool {
         if matches!(self.nodes[j].source, Source::Region(_)) {
-            return matches!(
-                self.nodes[j].op,
-                UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. })
-            );
+            return matches!(self.nodes[j].op, UnitOp::Rasterize(_));
         }
         let (_, tex) = self.bind_idx();
         tex[j]

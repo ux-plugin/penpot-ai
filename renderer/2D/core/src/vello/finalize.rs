@@ -275,8 +275,9 @@ impl Fin<'_> {
 /// Run finalize over a walked dag. `asks(reader)` is the reader's authored ask (`None` = full
 /// res); `budget_bytes` caps summed piece lease bytes via the √ squeeze. Wires each route's
 /// target into its reader component's `Reload` (append-only, invisible to arm baking — the
-/// [`FrameDag::wire_region_reader`] convention) so the shipped scheduler orders piece writes
-/// before their consumers, then computes interval leases and the WAR ledger.
+/// [`FrameDag::wire_region_reader`] convention), or into the reader itself for a scene-rooted
+/// chain that has no `Reload`, so the shipped scheduler orders piece writes before their
+/// consumers, then computes interval leases and the WAR ledger.
 #[must_use]
 pub fn finalize(
     dag: &mut FrameDag,
@@ -384,8 +385,9 @@ pub fn finalize(
                     && n.source == fin.dag.nodes[r.reader].source
             })
             .map(|(i, _)| i);
-        if let Some(rl) = reload {
-            fin.dag.nodes[rl].inputs.push(r.target);
+        match reload {
+            Some(rl) => fin.dag.nodes[rl].inputs.push(r.target),
+            None => fin.dag.nodes[r.reader].inputs.push(r.target),
         }
     }
 

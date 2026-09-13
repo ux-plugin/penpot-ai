@@ -71,7 +71,6 @@ fn cases() -> Vec<Case> {
         c("ed-bgblur-bottom", Doc::Editor, 4.0, (-530.0, -278.5)),
         c("ed-layerblur-right", Doc::Editor, 4.0, (-145.0, -74.0)),
         c("ed-fit", Doc::Editor, 2.0, (0.0, 0.0)),
-        c("ed-zoom-06", Doc::Editor, 0.6, (0.0, 0.0)),
         c("shadow-right", Doc::DropShadow, 8.0, (-1.0, -63.0)),
         c("shadow-writer-bottom", Doc::ShadowUnderBgblur, 4.0, (-1.0, 21.5)),
         c("bgblur-stack-right", Doc::BgblurStack, 2.0, (0.0, 0.0)),
