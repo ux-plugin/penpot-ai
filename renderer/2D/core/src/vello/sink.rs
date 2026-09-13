@@ -1977,16 +1977,7 @@ impl Sink {
         }
         let grid_h = regions.grid_height();
         let mut scene = backend.new_scene(width as u16, grid_h as u16);
-        /// What a region window redraws to fill its lease. Derived once, from the value the
-        /// window reproduces — never re-derived at draw time.
-        #[derive(Clone, Copy, Debug)]
-        enum RegionDraw {
-            /// Scene roots `lo..hi`, preceded by a background fill when `seed`.
-            Roots { lo: usize, hi: usize, seed: bool },
-            /// The shadow silhouette of `shape`'s effect-stack entry `slot`.
-            Silhouette { shape: u128, slot: usize },
-        }
-        let mut region_draws: HashMap<usize, (usize, RegionDraw)> = HashMap::new();
+        let mut region_draws: HashMap<usize, (usize, usize, usize, bool)> = HashMap::new();
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("WV_DBG_DAG").is_ok() {
             for (i, n) in dag.nodes.iter().enumerate() {
@@ -2011,12 +2002,6 @@ impl Sink {
 
             let dev_of = |n: usize| dag.nodes[n].reach.unwrap_or(frame_rect);
             let regrid_anchor = |rid: usize, rec: &mut [[f32; 4]; 12]| {
-                #[cfg(not(target_arch = "wasm32"))]
-                if std::env::var("WV_ABLATE_ANCHORS").is_ok() {
-                    rec[6][1] = 99999.0;
-                    rec[6][2] = 99999.0;
-                    return;
-                }
                 let a = regions.device_to_grid(rid);
                 let p = a * crate::kurbo::Point::new(f64::from(rec[6][1]), f64::from(rec[6][2]));
                 rec[6][1] = p.x as f32;
@@ -2105,7 +2090,7 @@ impl Sink {
                             continue;
                         };
                         let w_gi = gi_of0.get(&wshape).copied().unwrap_or(0);
-                        region_draws.insert(n, (rid, RegionDraw::Roots { lo: 0, hi: w_gi, seed: true }));
+                        region_draws.insert(n, (rid, 0, w_gi, true));
                         new_marks.push((gid, UnitMark {
                             node: n,
                             round: sched.round[n],
@@ -2203,48 +2188,7 @@ impl Sink {
                         }));
                     }
                     (U::Rasterize(_), _) => {
-                        let of_piece = |w: usize| {
-                            piece_idx.get(&w).and_then(|&i| match wlk.pieces[i].producer {
-                                crate::vello::walk::Producer::Chain { of } => Some(of),
-                                _ => None,
-                            })
-                        };
-                        let origin = of_piece(n).or_else(|| {
-                            let mut o = None;
-                            if dag.nodes[n].inputs.is_empty() {
-                                return None;
-                            }
-                            for &j in &dag.nodes[n].inputs {
-                                let w = writer_of.get(&j).copied().unwrap_or(j);
-                                match (of_piece(w), o) {
-                                    (Some(x), None) => o = Some(x),
-                                    (Some(x), Some(p)) if x == p => {}
-                                    _ => return None,
-                                }
-                            }
-                            o
-                        });
-                        let recipe = origin.and_then(|o| {
-                            match (&dag.nodes[o].op, &dag.nodes[o].source) {
-                                (
-                                    U::Rasterize(crate::vello::units::RasterSource::Coverage {
-                                        ..
-                                    }),
-                                    DagSource::Effect { shape, slot },
-                                ) => Some(RegionDraw::Silhouette { shape: *shape, slot: *slot }),
-                                (
-                                    U::Rasterize(_),
-                                    DagSource::Effect { shape, .. } | DagSource::Body(shape),
-                                ) => gi_of0
-                                    .get(shape)
-                                    .map(|&g| RegionDraw::Roots { lo: g, hi: g + 1, seed: false }),
-                                _ => None,
-                            }
-                        });
-                        region_draws.insert(
-                            n,
-                            (rid, recipe.unwrap_or(RegionDraw::Roots { lo: 0, hi: below, seed: true })),
-                        );
+                        region_draws.insert(n, (rid, 0, below, true));
                         new_marks.push((gid, UnitMark {
                             node: n,
                             round: sched.round[n],
@@ -2458,10 +2402,6 @@ impl Sink {
                         continue;
                     }
                     #[cfg(not(target_arch = "wasm32"))]
-                    if std::env::var("WV_ABLATE_ROUTES").is_ok() {
-                        continue;
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
                     if std::env::var("WV_ABLATE_GLASS_ROUTES").is_ok()
                         && matches!(
                             dag.nodes[r.reader].op,
@@ -2664,8 +2604,8 @@ impl Sink {
                 let ms = &marks[&gid];
                 let mut elig: Vec<(usize, u8)> = ms
                     .iter()
-                    .filter(|m| m.lease_route.is_none())
                     .filter_map(|m| depth_of.get(&m.node).map(|&d| (m.node, d)))
+
                     .collect();
                 if elig.is_empty() {
                     continue;
@@ -2775,9 +2715,9 @@ impl Sink {
             for (gid, ms) in &marks {
                 for m in ms {
                     eprintln!(
-                        "WV_DBG_MARKS: gid={:04x} node={} op={:?} round={} ctl={} masked={} band={} bits={} u1=({}, {}) a={} rect={:?} after={:?} lr={:?} route={:?}",
+                        "WV_DBG_MARKS: gid={:04x} node={} op={:?} round={} ctl={} masked={} band={} bits={} u1=({}, {}) a={} route={:?} clamp={:?}",
                         (gid & 0xffff) as u16, m.node, dag.nodes[m.node].op, m.round, m.ctl, m.masked, m.band,
-                        m.desc[0], m.desc[6], m.desc[7], m.desc[17], m.rect, m.after, m.lease_route, m.rec[10],
+                        m.desc[0], m.desc[6], m.desc[7], m.desc[17], m.rec[10], m.rec[11],
                     );
                 }
             }
@@ -3124,14 +3064,6 @@ impl Sink {
                                 }
                             }
                             if let Some((t, origin, kq)) = m.lease_route {
-                                #[cfg(not(target_arch = "wasm32"))]
-                                if std::env::var("WV_DBG_PATCH").is_ok() {
-                                    eprintln!(
-                                        "WV_DBG_PATCH node={} t={t} rid={:?} origin={origin:?} kq={kq}",
-                                        m.node,
-                                        rid_of.get(&t),
-                                    );
-                                }
                                 if let Some(&trid) = rid_of.get(&t) {
                                     let tr = &regions.regions[trid];
                                     let z = (k_late(t) / kq) as f32;
@@ -3305,26 +3237,6 @@ impl Sink {
                     backend.draw_scene_range(scene, t, lo, hi);
                 }
             };
-        let sil_class = |shape: u128, slot: usize| -> (usize, bool) {
-            let inset = dag.nodes.iter().any(|m| {
-                matches!(m.op, crate::vello::units::UnitOp::EraseBy(_))
-                    && matches!(m.source, crate::vello::frame_dag::Source::Effect { shape: s2, slot: sl2 } if s2 == shape && sl2 == slot)
-            });
-            let class_idx = crate::vello::abi::with_scene(|live, _, _| {
-                live.get(shape).map(|n| {
-                    crate::effect::effect_stack(n)
-                        .iter()
-                        .take(slot)
-                        .filter(|e| {
-                            matches!(e.source, crate::effect::Source::Coverage { .. })
-                                && (e.compose == crate::effect::Compose::Over) == inset
-                        })
-                        .count()
-                })
-            })
-            .unwrap_or(slot);
-            (class_idx, inset)
-        };
         let emit_sil_draws = |backend: &mut B, scene: &mut B::Scene, s: usize, clip: [f32; 4]| {
             let _ts = crate::vello::prof::now();
             use crate::vello::frame_dag::Source as DagSource;
@@ -3343,27 +3255,17 @@ impl Sink {
                 if std::env::var("WV_DBG_SIL").is_ok() {
                     eprintln!("WV_DBG_SIL: region ground s={s} draws={:?}", region_draws.get(&s));
                 }
-                if let Some(&(txri, draw)) = region_draws.get(&s) {
-                    let t = regions.device_to_grid(txri) * root;
-                    match draw {
-                        RegionDraw::Roots { lo, hi, seed } => {
-                            if seed {
-                                backend.draw_fill_rect(
-                                    scene,
-                                    clip,
-                                    crate::vello::abi::background().components,
-                                );
-                            }
-                            if hi > lo {
-                                backend.draw_scene_range(scene, t, lo, hi);
-                            }
-                        }
-                        RegionDraw::Silhouette { shape, slot } => {
-                            let (class_idx, inset) = sil_class(shape, slot);
-                            backend.build_shadow_silhouette(
-                                scene, t, shape, class_idx, inset, true, false,
-                            );
-                        }
+                if let Some(&(txri, lo, hi, seed)) = region_draws.get(&s) {
+                    if seed {
+                        backend.draw_fill_rect(
+                            scene,
+                            clip,
+                            crate::vello::abi::background().components,
+                        );
+                    }
+                    if hi > lo {
+                        let t = regions.device_to_grid(txri) * root;
+                        backend.draw_scene_range(scene, t, lo, hi);
                     }
                 }
             } else if let crate::vello::units::UnitOp::Rasterize(
@@ -3379,7 +3281,23 @@ impl Sink {
                     backend.draw_scene_range(scene, t, gi, gi + 1);
                 }
             } else if let DagSource::Effect { shape, slot } = dag.nodes[s].source {
-                let (class_idx, inset) = sil_class(shape, slot);
+                let inset = dag.nodes.iter().any(|m| {
+                    matches!(m.op, crate::vello::units::UnitOp::EraseBy(_))
+                        && matches!(m.source, DagSource::Effect { shape: s2, slot: sl2 } if s2 == shape && sl2 == slot)
+                });
+                let class_idx = crate::vello::abi::with_scene(|live, _, _| {
+                    live.get(shape).map(|n| {
+                        crate::effect::effect_stack(n)
+                            .iter()
+                            .take(slot)
+                            .filter(|e| {
+                                matches!(e.source, crate::effect::Source::Coverage { .. })
+                                    && (e.compose == crate::effect::Compose::Over) == inset
+                            })
+                            .count()
+                    })
+                })
+                .unwrap_or(slot);
                 backend.build_shadow_silhouette(scene, root, shape, class_idx, inset, true, false);
             }
             scene.pop_layer();
@@ -4385,11 +4303,7 @@ impl Sink {
                     let wlo: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
                     let dir = it.next().unwrap_or(".").to_string();
                     if window_lo >= wlo && window_lo <= whi {
-                        for (t, tag, layer) in store_tex
-                            .iter()
-                            .flat_map(|t| [(t, "l0", 0u32), (t, "l1", 1u32)])
-                            .chain(std::iter::once((&acc_tex, "acc", 0u32)))
-                        {
+                        for (t, tag) in store_tex.iter().map(|t| (t, "l0")).chain(std::iter::once((&acc_tex, "acc"))) {
                             Self::submit_batch(&mut enc, device, queue, backend);
                             let (w, h) = (t.width(), t.height());
                             let padded = (w * 4).div_ceil(256) * 256;
@@ -4404,7 +4318,7 @@ impl Sink {
                                 wgpu::TexelCopyTextureInfo {
                                     texture: t,
                                     mip_level: 0,
-                                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer.min(t.depth_or_array_layers().saturating_sub(1)) },
+                                    origin: wgpu::Origin3d::ZERO,
                                     aspect: wgpu::TextureAspect::All,
                                 },
                                 wgpu::TexelCopyBufferInfo {

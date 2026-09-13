@@ -319,23 +319,36 @@ impl Ctx<'_> {
         self.out.pieces.iter().any(|p| p.node == node)
     }
 
+    /// Whether `v`'s read spine reaches a `Reload` (backdrop content) rather than a `Rasterize`
+    /// (scene-rooted content — a silhouette, whose off-frame value really ends and must neither
+    /// mint instances nor route; its taps keep fading per the op's own edge policy).
+    fn reload_rooted(&self, mut v: usize) -> bool {
+        loop {
+            match self.dag.nodes[v].op {
+                UnitOp::Reload => return true,
+                UnitOp::Rasterize(_) => return false,
+                _ => match self.dag.nodes[v].inputs.first() {
+                    Some(&j) => v = j,
+                    None => return false,
+                },
+            }
+        }
+    }
+
     /// Instance coverage for chain node `v` over `rects`. A `Reload` resolves to state coverage at
-    /// the reading component's z; a `Rasterize` source mints BODY pieces — the shape's own draw
-    /// continues off-frame, so a scene-rooted chain (layer blur, shadow, glass over a body) is
-    /// served the same way a backdrop chain is; any other node mints `Chain` instance pieces
+    /// the reading component's z; a `Rasterize` source is scene-rooted (the executor re-draws it
+    /// with the piece offset) and needs no piece; any other node mints `Chain` instance pieces
     /// whose inputs are the instance coverage of its own inputs over the pad-extended window.
     fn instantiate_value(&mut self, v: usize, rects: Vec<Rect>) -> Vec<Cover> {
+        if !self.reload_rooted(v) {
+            return Vec::new();
+        }
         match self.dag.nodes[v].op {
             UnitOp::Reload => {
                 let top = self.state_top_of(v);
                 self.cover_state(top, rects)
             }
-            UnitOp::Rasterize(_) => {
-                let vop = self.dag.nodes[v].op.clone();
-                self.cover_with(Producer::Chain { of: v }, rects, &mut |_, _| {
-                    (vop.clone(), vec![])
-                })
-            }
+            UnitOp::Rasterize(_) => Vec::new(),
             _ => {
                 let pad = f64::from(self.dag.nodes[v].pad) + GUARD;
                 let vop = self.dag.nodes[v].op.clone();
