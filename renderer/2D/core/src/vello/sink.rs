@@ -4202,10 +4202,10 @@ impl Sink {
 
         backend.phased_frontend_full(device, queue, &mut enc);
 
+        use crate::vello::rasterize::fine_mode as fm;
         let _tpl = crate::vello::prof::now();
         let mut window_lo = 0u32;
         let mut seeded = false;
-        let mut store_served: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let seed_clear = |enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
             let bg = crate::vello::abi::background().premultiply().to_rgba8().to_u32();
             Compositor::clear(enc, view, [f64::from(bg), 0.0, 0.0, 0.0], None);
@@ -4250,7 +4250,7 @@ impl Sink {
                     );
                     let read_edge = |n: usize| -> Option<usize> { read_edge_of(&dag, shp, n) };
                     let mut acquire = || {
-                        let t = self.pool.acquire_grid_target(device, width, grid_h, format, phase_usage, "wv unit scratch");
+                        let t = self.pool.acquire_grid_target(device, width, grid_h, wgpu::TextureFormat::R32Uint, phase_usage, "wv unit scratch");
                         let v = layer0_view(&t);
                         let w = storage_array_view(&t);
                         draft_texs.push(t);
@@ -4286,10 +4286,7 @@ impl Sink {
                             if shp.base == Slot::Source {
                                 match (region_atlas.clone(), store_w.as_ref()) {
                                     (Some(av), Some(sw)) => {
-                                        backend.phased_fine_segment_stg_chain(device, queue, &mut enc, window_lo, hi, false, &acc, sw);
-                                        for &n in unit_nodes {
-                                            store_served.insert(n);
-                                        }
+                                        backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_BASE | fm::BASE | fm::STAGING | fm::STG_TAPS | fm::KEYS_ROUND | fm::VALUE_READS, Some(&acc), None, sw);
                                         av
                                     }
                                     _ => acquire().1,
@@ -4302,9 +4299,9 @@ impl Sink {
                                     .as_ref()
                                     .expect("a region round scheduled without a region atlas");
                                 if shp.base == Slot::None {
-                                    backend.phased_fine_segment_stg(device, queue, &mut enc, window_lo, hi, sw);
+                                    backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_CLEAR | fm::STAGING | fm::KEYS_ROUND | fm::VALUE_READS, None, None, sw);
                                 } else {
-                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, None, sw);
+                                    backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_BASE | fm::BASE | fm::STAGING | fm::KEYS_ROUND | fm::VALUE_READS, Some(&acc), None, sw);
                                 }
                                 bv
                             }
@@ -4314,18 +4311,18 @@ impl Sink {
                             (Slot::None, Slot::None) => {
                                 let (dw, dv) = draft_target(backend, rep);
                                 if placed {
-                                    backend.phased_fine_segment_stg(device, queue, &mut enc, window_lo, hi, &dw);
+                                    backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_CLEAR | fm::STAGING | fm::KEYS_ROUND | fm::VALUE_READS, None, None, &dw);
                                 } else {
-                                    backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &dw);
+                                    backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_CLEAR, None, None, &dw);
                                 }
                                 dv
                             }
                             (Slot::Backdrop, Slot::None) => {
                                 let (dw, dv) = draft_target(backend, rep);
                                 if placed {
-                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, None, &dw);
+                                    backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_BASE | fm::BASE | fm::STAGING | fm::KEYS_ROUND | fm::VALUE_READS, Some(&acc), None, &dw);
                                 } else {
-                                    backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, None, &dw);
+                                    backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_BASE | fm::BASE, Some(&acc), None, &dw);
                                 }
                                 dv
                             }
@@ -4336,29 +4333,29 @@ impl Sink {
                                     .clone();
                                 let (dw, dv) = draft_target(backend, rep);
                                 if placed {
-                                    backend.phased_fine_segment_stg_load(device, queue, &mut enc, window_lo, hi, &acc, Some(&src), &dw);
+                                    backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_BASE | fm::BASE | fm::INPUT | fm::STAGING | fm::KEYS_ROUND | fm::VALUE_READS, Some(&acc), Some(&src), &dw);
                                 } else {
-                                    backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, Some((false, &src)), &dw);
+                                    backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_BASE | fm::BASE | fm::INPUT | fm::KEYS_ROUND | fm::VALUE_READS, Some(&acc), Some(&src), &dw);
                                 }
                                 dv
                             }
                             (Slot::Source, Slot::Source) => {
                                 let (dw, dv) = draft_target(backend, rep);
                                 if placed {
-                                    backend.phased_fine_segment_stg_chain(device, queue, &mut enc, window_lo, hi, false, &acc, &dw);
+                                    backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_BASE | fm::BASE | fm::STAGING | fm::STG_TAPS | fm::KEYS_ROUND | fm::VALUE_READS, Some(&acc), None, &dw);
                                 } else {
                                     let sil = read_edge(rep)
                                         .and_then(|e| node_scratch.get(&e))
                                         .expect("source co-located for the round")
                                         .clone();
-                                    backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &sil, &sil, &dw);
+                                    backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_BASE | fm::BASE | fm::INPUT | fm::KEYS_ROUND | fm::VALUE_READS, Some(&sil), Some(&sil), &dw);
                                 }
                                 dv
                             }
                             (_, Slot::Draft(_)) => {
                                 let (dw, dv) = draft_target(backend, rep);
                                 if placed {
-                                    backend.phased_fine_segment_stg_chain(device, queue, &mut enc, window_lo, hi, shp.draft_taps, &acc, &dw);
+                                    backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_BASE | fm::BASE | fm::STAGING | fm::STG_TAPS | fm::KEYS_ROUND | fm::VALUE_READS | if shp.draft_taps { fm::KEEP_COV } else { 0 }, Some(&acc), None, &dw);
                                 } else {
                                     let src = read_edge(rep)
                                         .and_then(|e| node_scratch.get(&e))
@@ -4371,13 +4368,13 @@ impl Sink {
                                                 .cloned()
                                                 .expect("materialize base bound");
                                             if shp.draft_taps {
-                                                backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, hi, &base, &src, &dw);
+                                                backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_BASE | fm::BASE | fm::INPUT | fm::KEEP_COV, Some(&base), Some(&src), &dw);
                                             } else {
-                                                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &base, &src, &dw);
+                                                backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_BASE | fm::BASE | fm::INPUT | fm::KEYS_ROUND | fm::VALUE_READS, Some(&base), Some(&src), &dw);
                                             }
                                         }
                                         _ => {
-                                            backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &acc, Some((shp.draft_taps, &src)), &dw);
+                                            backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_BASE | fm::BASE | fm::INPUT | if shp.draft_taps { fm::KEEP_COV } else { fm::KEYS_ROUND | fm::VALUE_READS }, Some(&acc), Some(&src), &dw);
                                         }
                                     }
                                 }
@@ -4392,24 +4389,24 @@ impl Sink {
                     } else {
                         debug_assert!(seeded, "a composite window runs after the base window seeded the accumulator");
                         let src;
-                        let slot10 = match shp.input {
+                        let (mode, input) = match shp.input {
                             Slot::Draft(_) if shp.draft_taps => {
                                 let e = read_edge(rep).expect("draft aliased for the round");
                                 src = node_scratch.get(&e).expect("draft aliased for the round").clone();
-                                Some((true, draft_placed.contains(&e) || store_served.contains(&e), &src))
+                                (fm::INPUT | fm::KEEP_COV, Some(&src))
                             }
                             Slot::Draft(_) | Slot::Source => {
                                 let e = read_edge(rep).expect("slot-10 source bound");
                                 src = node_scratch.get(&e).expect("slot-10 source bound").clone();
-                                Some((false, draft_placed.contains(&e) || store_served.contains(&e), &src))
+                                (fm::INPUT | fm::KEYS_ROUND | fm::VALUE_READS, Some(&src))
                             }
-                            Slot::None => None,
+                            Slot::None => (0, None),
                             other => panic!("unit dispatch: unexpected composite input {other:?}"),
                         };
-                        backend.phased_fine_segment_rwu(device, queue, &mut enc, window_lo, hi, &snap, slot10, &acc_w);
+                        backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_OUTPUT | fm::BASE | mode, Some(&snap), input, &acc_w);
                     }
                 } else if !seeded {
-                    backend.phased_fine_segment_seed_u(device, queue, &mut enc, window_lo, hi, &acc_w);
+                    backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_COLOUR, None, None, &acc_w);
                     seeded = true;
                 } else {
                     if let Some(&(sb, sn)) = sparse_windows.get(&window_lo) {
@@ -4424,7 +4421,7 @@ impl Sink {
                     if !refresh.is_empty() {
                         backend.phase_snap_copy(device, queue, &mut enc, &refresh, &acc, &snap);
                     }
-                    backend.phased_fine_segment_rwu(device, queue, &mut enc, window_lo, hi, &snap, None, &acc_w);
+                    backend.phased_fine(device, queue, &mut enc, window_lo, hi, fm::INIT_OUTPUT | fm::BASE, Some(&snap), None, &acc_w);
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Ok(spec) = std::env::var("WV_DUMP_ATLAS_WIN") {

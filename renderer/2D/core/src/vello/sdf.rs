@@ -27,7 +27,7 @@ fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 }
 
 @fragment
-fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
+fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<u32> {
     let p = pos.xy;
     var md = 1e30;
     var wind = 0.0;
@@ -47,7 +47,7 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
         }
     }
     let sd = select(md, -md, abs(wind) > 0.5);
-    return clamp(0.5 + sd / params.decode, 0.0, 1.0);
+    return vec4<u32>(bitcast<u32>(clamp(0.5 + sd / params.decode, 0.0, 1.0)), 0u, 0u, 0u);
 }
 "#;
 
@@ -65,9 +65,9 @@ pub struct SdfBaker {
     layout: wgpu::BindGroupLayout,
 }
 
-/// The signed-distance format: a single 16-bit float channel, renderable and enough precision for the
-/// `[0, 1]`-encoded distance.
-pub const SDF_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
+/// The signed-distance format: the packed-store texel, holding the `[0, 1]`-encoded distance as f32
+/// bits so `fine` reads it through the same r32uint slot as every other value.
+pub const SDF_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
 impl SdfBaker {
     #[must_use]
@@ -175,7 +175,7 @@ impl SdfBaker {
             ],
         });
         let load = if clear {
-            wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 })
+            wgpu::LoadOp::Clear(wgpu::Color { r: f64::from(1.0f32.to_bits()), g: 0.0, b: 0.0, a: 0.0 })
         } else {
             wgpu::LoadOp::Load
         };

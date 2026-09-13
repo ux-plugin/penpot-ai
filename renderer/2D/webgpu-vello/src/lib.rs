@@ -25,7 +25,7 @@ pub use renderer::{create_focus_renderer, ClassicFocusRenderer};
 /// Whether the current device can bind `rgba8unorm` as a read-write storage texture — the single-
 /// accumulator fast path. Written once at device creation (the wasm shell probes the adapter; a
 /// native harness probes and sets it itself), read by the sink driver via
-/// [`RasterBackend::rw_accumulator`](render_core::vello::rasterize::RasterBackend::rw_accumulator).
+/// Kept as a host-visible capability flag; the effects path no longer branches on it.
 static RW_ACCUMULATOR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn set_rw_accumulator_supported(on: bool) {
@@ -571,11 +571,6 @@ impl ClassicRenderer {
 impl ClassicBackend {
     /// The region atlas view for a fine dispatch, or a persistent 1x1 dummy when none is bound
     /// (the binding layout always carries the slot).
-    fn region_view(&mut self, device: &wgpu::Device) -> wgpu::TextureView {
-        let dummy = self.region_dummy_view(device);
-        self.region_atlas.clone().unwrap_or(dummy)
-    }
-
     fn region_dummy_view(&mut self, device: &wgpu::Device) -> wgpu::TextureView {
         if self.region_dummy.is_none() {
             let t = device.create_texture(&wgpu::TextureDescriptor {
@@ -987,209 +982,40 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
     }
 
-    fn phased_fine_segment(
+    fn phased_fine(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         enc: &mut wgpu::CommandEncoder,
         seg_lo: u32,
         seg_target: u32,
+        mode: u32,
         base: Option<&wgpu::TextureView>,
+        input: Option<&wgpu::TextureView>,
         out: &wgpu::TextureView,
     ) {
         let _trd = render_core::vello::prof::now();
-        let session = self.phased_session.as_mut().expect("phased_fine_segment without phased_begin");
+        let dummy = self.region_dummy_view(device);
+        let staged = mode & render_core::vello::rasterize::fine_mode::STAGING != 0;
+        let region = self.region_atlas.clone().filter(|_| !staged).unwrap_or_else(|| dummy.clone());
+        let session = self.phased_session.as_mut().expect("phased_fine without phased_begin");
         self.renderer
             .inner
-            .phased_fine_segment_into(session, device, queue, enc, seg_lo, seg_target, base, out)
-            .expect("phased_fine_segment_into");
+            .phased_fine_into(
+                session,
+                device,
+                queue,
+                enc,
+                seg_lo,
+                seg_target,
+                mode,
+                base.unwrap_or(&dummy),
+                input.unwrap_or(&dummy),
+                &region,
+                out,
+            )
+            .expect("phased_fine_into");
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
-    }
-
-    fn phased_fine_segment_draft(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        seg_lo: u32,
-        seg_target: u32,
-        base: &wgpu::TextureView,
-        draft: &wgpu::TextureView,
-        out: &wgpu::TextureView,
-    ) {
-        let _trd = render_core::vello::prof::now();
-        let region = self.region_view(device);
-        let session = self.phased_session.as_mut().expect("phased_fine_segment_draft without phased_begin");
-        self.renderer
-            .inner
-            .phased_fine_segment_draft_into(session, device, queue, enc, seg_lo, seg_target, base, draft, &region, out)
-            .expect("phased_fine_segment_draft_into");
-        render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
-    }
-
-    fn phased_fine_segment_input(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        seg_lo: u32,
-        seg_target: u32,
-        base: &wgpu::TextureView,
-        input: &wgpu::TextureView,
-        out: &wgpu::TextureView,
-    ) {
-        let _trd = render_core::vello::prof::now();
-        let region = self.region_view(device);
-        let session = self.phased_session.as_mut().expect("phased_fine_segment_input without phased_begin");
-        self.renderer
-            .inner
-            .phased_fine_segment_input_into(session, device, queue, enc, seg_lo, seg_target, base, input, &region, out)
-            .expect("phased_fine_segment_input_into");
-        render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
-    }
-
-    fn rw_accumulator(&self) -> bool {
-        wv_rw_supported()
-    }
-
-    fn phased_fine_segment_rw(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        seg_lo: u32,
-        seg_target: u32,
-        target: &wgpu::TextureView,
-    ) {
-        let _trd = render_core::vello::prof::now();
-        let session = self.phased_session.as_mut().expect("phased_fine_segment_rw without phased_begin");
-        self.renderer
-            .inner
-            .phased_fine_segment_rw_into(session, device, queue, enc, seg_lo, seg_target, target)
-            .expect("phased_fine_segment_rw_into");
-        render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
-    }
-
-    fn phased_fine_segment_seed_u(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        seg_lo: u32,
-        seg_target: u32,
-        target: &wgpu::TextureView,
-    ) {
-        let session = self.phased_session.as_mut().expect("phased_fine_segment_seed_u without phased_begin");
-        self.renderer
-            .inner
-            .phased_fine_segment_seed_u_into(session, device, queue, enc, seg_lo, seg_target, target)
-            .expect("phased_fine_segment_seed_u_into");
-    }
-
-    fn phased_fine_segment_draftonly(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        seg_lo: u32,
-        seg_target: u32,
-        out: &wgpu::TextureView,
-    ) {
-        let session = self.phased_session.as_mut().expect("phased_fine_segment_draftonly without phased_begin");
-        self.renderer
-            .inner
-            .phased_fine_segment_draftonly_into(session, device, queue, enc, seg_lo, seg_target, out)
-            .expect("phased_fine_segment_draftonly_into");
-    }
-
-    fn phased_fine_segment_rwu(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        seg_lo: u32,
-        seg_target: u32,
-        snap: &wgpu::TextureView,
-        slot10: Option<(bool, bool, &wgpu::TextureView)>,
-        target: &wgpu::TextureView,
-    ) {
-        let region = self.region_view(device);
-        let session = self.phased_session.as_mut().expect("phased_fine_segment_rwu without phased_begin");
-        self.renderer
-            .inner
-            .phased_fine_segment_rwu_into(session, device, queue, enc, seg_lo, seg_target, snap, slot10, &region, target)
-            .expect("phased_fine_segment_rwu_into");
-    }
-
-    fn phased_fine_segment_stg(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        seg_lo: u32,
-        seg_target: u32,
-        out: &wgpu::TextureView,
-    ) {
-        let session = self.phased_session.as_mut().expect("phased_fine_segment_stg without phased_begin");
-        self.renderer
-            .inner
-            .phased_fine_segment_stg_into(session, device, queue, enc, seg_lo, seg_target, out)
-            .expect("phased_fine_segment_stg_into");
-    }
-
-    fn phased_fine_segment_stg_load(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        seg_lo: u32,
-        seg_target: u32,
-        base: &wgpu::TextureView,
-        sdf: Option<&wgpu::TextureView>,
-        out: &wgpu::TextureView,
-    ) {
-        let session = self.phased_session.as_mut().expect("phased_fine_segment_stg_load without phased_begin");
-        self.renderer
-            .inner
-            .phased_fine_segment_stg_load_into(session, device, queue, enc, seg_lo, seg_target, base, sdf, out)
-            .expect("phased_fine_segment_stg_load_into");
-    }
-
-    fn phased_fine_segment_stg_chain(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        seg_lo: u32,
-        seg_target: u32,
-        is_draft: bool,
-        base: &wgpu::TextureView,
-        out: &wgpu::TextureView,
-    ) {
-        let session = self.phased_session.as_mut().expect("phased_fine_segment_stg_chain without phased_begin");
-        self.renderer
-            .inner
-            .phased_fine_segment_stg_chain_into(session, device, queue, enc, seg_lo, seg_target, is_draft, base, out)
-            .expect("phased_fine_segment_stg_chain_into");
-    }
-
-    fn phased_fine_segment_loadu(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        seg_lo: u32,
-        seg_target: u32,
-        snap: &wgpu::TextureView,
-        slot10: Option<(bool, &wgpu::TextureView)>,
-        out: &wgpu::TextureView,
-    ) {
-        let region = self.region_view(device);
-        let session = self.phased_session.as_mut().expect("phased_fine_segment_loadu without phased_begin");
-        self.renderer
-            .inner
-            .phased_fine_segment_loadu_into(session, device, queue, enc, seg_lo, seg_target, snap, slot10, &region, out)
-            .expect("phased_fine_segment_loadu_into");
     }
 
     fn phase_scratch_origins(&mut self, scratch_out: [u32; 2], scratch_in: [u32; 2]) {

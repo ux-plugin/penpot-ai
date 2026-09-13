@@ -42,10 +42,38 @@ use vello_example_scenes::RenderingContext;
 /// the schedule, and composites — all in backend-neutral terms — while each flavor supplies only how
 /// a scene is built and rasterized.
 
-/// Sentinel `seg_target` for [`RasterBackend::phased_fine_segment`]: no upper bound on the
-/// tile-round window (the final window, or — with `seg_lo == 0` — a full render). Matches vello's
-/// `SEG_ALL`.
+/// Sentinel `seg_target` for [`RasterBackend::phased_fine`]: no upper bound on the tile-round
+/// window (the final window, or — with `seg_lo == 0` — a full render). Matches vello's `SEG_ALL`.
 pub const SEG_ALL: u32 = u32::MAX;
+
+/// The bits of a [`RasterBackend::phased_fine`] mode word — `fine.wgsl`'s `MODE_*` constants.
+/// Every dispatch says how its tile register seeds, which sampled slots are bound, whether value
+/// and tap reads ride the store itself, and how its marks key their window.
+pub mod fine_mode {
+    /// Register seed: the config base colour.
+    pub const INIT_COLOUR: u32 = 0;
+    /// Register seed: transparent.
+    pub const INIT_CLEAR: u32 = 1;
+    /// Register seed: the `base` slot at the pixel.
+    pub const INIT_BASE: u32 = 2;
+    /// Register seed: the store's own pixel (in-place read-modify-write; a tile with no work in the
+    /// window returns untouched).
+    pub const INIT_OUTPUT: u32 = 3;
+    /// The `base` slot is bound (the state below: orig, backdrop-edge taps, fence reloads).
+    pub const BASE: u32 = 4;
+    /// The `input` slot is bound (the value in: the previous link, a blur draft, a sampled field).
+    pub const INPUT: u32 = 8;
+    /// Value reads, region taps and floods read the store (`output`) rather than `input`/`base`.
+    pub const STAGING: u32 = 16;
+    /// Blur taps read the store at the tap coordinates (a chain link over a staged value).
+    pub const STG_TAPS: u32 = 32;
+    /// Every mark keys its window on its own round.
+    pub const KEYS_ROUND: u32 = 64;
+    /// A blur keeps the marker's coverage instead of saturating it (the separable-blur V pass).
+    pub const KEEP_COV: u32 = 128;
+    /// Marks may replace the register from the value slot (`src_value == 2`, scatter, atomic reads).
+    pub const VALUE_READS: u32 = 256;
+}
 
 pub trait RasterBackend {
 
@@ -164,7 +192,7 @@ pub trait RasterBackend {
 
     /// Begin a **persistent** phased render over the whole-viewport `scene`: allocate the session's
     /// shared buffers and hold them on the backend, so the sink can drive fine segments one at a time
-    /// with [`Self::phased_fine_segment`] and record an effect's passes (blur/glass/shadow) into the
+    /// with [`Self::phased_fine`] and record an effect's passes (blur/glass/shadow) into the
     /// *same* encoder between them — a whole effect frame in one setup and one submit. Records into
     /// `enc` (no submit). End with [`Self::phased_finish`]. Only classic; default panics.
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
@@ -183,229 +211,41 @@ pub trait RasterBackend {
     }
 
     /// Record the whole scene's front-end + tiling + coarse ONCE (front-end-once), building the shared
-    /// PTCL that [`Self::phased_fine_segment`] then walks per segment. Call once after
+    /// PTCL that [`Self::phased_fine`] then walks per window. Call once after
     /// [`Self::phased_begin`], before the first segment. Records into `enc` (no submit). It needs the
     /// `CMD_EFFECT` markers present in the encoding so `fine` can count segments. Classic-only; default panics.
     fn phased_frontend_full(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _enc: &mut wgpu::CommandEncoder) {
         unimplemented!("phased session is classic-only")
     }
 
-    /// Dispatch `fine` for the segment WINDOW `[seg_lo, seg_target]` of the shared PTCL built by
-    /// [`Self::phased_frontend_full`] into `enc`, writing `out`. `fine` composites only the commands
-    /// whose running segment index (the payload of the last `CMD_EFFECT` marker) falls in the window
-    /// — a window because reach-scoped markers give each tile only the boundaries that matter to it,
-    /// and because globally-empty segments are skipped, widening the next dispatch. `base`
-    /// (`Some`) is the previous window's output — after the caller's effect passes — loaded and
-    /// composited over; `None` clears to the base color (the first window). The window is
-    /// `[seg_lo, seg_target)` over per-tile rounds; [`SEG_ALL`] as `seg_target` removes the upper
-    /// bound. `base`/`out` are caller-owned `STORAGE_BINDING | TEXTURE_BINDING` textures.
-    /// Classic-only; default panics.
-    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
-    fn phased_fine_segment(
+    /// Dispatch the effects `fine` for the window `[seg_lo, seg_target)` of the shared PTCL built by
+    /// [`Self::phased_frontend_full`], writing the packed r32uint store `out` in place. `mode` is a
+    /// [`fine_mode`] word; `base` and `input` are the r32uint sampled slots it names (`None` binds
+    /// the backend's dummy), the region atlas rides [`Self::phase_region_atlas`]. [`SEG_ALL`] as
+    /// `seg_target` removes the upper bound. Classic-only; default panics.
+    #[expect(clippy::too_many_arguments, reason = "one dispatch, one binding set")]
+    fn phased_fine(
         &mut self,
         _device: &wgpu::Device,
         _queue: &wgpu::Queue,
         _enc: &mut wgpu::CommandEncoder,
         _seg_lo: u32,
         _seg_target: u32,
+        _mode: u32,
         _base: Option<&wgpu::TextureView>,
+        _input: Option<&wgpu::TextureView>,
         _out: &wgpu::TextureView,
     ) {
         unimplemented!("phased session is classic-only")
     }
 
-    /// Dispatch the `fine_area_load_draft` permutation for one window `[seg_lo, seg_target)`: like
-    /// [`Self::phased_fine_segment`] with a base, plus a second sampled input `draft` at binding 10 —
-    /// a separable blur's V pass, sampling its blur taps from `draft` (its H pass's unmasked result)
-    /// and its margin from `base` (the original backdrop). Classic-only; default panics.
-    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
-    fn phased_fine_segment_draft(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _enc: &mut wgpu::CommandEncoder,
-        _seg_lo: u32,
-        _seg_target: u32,
-        _base: &wgpu::TextureView,
-        _draft: &wgpu::TextureView,
-        _out: &wgpu::TextureView,
-    ) {
-        unimplemented!("phased session is classic-only")
-    }
-
-    /// Dispatch the `fine_area_load_input` permutation for one window `[seg_lo, seg_target)`: like
-    /// [`Self::phased_fine_segment_draft`] but binding 10 is a chained gather's PRIMARY input `input`
-    /// (the previous link's materialised surface) rather than a blur draft — a frosted lens's blur-H
-    /// (`input` = warp), scatter (`input` = blurred), or tail shade (`input` = scattered). Classic-only;
-    /// default panics.
-    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
-    fn phased_fine_segment_input(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _enc: &mut wgpu::CommandEncoder,
-        _seg_lo: u32,
-        _seg_target: u32,
-        _base: &wgpu::TextureView,
-        _input: &wgpu::TextureView,
-        _out: &wgpu::TextureView,
-    ) {
-        unimplemented!("phased session is classic-only")
-    }
-
-    /// Whether this backend's device can bind `rgba8unorm` as a READ-WRITE storage texture — the
-    /// single-accumulator fast path ([`Self::phased_fine_segment_rw`]). Default false: the driver
-    /// keeps the two-texture ping-pong.
-    fn rw_accumulator(&self) -> bool {
-        false
-    }
-
-    /// Dispatch the READ-WRITE fine permutation for one tile-round window `[seg_lo, seg_target)`,
-    /// updating the accumulator `target` IN PLACE — no base texture, no ping-pong; a tile with no
-    /// work in the window returns untouched. The caller clears `target` before the first window
-    /// (this mode never clears). Only valid when [`Self::rw_accumulator`] is true; `target` carries
-    /// `STORAGE_BINDING` alongside the usual attachment/sampling usages. Classic-only; default panics.
-    fn phased_fine_segment_rw(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _enc: &mut wgpu::CommandEncoder,
-        _seg_lo: u32,
-        _seg_target: u32,
-        _target: &wgpu::TextureView,
-    ) {
-        unimplemented!("phased session is classic-only")
-    }
-
-    /// Dispatch the SEED window over the PACKED accumulator (`fine_area_u`): clears to the base
-    /// color and writes the r32uint `target` (one `pack4x8unorm` texel per pixel, STORAGE_BINDING).
-    /// r32uint read-write storage is core WebGPU — this path needs no adapter features on any
-    /// platform. Classic-only; default panics.
-    fn phased_fine_segment_seed_u(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _enc: &mut wgpu::CommandEncoder,
-        _seg_lo: u32,
-        _seg_target: u32,
-        _target: &wgpu::TextureView,
-    ) {
-        unimplemented!("phased session is classic-only")
-    }
-
-    /// Dispatch a RASTERIZE window (`fine_area_draft`): transparent init, no base or slot-10
-    /// bindings — the window's fenced silhouette draws paint the rgba8 draft `out`, the zero-bit
-    /// mark's OUTPUT record shifting the stores into its lease. Classic-only; default panics.
-    fn phased_fine_segment_draftonly(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _enc: &mut wgpu::CommandEncoder,
-        _seg_lo: u32,
-        _seg_target: u32,
-        _out: &wgpu::TextureView,
-    ) {
-        unimplemented!("phased session is classic-only")
-    }
-
-    /// Dispatch an in-place COMPOSITE window over the packed accumulator (`fine_area_rwu*`):
-    /// `target` is read-modified-written per own pixel — an untouched tile keeps its pixels, so a
-    /// sparse window costs only its listed tiles. `snap` is the round's packed backdrop SNAPSHOT
-    /// (the accumulator is never bound readable — see the sink's snapshot blits); `slot10` is
-    /// `Some((is_draft, packed, view))` for a chained input or blur draft — `packed` marks an
-    /// r32uint staging lease instead of an rgba8 draft. Classic-only; default panics.
-    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
-    fn phased_fine_segment_rwu(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _enc: &mut wgpu::CommandEncoder,
-        _seg_lo: u32,
-        _seg_target: u32,
-        _snap: &wgpu::TextureView,
-        _slot10: Option<(bool, bool, &wgpu::TextureView)>,
-        _target: &wgpu::TextureView,
-    ) {
-        unimplemented!("phased session is classic-only")
-    }
-
-    /// Dispatch a MATERIALIZE window whose backdrop is the packed snapshot (`fine_area_loadu*`):
-    /// `out` is the rgba8 draft (lease or fallback), `snap`/`slot10` as in
-    /// [`Self::phased_fine_segment_rwu`]. Classic-only; default panics.
-    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
-    fn phased_fine_segment_loadu(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _enc: &mut wgpu::CommandEncoder,
-        _seg_lo: u32,
-        _seg_target: u32,
-        _snap: &wgpu::TextureView,
-        _slot10: Option<(bool, &wgpu::TextureView)>,
-        _out: &wgpu::TextureView,
-    ) {
-        unimplemented!("phased session is classic-only")
-    }
-
-    /// Dispatch a RASTERIZE window into the packed r32uint staging store (`fine_area_stg`):
-    /// transparent init, stores land packed at their OUTPUT-record leases. Classic-only; default
-    /// panics.
-    fn phased_fine_segment_stg(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _enc: &mut wgpu::CommandEncoder,
-        _seg_lo: u32,
-        _seg_target: u32,
-        _out: &wgpu::TextureView,
-    ) {
-        unimplemented!("phased session is classic-only")
-    }
-
-    /// Dispatch a backdrop MATERIALIZE window into the packed staging store (`fine_area_stg_load*`):
-    /// `base` is the packed accumulator bound read-only (no snapshot needed — the window never
-    /// writes it), `sdf` an optional sampled field texture, `out` the r32uint staging store that
-    /// also serves the window's value reads. Classic-only; default panics.
-    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
-    fn phased_fine_segment_stg_load(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _enc: &mut wgpu::CommandEncoder,
-        _seg_lo: u32,
-        _seg_target: u32,
-        _base: &wgpu::TextureView,
-        _sdf: Option<&wgpu::TextureView>,
-        _out: &wgpu::TextureView,
-    ) {
-        unimplemented!("phased session is classic-only")
-    }
-
-    /// Dispatch a CHAIN materialize window (`fine_area_stg_chain*`): taps and output ride the
-    /// packed staging store, `base` is the packed accumulator bound read-only (backdrop-edge taps
-    /// and orig) — `is_draft` selects the separable-blur tap arm. Classic-only; default panics.
-    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
-    fn phased_fine_segment_stg_chain(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _enc: &mut wgpu::CommandEncoder,
-        _seg_lo: u32,
-        _seg_target: u32,
-        _is_draft: bool,
-        _base: &wgpu::TextureView,
-        _out: &wgpu::TextureView,
-    ) {
-        unimplemented!("phased session is classic-only")
-    }
-
-    /// Set the reach-crop origins for the NEXT `phased_fine_segment*` call: `scratch_out` shifts where
+    /// Set the reach-crop origins for the NEXT [`Self::phased_fine`] call: `scratch_out` shifts where
     /// the producer writes `output`, `scratch_in` where the consumer samples its scratch (`draft`/
     /// `input`). Consumed by that one dispatch, then reset — a following full-viewport call is inert, so
     /// only a cropped call needs to set them. `[0, 0]` = that slot is not cropped. Default: no-op.
     fn phase_scratch_origins(&mut self, _scratch_out: [u32; 2], _scratch_in: [u32; 2]) {}
 
-    /// Set the sparse tile list for the NEXT `phased_fine_segment*` call: the fine grid becomes
+    /// Set the sparse tile list for the NEXT [`Self::phased_fine`] call: the fine grid becomes
     /// `(n, 1, 1)` workgroups, workgroup `i` reading its tile coordinate from
     /// `effect_params[base + i]` (packed `y<<16 | x`, biased by `0x40000000`). Consumed by that one
     /// dispatch, then reset — a following full-viewport call is inert. Default: no-op.
