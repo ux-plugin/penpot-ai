@@ -722,6 +722,9 @@ impl Sink {
 
         let graph = crate::vello::graph_build::build_frame_graph(root, width, height);
         let plan = crate::vello::scheduler::plan(&graph, width, height);
+        if std::env::var_os("WV_PLAN_DUMP").is_some() {
+            eprintln!("{}{}", crate::vello::graph_build::dump(&graph), plan.dump());
+        }
         self.run_plan(&plan, backend, device, queue, target, root, width, height);
     }
 

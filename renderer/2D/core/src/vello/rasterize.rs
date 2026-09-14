@@ -46,37 +46,6 @@ use vello_example_scenes::RenderingContext;
 /// window (the final window, or — with `seg_lo == 0` — a full render). Matches vello's `SEG_ALL`.
 pub const SEG_ALL: u32 = u32::MAX;
 
-/// The bits of a [`RasterBackend::phased_fine`] mode word — `fine.wgsl`'s `MODE_*` constants.
-/// Every dispatch says how its tile register seeds, which sampled slots are bound, whether value
-/// and tap reads ride the store itself, and how its marks key their window.
-pub mod fine_mode {
-    /// Register seed: the config base colour.
-    pub const INIT_COLOUR: u32 = 0;
-    /// Register seed: transparent.
-    pub const INIT_CLEAR: u32 = 1;
-    /// Register seed: the `base` slot at the pixel.
-    pub const INIT_BASE: u32 = 2;
-    /// Register seed: the store's own pixel (in-place read-modify-write; a tile with no work in the
-    /// window returns untouched).
-    pub const INIT_OUTPUT: u32 = 3;
-    /// The `base` slot is bound (the state below: orig, backdrop-edge taps, fence reloads).
-    pub const BASE: u32 = 4;
-    /// The `input` slot is bound (the value in: the previous link, a blur draft, a sampled field).
-    pub const INPUT: u32 = 8;
-    /// Value reads, region taps and floods read the store (`output`) rather than `input`/`base`.
-    pub const STAGING: u32 = 16;
-    /// Blur taps read the store at the tap coordinates (a chain link over a staged value).
-    pub const STG_TAPS: u32 = 32;
-    /// Every mark keys its window on its own round.
-    pub const KEYS_ROUND: u32 = 64;
-    /// A blur keeps the marker's coverage instead of saturating it (the separable-blur V pass).
-    pub const KEEP_COV: u32 = 128;
-    /// Marks may replace the register from the value slot (`src_value == 2`, scatter, atomic reads).
-    pub const VALUE_READS: u32 = 256;
-    /// The `base` slot is a rect of the store itself, placed by [`super::RasterBackend::phase_base_rect`].
-    pub const BASE_STORE: u32 = 512;
-}
-
 pub trait RasterBackend {
 
     /// The backend's scene type (a `vello_hybrid::Scene`, or the classic `RenderingContext` wrapper).
@@ -149,10 +118,10 @@ pub trait RasterBackend {
     /// float offset of this effect's descriptor in the `effect_params` buffer; `0` otherwise.
     fn draw_effect_marker(&mut self, _scene: &mut Self::Scene, _transform: Affine, _id: u128, _effect_id: u32, _seg_after: u32, _round: u32, _p2: u32, _reach: [f32; 4], _atomic_ctl: u32) {}
 
-    /// Declare the FRAME extent (accumulator/backdrop rows) for subsequent renders whose target
-    /// covers a taller tile grid (interest-region rows rented below the frame). `(0, 0)` restores
-    /// frame == target. Default no-op — only the phased (classic) backend distinguishes the two.
-    fn set_frame_extent(&mut self, _width: u32, _height: u32) {}
+    /// Declare the store's page pitch for subsequent fine passes: `width` is the frame's, `rows`
+    /// the plan's page pitch, the stride fine folds a store row back to a frame row by. `(0, 0)`
+    /// restores page == target. Default no-op — only the phased (classic) backend pages.
+    fn set_frame_extent(&mut self, _width: u32, _rows: u32) {}
 
     /// Fill `rect` (device px, identity transform) with a solid premul-straight `color` — the page
     /// ground an interest region's content composites over. Default no-op.
@@ -212,11 +181,9 @@ pub trait RasterBackend {
     }
 
     /// Dispatch the effects `fine` for the window `[seg_lo, seg_target)` of the shared PTCL built by
-    /// [`Self::phased_frontend_full`], writing the packed r32uint store `out` in place. `mode` is a
-    /// [`fine_mode`] word; `base` and `input` are the r32uint sampled slots it names (`None` binds
-    /// the backend's dummy). [`SEG_ALL`] as
-    /// `seg_target` removes the upper bound. Classic-only; default panics.
-    #[expect(clippy::too_many_arguments, reason = "one dispatch, one binding set")]
+    /// [`Self::phased_frontend_full`], reading and writing the packed r32uint store `out` in place;
+    /// every operand a mark reads is a store rect its descriptor names. [`SEG_ALL`] as `seg_target`
+    /// removes the upper bound. Classic-only; default panics.
     fn phased_fine(
         &mut self,
         _device: &wgpu::Device,
@@ -224,9 +191,6 @@ pub trait RasterBackend {
         _enc: &mut wgpu::CommandEncoder,
         _seg_lo: u32,
         _seg_target: u32,
-        _mode: u32,
-        _base: Option<&wgpu::TextureView>,
-        _input: Option<&wgpu::TextureView>,
         _out: &wgpu::TextureView,
     ) {
         unimplemented!("phased session is classic-only")
@@ -236,17 +200,6 @@ pub trait RasterBackend {
     /// at `root` (composed with the viewport as [`Self::draw_scene_range`] does) — a coverage draw
     /// item. Text draws its glyph coverage. Default no-op.
     fn draw_coverage(&mut self, _scene: &mut Self::Scene, _root: Affine, _id: u128, _spread: f32) {}
-
-    /// Place the `base` slot for the NEXT [`Self::phased_fine`] call inside the store: the rect at
-    /// `at` (store texels) holds the frame-space region `[org, org + ext)`. Consumed by that one
-    /// dispatch. Default no-op.
-    fn phase_base_rect(&mut self, _org: [u32; 2], _ext: [u32; 2], _at: [u32; 2]) {}
-
-    /// Set the reach-crop origins for the NEXT [`Self::phased_fine`] call: `scratch_out` shifts where
-    /// the producer writes `output`, `scratch_in` where the consumer samples its scratch (`draft`/
-    /// `input`). Consumed by that one dispatch, then reset — a following full-viewport call is inert, so
-    /// only a cropped call needs to set them. `[0, 0]` = that slot is not cropped. Default: no-op.
-    fn phase_scratch_origins(&mut self, _scratch_out: [u32; 2], _scratch_in: [u32; 2]) {}
 
     /// Set the sparse tile list for the NEXT [`Self::phased_fine`] call: the fine grid becomes
     /// `(n, 1, 1)` workgroups, workgroup `i` reading its tile coordinate from

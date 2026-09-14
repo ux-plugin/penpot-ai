@@ -1,15 +1,15 @@
 //! The executor: run a [`FramePlan`] and decide nothing.
 //!
-//! One store texture, bound once. Each pass is encoded as it says: a `Clear` fills, a `Frontend`
-//! builds the scene the draw commands describe and runs vello's front-end once, a `Fine` is one
-//! dispatch over its window with the store as the only read and write, a `Copy` copies, a
-//! `Present` unpacks the frame rows onto the swapchain. Nothing here reads the graph, the scene's
-//! effect stacks, or a node's neighbourhood.
+//! One store texture, bound once: the frame rows and the pages under them. Each pass is encoded
+//! as it says: a `Clear` fills, a `Frontend` builds the scene the draw commands describe and runs
+//! vello's front-end once, a `Fine` is one dispatch over its window's tiles with the store as the
+//! only read and write, a `Copy` copies, a `Present` unpacks the frame rows onto the swapchain.
+//! Nothing here reads the graph, the scene's effect stacks, or a node's neighbourhood.
 
 use crate::kurbo::{Affine, Rect, Shape as _};
 use crate::vello::frame_plan::{DrawCmd, FramePlan, Pass, Tiles};
 use crate::vello::frame_graph::DrawStyle;
-use crate::vello::rasterize::{fine_mode as fm, RasterBackend, SEG_ALL};
+use crate::vello::rasterize::{RasterBackend, SEG_ALL};
 use crate::vello::sink::Sink;
 use vello_example_scenes::RenderingContext;
 
@@ -75,8 +75,14 @@ impl Sink {
         let store_w = crate::vello::sink::storage_array_view(&store_tex);
         let store_l0 = crate::vello::sink::layer0_view(&store_tex);
         let store_sz = (sw as f32, store_tex.height() as f32);
-        backend.set_frame_extent(width, height);
+        backend.set_frame_extent(width, plan.page);
         let params: Vec<u8> = plan.params.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let binding_limit = device.limits().max_storage_buffer_binding_size as usize;
+        assert!(
+            params.len() <= binding_limit,
+            "frame plan params ({} bytes) exceed the device's storage binding limit ({binding_limit} bytes)",
+            params.len()
+        );
 
         let t_enc = crate::vello::prof::now();
         let mut in_session = false;
@@ -96,24 +102,18 @@ impl Sink {
                     backend.phased_frontend_full(device, queue, &mut enc);
                     in_session = true;
                 }
-                Pass::Fine { window, output: _, base, input } => {
+                Pass::Fine { window } => {
                     assert!(in_session, "a Fine before the Frontend");
-                    let mut mode = fm::INIT_OUTPUT | fm::STAGING | fm::STG_TAPS | fm::KEYS_ROUND | fm::VALUE_READS;
-                    if let Some(b) = base {
-                        let b = texels(*b);
-                        mode |= fm::BASE | fm::BASE_STORE;
-                        backend.phase_base_rect([0, 0], [b[2] - b[0], b[3] - b[1]], [b[0], b[1]]);
-                    }
-                    if input.is_some() {
-                        mode |= fm::INPUT;
-                    }
                     if let Tiles::List { off, n } = window.tiles {
+                        if n == 0 {
+                            continue;
+                        }
                         backend.phase_sparse_window(off, n);
                     }
                     let hi = if window.rounds.1 == u32::MAX { SEG_ALL } else { window.rounds.1 };
                     crate::vello::frame_log::note_window();
                     crate::vello::sink::note_passes(2);
-                    backend.phased_fine(device, queue, &mut enc, window.rounds.0, hi, mode, None, None, &store_w);
+                    backend.phased_fine(device, queue, &mut enc, window.rounds.0, hi, &store_w);
                 }
                 Pass::Copy { src, dst } => {
                     backend.phase_flush(&mut enc);
@@ -125,7 +125,19 @@ impl Sink {
                     backend.phase_flush(&mut enc);
                     let f = texels(*from);
                     assert_eq!(f, [0, 0, width, height], "the frame rows are what is presented");
-                    self.present_final(&mut enc, device, &sw_view, &store_l0, width, height, wgpu::TextureFormat::Rgba8Unorm, sz, store_sz, full_view);
+                    let page: u32 = std::env::var("WV_PRESENT_PAGE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+                    if page > 0 {
+                        let y = (page * height) as f32;
+                        self.compositor.blit_packed(device, &mut enc, &sw_view, sz, &crate::vello::blend::Blit {
+                            src: &store_l0,
+                            dst: (0.0, 0.0, sz.0, sz.1),
+                            src_rect: (0.0, y, sz.0, sz.1),
+                            src_size: store_sz,
+                            alpha: 1.0,
+                        });
+                    } else {
+                        self.present_final(&mut enc, device, &sw_view, &store_l0, width, height, wgpu::TextureFormat::Rgba8Unorm, sz, store_sz, full_view);
+                    }
                 }
             }
         }

@@ -569,24 +569,6 @@ impl ClassicRenderer {
 }
 
 impl ClassicBackend {
-    /// The region atlas view for a fine dispatch, or a persistent 1x1 dummy when none is bound
-    /// (the binding layout always carries the slot).
-    fn dummy_view(&mut self, device: &wgpu::Device) -> wgpu::TextureView {
-        if self.dummy_u32.is_none() {
-            let t = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("wv dummy u32"),
-                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R32Uint,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            self.dummy_u32 = Some(t.create_view(&wgpu::TextureViewDescriptor::default()));
-        }
-        self.dummy_u32.clone().expect("dummy just built")
-    }
 
     /// SPIKE accessor — reach the vello renderer from the focus renderer. Throwaway.
     pub fn renderer_mut(&mut self) -> &mut ClassicRenderer {
@@ -683,8 +665,6 @@ pub struct ClassicBackend {
     /// The in-progress persistent phased render, live between `phased_begin` and `phased_finish` so
     /// the sink can drive phases one at a time with a gather's effect recorded between them.
     phased_session: Option<vello::low_level::PhasedSession>,
-    /// A 1x1 r32uint sampled view bound wherever a fine slot is unused.
-    dummy_u32: Option<wgpu::TextureView>,
     /// Encoded leaf-body fragments spliced by the whole-viewport walk — see [`walk::BodyCache`].
     body_cache: crate::walk::BodyCache,
     /// DEBUG (native only): the phased session's bump-buffer resource id + a device/queue clone, so
@@ -708,7 +688,6 @@ impl ClassicBackend {
             inline_images: std::collections::HashMap::new(),
             next_inline: 0,
             phased_session: None,
-            dummy_u32: None,
             body_cache: crate::walk::BodyCache::default(),
             #[cfg(not(target_arch = "wasm32"))]
             debug_bump_id: None,
@@ -896,11 +875,6 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         });
     }
 
-    fn phase_base_rect(&mut self, org: [u32; 2], ext: [u32; 2], at: [u32; 2]) {
-        if let Some(session) = self.phased_session.as_mut() {
-            session.set_base_rect(org, ext, at);
-        }
-    }
 
 
     fn draw_fill_rect(&mut self, scene: &mut ClassicCtx, rect: [f32; 4], color: [f32; 4]) {
@@ -1009,37 +983,17 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         enc: &mut wgpu::CommandEncoder,
         seg_lo: u32,
         seg_target: u32,
-        mode: u32,
-        base: Option<&wgpu::TextureView>,
-        input: Option<&wgpu::TextureView>,
         out: &wgpu::TextureView,
     ) {
         let _trd = render_core::vello::prof::now();
-        let dummy = self.dummy_view(device);
         let session = self.phased_session.as_mut().expect("phased_fine without phased_begin");
         self.renderer
             .inner
-            .phased_fine_into(
-                session,
-                device,
-                queue,
-                enc,
-                seg_lo,
-                seg_target,
-                mode,
-                base.unwrap_or(&dummy),
-                input.unwrap_or(&dummy),
-                out,
-            )
+            .phased_fine_into(session, device, queue, enc, seg_lo, seg_target, out)
             .expect("phased_fine_into");
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
     }
 
-    fn phase_scratch_origins(&mut self, scratch_out: [u32; 2], scratch_in: [u32; 2]) {
-        if let Some(session) = self.phased_session.as_mut() {
-            session.set_scratch_origins(scratch_out, scratch_in);
-        }
-    }
 
     fn phase_sparse_window(&mut self, base: u32, n: u32) {
         if let Some(session) = self.phased_session.as_mut() {

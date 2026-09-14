@@ -69,21 +69,17 @@ pub mod bits {
     pub const VALUE_OVER: u32 = 16384;
 }
 
-/// The number of operand records every arm carries after its 26-float header. Record 5 is
-/// unused since the region atlas went; it stays zero.
+/// The number of operand records every arm carries after its 26-float header. Record 5 holds
+/// the field anchor.
 pub const REC_COUNT: usize = 6;
 
-/// Floats per operand record: a base row `[source, window x, window y, param]` plus an extension
-/// row for source kinds that need more than four facts (don't-care zeros today) — the ABI's "a wider source kind widens the stride constant for
-/// everyone". Record `i` sits at `off + 26 + i * REC_STRIDE` (vec4 `2i` in the kernel's view).
-/// Roles: record 0 = the VALUE the arm transforms, record 1 = the REFERENCE (`orig`) binary
-/// pointwise units compare against, record 2 = the composite's COVERAGE, record 3 = the FIELD's
-/// distance input, record 4 = the arm's OUTPUT, record 5 = the value input's OVERFLOW. Source
-/// codes are role-typed: 0 = default (backdrop / `area[i]` / generated / the accumulator), 2 =
-/// the input register (a source, draft, scratch, or baked SDF); for the OUTPUT record, 1 = a
-/// reach-cropped scratch lease; the window is the operand's coordinate-frame origin in device px
-/// (a texture region's start, a generated field's anchor, or the lease origin the store shifts
-/// by); param is per-source (an SDF decode range, a route's density).
+/// Floats per operand record: `[source, x0, y0, x1]` then `[y1, dx, dy, decode]` — the store rect
+/// the operand occupies (rows carrying its page), the displacement it is read through, and a
+/// distance field's decode. Record `i` sits at `off + 26 + i * REC_STRIDE`. Roles: record 0 = the
+/// VALUE the arm transforms, record 1 = the REFERENCE binary pointwise units read, record 2 = the
+/// compose's COVERAGE, record 3 = the FIELD's distance input, record 4 = the arm's OUTPUT, record 5
+/// = the field anchor. Source 0 = absent, 1 = a store rect, 2 = the tile's own registers (the
+/// state it holds), 3 = the marker's own silhouette.
 pub const REC_STRIDE: usize = 8;
 
 /// The FIELD operand's MATH (`program`, slot 1) — which analytic assembly the arm's field runs.
@@ -150,6 +146,9 @@ pub const PAYLOAD_BLUR_SRGB_SLOT: usize = 12;
 /// Flat payload slot 13 (`u[2].w`): a `Blur`'s out-of-bounds taps read transparent 0 (a coverage
 /// blur) rather than the page (a backdrop blur).
 pub const PAYLOAD_BLUR_EDGE_SLOT: usize = 13;
+/// Flat payload slot 23 (`u[5].w`): a `Warp`'s displaced reads past its value rect return
+/// transparent 0 (a body warp) rather than the rect's clamped edge (a backdrop lens).
+pub const PAYLOAD_WARP_EDGE_SLOT: usize = 23;
 
 /// The complete `bits` word for one arm: its unit-derived bits plus the compose mode.
 #[must_use]
@@ -257,7 +256,7 @@ pub fn bake_unit(op: &UnitOp, policy: Policy) -> [f32; 26] {
     }
 }
 
-/// Stamp a descriptor's field ANCHOR into operand record 3 — the device point the
+/// Stamp a descriptor's field ANCHOR into operand record 5 — the device point the
 /// program measures its field relative to. WHERE the anchor lives in the uniform is each program's
 /// declared fact ([`crate::vello::fine_field::programs`], the source's centre slot), so this is a
 /// table lookup, never a per-program branch; a program with no anchor (or no field at all) leaves
@@ -274,8 +273,8 @@ pub fn stamp_field_anchor(desc: &[f32; 26], rec: &mut [[f32; 4]; 12]) {
     });
     let id = desc[1] as u32;
     if let Some(&(_, i)) = table.iter().find(|&&(p, _)| p == id) {
-        rec[6][1] = desc[i];
-        rec[6][2] = desc[i + 1];
+        rec[10][0] = desc[i];
+        rec[10][1] = desc[i + 1];
     }
 }
 

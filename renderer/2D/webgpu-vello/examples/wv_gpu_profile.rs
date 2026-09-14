@@ -126,7 +126,10 @@ fn main() {
     {
         let mut scene = backend.new_scene(w as u16, h as u16);
         use render_core::vello::rasterize::RasterBackend;
-        RasterBackend::draw_scene_range(&mut backend, &mut scene, Affine::IDENTITY, 0, usize::MAX);
+        let roots = render_core::vello::abi::with_scene(|live, _, _| live.roots().to_vec());
+        for id in roots {
+            RasterBackend::draw_shape(&mut backend, &mut scene, Affine::IDENTITY, id);
+        }
         let enc = scene.scene().encoding();
         let ptag = enc.path_tags.len();
         let pdata = enc.path_data.len();

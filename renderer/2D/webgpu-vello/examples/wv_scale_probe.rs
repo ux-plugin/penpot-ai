@@ -126,7 +126,10 @@ fn main() {
         });
         let view = inter.create_view(&wgpu::TextureViewDescriptor::default());
         let mut scene = backend.new_scene(w as u16, h as u16);
-        backend.draw_scene_range(&mut scene, root, 0, usize::MAX);
+        let roots = render_core::vello::abi::with_scene(|live, _, _| live.roots().to_vec());
+        for id in roots {
+            backend.draw_shape(&mut scene, root, id);
+        }
         let e = scene.scene().encoding();
         println!(
             "encoding: n_paths {} n_path_segments {} n_clips {} n_open_clips {} draw_tags {} path_tags {} path_data {}",

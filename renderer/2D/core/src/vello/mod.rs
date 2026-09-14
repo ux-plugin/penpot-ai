@@ -33,7 +33,6 @@ pub mod gputime;
 pub mod graph;
 pub mod prof;
 pub mod rasterize;
-pub mod region;
 pub mod scheduler;
 pub mod sdf;
 pub mod store;

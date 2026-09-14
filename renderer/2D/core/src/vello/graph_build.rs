@@ -114,6 +114,34 @@ impl Builder<'_> {
         self.view.transform_rect_bbox(page.inflate(s, s))
     }
 
+    /// The device box of `id`'s painted subtree: every visible descendant's page box under the
+    /// view; a group has no box of its own. `None` when the subtree paints nothing.
+    fn subtree_device_bounds(&self, id: ShapeId) -> Option<Rect> {
+        let page = self.subtree_page_bounds(id)?;
+        Some(self.view.transform_rect_bbox(page))
+    }
+
+    fn subtree_page_bounds(&self, id: ShapeId) -> Option<Rect> {
+        let node = self.scene.get(id)?;
+        if node.hidden || node.kind == ShapeKind::Unsupported {
+            return None;
+        }
+        let mut acc = (node.kind != ShapeKind::Group).then(|| crate::schedule::page_bounds(node, (self.modifier)(id)));
+        for &child in &node.children {
+            if let Some(cb) = self.subtree_page_bounds(child) {
+                acc = Some(acc.map_or(cb, |a| a.union(cb)));
+            }
+        }
+        acc
+    }
+
+    /// Whether the shape's own body puts ink down: fills, strokes, text, raw SVG, or the box
+    /// shadows vello draws natively on a box shape.
+    fn paints(node: &Node) -> bool {
+        let box_shadows = !node.shadows.is_empty() && matches!(node.kind, ShapeKind::Rect | ShapeKind::Frame | ShapeKind::Circle);
+        !node.fills.is_empty() || node.text.is_some() || !node.strokes.is_empty() || node.svg.is_some() || box_shadows
+    }
+
     /// A page-space vector under the view's linear part.
     fn device_vec(&self, v: Vec2) -> [f32; 2] {
         let c = self.view.as_coeffs();
@@ -151,7 +179,6 @@ impl Builder<'_> {
         }
         let effects = Self::lowerable(node);
         if effects.is_empty() {
-            let has_paint = !node.fills.is_empty() || node.text.is_some() || !node.strokes.is_empty();
             let transparent_container = node.kind.is_container()
                 && !node.clip
                 && !node.masked
@@ -163,8 +190,7 @@ impl Builder<'_> {
                 }
                 return;
             }
-            if has_paint || !node.children.is_empty() {
-                let bounds = self.device_bounds(id, node, 0.0);
+            if let Some(bounds) = self.subtree_device_bounds(id) {
                 self.pending.push(DrawItem { shape: id, style: DrawStyle::Body, bounds });
             }
             return;
@@ -206,20 +232,19 @@ impl Builder<'_> {
         self.spine = self.push(Op::Compose { mode, colour, offset }, inputs, label);
     }
 
-    /// Lower one effect-bearing shape in paint order: drops under the body, the body, the gather
-    /// through the coverage, the body replacement, inners over.
+    /// Lower one effect-bearing shape in paint order: drops under, the gather through the
+    /// coverage, the body (or its replacement) over it, inners over the body.
     fn lower_effect_node(&mut self, id: ShapeId, node: &Node, effects: &[Effect]) {
         self.fx_no += 1;
         let name = format!("s{}", self.fx_no);
         let has_replace = effects.iter().any(|e| e.compose == Compose::Replace);
-        let has_paint = !node.fills.is_empty() || node.text.is_some() || !node.strokes.is_empty();
         let mut body_done = false;
         let emit_body = |b: &mut Self, body_done: &mut bool| {
             if *body_done {
                 return;
             }
             *body_done = true;
-            if has_replace || !has_paint {
+            if has_replace || !Self::paints(node) {
                 return;
             }
             let bounds = b.device_bounds(id, node, 0.0);
@@ -227,7 +252,7 @@ impl Builder<'_> {
             b.flush();
         };
         for e in effects {
-            if e.compose != Compose::Under {
+            if e.compose == Compose::Over {
                 emit_body(self, &mut body_done);
             }
             match e.compose {
@@ -341,6 +366,10 @@ impl Builder<'_> {
         self.push(Op::MaskMix(base.to_vec()), vec![shaded, below], format!("{name} lens mask-mix"))
     }
 
+    /// A body replacement: the body as a leaf, the ops over it, composed back with the folded
+    /// offset. A noise warp anchors its grain at the body's reach origin — the bounds less the
+    /// displacement reach — the corner the tiled path's extent surface starts at, so both roll
+    /// the same noise.
     fn replacement(&mut self, id: ShapeId, node: &Node, e: &Effect, name: &str) {
         let bounds = self.device_bounds(id, node, 0.0);
         let item = DrawItem { shape: id, style: DrawStyle::Body, bounds };
@@ -351,11 +380,15 @@ impl Builder<'_> {
             cur = match op {
                 EffectOp::Blur { radius } => self.blur(self.sigma(*radius), true, EdgeClampStyle::Transparent, cur, name, "body"),
                 EffectOp::NoiseWarp { magnitude, grain, clip } => {
+                    let reach = *magnitude * self.scale;
                     let mut u = vec![0.0f32; 24];
-                    u[2] = *magnitude;
+                    u[2] = reach;
                     u[3] = *grain;
+                    u[8] = bounds.x0 as f32 - reach;
+                    u[9] = bounds.y0 as f32 - reach;
                     u[21] = f32::from(u8::from(*clip));
                     u[PAYLOAD_PROGRAM_SLOT] = PROGRAM_NOISE;
+                    u[crate::vello::bake::PAYLOAD_WARP_EDGE_SLOT] = 1.0;
                     let warp = self.push(Op::Warp(u), vec![cur], format!("{name} noise warp"));
                     if *clip {
                         self.push(Op::ClipToSource(Vec::new()), vec![warp, leaf], format!("{name} noise clip"))

@@ -106,11 +106,15 @@ impl Op {
 }
 
 /// How far an op's taps stray from the output pixel, device px: the neighbourhood a consumer
-/// must be served beyond its own extent.
+/// must be served beyond its own extent. A noise warp strays by its magnitude (payload slot 2);
+/// a lens warp or scatter by the lens slack.
 #[must_use]
 pub fn pad(op: &Op) -> f32 {
     match op {
         Op::Blur { sigma, .. } => (3.0 * sigma).ceil() + 8.0,
+        Op::Warp(u) if u.get(crate::vello::bake::PAYLOAD_PROGRAM_SLOT).copied() == Some(crate::vello::bake::PROGRAM_NOISE) => {
+            u.get(2).copied().unwrap_or(0.0).ceil() + 8.0
+        }
         Op::Warp(_) | Op::Scatter(_) => 32.0,
         _ => 0.0,
     }

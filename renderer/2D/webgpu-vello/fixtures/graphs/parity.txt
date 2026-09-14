@@ -1,4 +1,4 @@
-frame [0.0 0.0 1192.0 1382.0] nodes 56 background [1.0, 1.0, 1.0, 1.0]
+frame [0.0 0.0 1192.0 1382.0] nodes 57 background [1.0, 1.0, 1.0, 1.0]
   0 | draw · 20 item(s)          in=[] Draw n=20 [48.0 48.0 1144.0 764.0] 1:body[48.0 48.0 194.0 194.0] 2:body[238.0 48.0 384.0 194.0] 3:body[428.0 48.0 574.0 194.0] 4:body[618.0 48.0 764.0 194.0] 5:body[808.0 48.0 954.0 194.0] 6:body[998.0 48.0 1144.0 194.0] +14
   1   s1 body leaf               in=[] Draw n=1 [428.0 618.0 574.0 764.0] 15:body[428.0 618.0 574.0 764.0]
   2   s1 body blur-X σ4.0        in=[1] Blur σ4.0 X linear transparent
@@ -22,7 +22,7 @@ frame [0.0 0.0 1192.0 1382.0] nodes 56 background [1.0, 1.0, 1.0, 1.0]
  20   s4 lens mask-mix           in=[19, 14] MaskMix program 0
  21   s4 gather mask             in=[] Draw n=1 [1006.0 626.0 1136.0 756.0] 1a:coverage[1006.0 626.0 1136.0 756.0]
  22 | s4 gather → spine          in=[14, 20, 21] Compose MaskedMix
- 23 | draw · 11 item(s)          in=[22] Draw n=11 [0.0 0.0 1144.0 1144.0] 1b:body[48.0 808.0 194.0 954.0] 1c:body[62.0 822.0 194.0 954.0] 1d:body[238.0 808.0 384.0 954.0] 1e:body[252.0 822.0 384.0 954.0] 1f:body[428.0 808.0 574.0 954.0] 21:body[0.0 0.0 0.0 0.0] +5
+ 23 | draw · 12 item(s)          in=[22] Draw n=12 [48.0 778.0 1144.0 1164.0] 1b:body[48.0 808.0 194.0 954.0] 1c:body[62.0 822.0 194.0 954.0] 1d:body[238.0 808.0 384.0 954.0] 1e:body[252.0 822.0 384.0 954.0] 1f:body[398.0 778.0 574.0 954.0] 21:body[618.0 808.0 764.0 954.0] +6
  24   s5 lens sdf                in=[] Draw n=1 [618.0 998.0 764.0 1144.0] 30:distance/146.0[618.0 998.0 764.0 1144.0]
  25   s5 lens warp               in=[23, 24] Warp program 0
  26   s5 frost blur-X σ3.6       in=[25] Blur σ3.6 X srgb
@@ -55,3 +55,4 @@ frame [0.0 0.0 1192.0 1382.0] nodes 56 background [1.0, 1.0, 1.0, 1.0]
  53   s10 gather tint            in=[52] Colour [0.85, 0.35, 0.19, 0.47]
  54   s10 gather mask            in=[] Draw n=1 [272.0 1218.0 350.0 1294.0] 37:coverage[272.0 1218.0 350.0 1294.0]
  55 | s10 gather → spine         in=[52, 53, 54] Compose MaskedMix
+ 56 | draw · 1 item(s)           in=[55] Draw n=1 [272.0 1218.0 350.0 1294.0] 37:body[272.0 1218.0 350.0 1294.0]

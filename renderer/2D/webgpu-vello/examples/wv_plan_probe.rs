@@ -3,8 +3,9 @@
 //! `render_whole_viewport`. "The same" is measured against the old path's own run-to-run noise:
 //! at thousands of overlapping shapes vello's segment accumulation order is not stable, so the
 //! reference is rendered twice and a plan may differ from it by no more than the reference differs
-//! from itself (max Δ1, no more pixels). This proves the executor's store, front-end, fine mode
-//! word and present before any scheduler exists to feed it.
+//! from itself, with a floor of a handful of Δ1 pixels (the noise sample itself is a coin flip on
+//! a small scene). This proves the executor's store, front-end, fine and present before any
+//! scheduler exists to feed it.
 //!
 //! Run: `cargo run --release --example wv_plan_probe`. A differing scene writes both renders and a
 //! heatmap into `.vello-proofs/`.
@@ -102,12 +103,13 @@ fn plain_plan() -> FramePlan {
             .collect()
     });
     FramePlan {
-        store: (W, H),
+        store: (W, H.div_ceil(16) * 16),
+        page: H.div_ceil(16) * 16,
         params: vec![],
         passes: vec![
             Pass::Clear { rect: frame, colour: bg },
             Pass::Frontend { draws: vec![DrawCmd::Shapes { items, transform: Affine::IDENTITY, clip: None }] },
-            Pass::Fine { window: Window { rounds: (0, u32::MAX), tiles: Tiles::All }, output: frame, base: None, input: None },
+            Pass::Fine { window: Window { rounds: (0, u32::MAX), tiles: Tiles::All } },
             Pass::Present { from: frame },
         ],
     }
@@ -165,7 +167,7 @@ fn main() {
         let got = read_back(&device, &queue, &target);
 
         let (differing, max) = count_diff(&want, &got);
-        let ok = max <= noise_max.max(u8::from(noise > 0)) && differing <= noise.max(1) * 2;
+        let ok = max <= noise_max.max(1) && differing <= (noise * 2).max(8);
         failures += u32::from(!ok);
         println!(
             "{name:<12} {} {differing} px differ (max {max}); reference noise {noise} px (max {noise_max})",

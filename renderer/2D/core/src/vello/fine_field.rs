@@ -128,26 +128,6 @@ fn helper_library(ps: &[FineProgram]) -> String {
     dialect(&out)
 }
 
-/// The shape-following distance override, shared by every shaped program: a baked signed-distance
-/// field of the real outline, read from `input_in` at device pixels with a manual bilinear filter.
-/// The texel stores `0.5 + d / decode` as f32 bits in the packed-store slot. This is `fine`'s
-/// [`FieldSource::Sampled`] — record 3 names the input register as the distance source, so it is one
-/// function, never a per-program fact; the dispatcher only honours it when the dispatch's mode word
-/// says the input slot is bound.
-const SAMPLED_DISTANCE: &str = r#"fn fx_fieldDistance_sampled(fc: vec2<f32>, decode: f32) -> f32 {
-    let fp = fc - vec2<f32>(0.5, 0.5);
-    let fl = floor(fp);
-    let i0 = vec2<i32>(i32(fl.x), i32(fl.y));
-    let f = fp - fl;
-    let s00 = bitcast<f32>(textureLoad(input_in, i0, 0).x);
-    let s10 = bitcast<f32>(textureLoad(input_in, i0 + vec2<i32>(1, 0), 0).x);
-    let s01 = bitcast<f32>(textureLoad(input_in, i0 + vec2<i32>(0, 1), 0).x);
-    let s11 = bitcast<f32>(textureLoad(input_in, i0 + vec2<i32>(1, 1), 0).x);
-    let texel = mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
-    return (texel - 0.5) * decode;
-}
-"#;
-
 /// One program's arm: its distance function (if it declares a source), then
 /// `fx_computeField_<name>` — prologue, sampled override, early-out, the program's nodes and
 /// outputs, and the same tail [`super::units::field_prelude`] gives the über emission.
@@ -157,7 +137,7 @@ fn program_arm(e: &FineProgram) -> String {
     let mut body = String::from("    let scale = u[4].x;\n    let localPos = fc - anchor;\n");
     let nodes = if shaped {
         body.push_str(&format!("    var n0 = fx_fieldDistance_{}(u, localPos);\n", e.name));
-        body.push_str("    if (sampled) {\n        n0 = fx_fieldDistance_sampled(fc, decode);\n    }\n");
+        body.push_str("    if (sampled) {\n        n0 = sampled_d;\n    }\n");
         if p.declares("dist") {
             body.push_str("    if (n0 > 0.0) { return vec4<f32>(0.0, 0.0, 0.0, 0.0); }\n");
         }
@@ -179,7 +159,7 @@ fn program_arm(e: &FineProgram) -> String {
         ))
     });
     format!(
-        "{dist}fn fx_computeField_{name}(u: array<vec4<f32>, 6>, fc: vec2<f32>, anchor: vec2<f32>, sampled: bool, decode: f32) -> vec4<f32> {{\n{body}}}\n",
+        "{dist}fn fx_computeField_{name}(u: array<vec4<f32>, 6>, fc: vec2<f32>, anchor: vec2<f32>, sampled: bool, sampled_d: f32) -> vec4<f32> {{\n{body}}}\n",
         name = e.name,
     )
 }
@@ -187,12 +167,13 @@ fn program_arm(e: &FineProgram) -> String {
 fn dispatcher(ps: &[FineProgram]) -> String {
     let mut out = String::from(
         "fn fx_computeField(d: FxDesc, fc: vec2<f32>) -> vec4<f32> {\n\
-         \x20   let anchor = d.rec[6].yz;\n\
-         \x20   let sampled = d.rec[6].x == 2.0 && mode_has(MODE_INPUT);\n",
+         \x20   let anchor = d.rec[10].xy;\n\
+         \x20   let sampled = d.rec[6].x == SRC_STORE;\n\
+         \x20   let sampled_d = select(0.0, fx_sdf_at(d, fc), sampled);\n",
     );
     for e in ps {
         out.push_str(&format!(
-            "    if (d.program == {}u) {{ return fx_computeField_{}(d.u, fc, anchor, sampled, d.rec[6].w); }}\n",
+            "    if (d.program == {}u) {{ return fx_computeField_{}(d.u, fc, anchor, sampled, sampled_d); }}\n",
             e.id, e.name
         ));
     }
@@ -200,14 +181,14 @@ fn dispatcher(ps: &[FineProgram]) -> String {
     out
 }
 
-/// The whole generated section, in declaration order: operator library, the sampled-distance
-/// override, one arm per program, the dispatcher.
+/// The whole generated section, in declaration order: operator library, one arm per program, the
+/// dispatcher. A shaped program's sampled distance comes in as a value (`fx_sdf_at`, fine's own
+/// read of record 3), so nothing generated touches a texture.
 #[must_use]
 pub fn fine_field_wgsl() -> String {
     let ps = programs();
     let mut out = String::new();
     out.push_str(&helper_library(&ps));
-    out.push_str(SAMPLED_DISTANCE);
     for e in &ps {
         out.push_str(&program_arm(e));
     }
@@ -249,7 +230,7 @@ mod tests {
     }
 
     /// Every generated arm validates as WGSL on its own, over stubs of the two things `fine.wgsl`
-    /// supplies around it (the input slot and the mode query).
+    /// supplies around it (the source code and the sampled-distance read).
     #[test]
     fn the_generated_section_is_valid_wgsl() {
         let body: String = fine_field_wgsl()
@@ -267,7 +248,7 @@ mod tests {
             .flatten()
             .collect();
         let src = format!(
-            "struct FxDesc {{\n    bits: u32,\n    program: u32,\n    u: array<vec4<f32>, 6>,\n    rec: array<vec4<f32>, 12>,\n}}\n@group(0) @binding(0) var input_in: texture_2d<u32>;\nconst MODE_INPUT: u32 = 8u;\nfn mode_has(bit: u32) -> bool {{ return false; }}\n{body}\n@fragment\nfn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{\n    var d: FxDesc;\n    return fx_computeField(d, pos.xy);\n}}\n"
+            "struct FxDesc {{\n    bits: u32,\n    program: u32,\n    u: array<vec4<f32>, 6>,\n    rec: array<vec4<f32>, 12>,\n}}\nconst SRC_STORE: f32 = 1.0;\nfn fx_sdf_at(d: FxDesc, fc: vec2<f32>) -> f32 {{ return 0.0; }}\n{body}\n@fragment\nfn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{\n    var d: FxDesc;\n    return fx_computeField(d, pos.xy);\n}}\n"
         );
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("WGSL parse failed: {}\n{src}", e.emit_to_string(&src)));
