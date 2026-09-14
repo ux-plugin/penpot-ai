@@ -44,11 +44,14 @@ pub enum Op {
     Draw(Vec<DrawItem>),
     /// One separable Gaussian axis. inputs = `[value]`.
     Blur { sigma: f32, axis: BlurAxis, linear: bool, edge_clamp_style: EdgeClampStyle },
-    /// Lens units; the payload is the unit's uniform, field program included. inputs = `[value]`.
+    /// Lens units; the payload is the unit's uniform, field program included. inputs = `[value]`,
+    /// or `[value, distance]` when the warp samples a drawn distance field.
     Warp(Vec<f32>),
     Scatter(Vec<f32>),
     Shade(Vec<f32>),
-    /// Binary pointwise units. inputs = `[value, reference]`.
+    /// Binary pointwise units. inputs = `[value, reference]`. `EraseBy`'s payload is
+    /// `[dx, dy]`: the reference is read displaced by that device vector (the inner shadow's
+    /// punch), so the reference is never drawn displaced.
     MaskMix(Vec<f32>),
     EraseBy(Vec<f32>),
     ClipToSource(Vec<f32>),
@@ -94,7 +97,8 @@ impl Op {
     pub fn arity(&self) -> (usize, usize) {
         match self {
             Op::Draw(_) => (0, 1),
-            Op::Blur { .. } | Op::Warp(_) | Op::Scatter(_) | Op::Shade(_) | Op::Colour(_) => (1, 1),
+            Op::Blur { .. } | Op::Scatter(_) | Op::Shade(_) | Op::Colour(_) => (1, 1),
+            Op::Warp(_) => (1, 2),
             Op::MaskMix(_) | Op::EraseBy(_) | Op::ClipToSource(_) => (2, 2),
             Op::Compose { .. } => (2, 3),
         }

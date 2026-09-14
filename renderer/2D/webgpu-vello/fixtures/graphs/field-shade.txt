@@ -1,0 +1,66 @@
+frame [0.0 0.0 1192.0 622.0] nodes 65 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 64 item(s)          in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+  1   s1 field tint              in=[0] Colour [0.24, 0.35, 0.90, 1.00]
+  2   s1 field mask              in=[1, 0] MaskMix program 3
+  3   s1 gather mask             in=[] Draw n=1 [99.3 51.8 198.7 103.7] 41:coverage[99.3 51.8 198.7 103.7]
+  4 | s1 gather → spine          in=[0, 2, 3] Compose MaskedMix
+  5   s2 field tint              in=[4] Colour [0.24, 0.35, 0.90, 1.00]
+  6   s2 field mask              in=[5, 4] MaskMix program 3
+  7   s2 gather mask             in=[] Draw n=1 [397.3 51.8 496.7 103.7] 42:coverage[397.3 51.8 496.7 103.7]
+  8 | s2 gather → spine          in=[4, 6, 7] Compose MaskedMix
+  9   s3 field tint              in=[8] Colour [0.24, 0.35, 0.90, 1.00]
+ 10   s3 field mask              in=[9, 8] MaskMix program 3
+ 11   s3 gather mask             in=[] Draw n=1 [695.3 51.8 794.7 103.7] 43:coverage[695.3 51.8 794.7 103.7]
+ 12 | s3 gather → spine          in=[8, 10, 11] Compose MaskedMix
+ 13   s4 field tint              in=[12] Colour [0.24, 0.35, 0.90, 1.00]
+ 14   s4 field mask              in=[13, 12] MaskMix program 3
+ 15   s4 gather mask             in=[] Draw n=1 [993.3 51.8 1092.7 103.7] 44:coverage[993.3 51.8 1092.7 103.7]
+ 16 | s4 gather → spine          in=[12, 14, 15] Compose MaskedMix
+ 17   s5 field tint              in=[16] Colour [0.24, 0.35, 0.90, 1.00]
+ 18   s5 field mask              in=[17, 16] MaskMix program 3
+ 19   s5 gather mask             in=[] Draw n=1 [99.3 207.3 198.7 259.2] 45:coverage[99.3 207.3 198.7 259.2]
+ 20 | s5 gather → spine          in=[16, 18, 19] Compose MaskedMix
+ 21   s6 field tint              in=[20] Colour [0.24, 0.35, 0.90, 1.00]
+ 22   s6 field mask              in=[21, 20] MaskMix program 3
+ 23   s6 gather mask             in=[] Draw n=1 [397.3 207.3 496.7 259.2] 46:coverage[397.3 207.3 496.7 259.2]
+ 24 | s6 gather → spine          in=[20, 22, 23] Compose MaskedMix
+ 25   s7 field tint              in=[24] Colour [0.24, 0.35, 0.90, 1.00]
+ 26   s7 field mask              in=[25, 24] MaskMix program 3
+ 27   s7 gather mask             in=[] Draw n=1 [695.3 207.3 794.7 259.2] 47:coverage[695.3 207.3 794.7 259.2]
+ 28 | s7 gather → spine          in=[24, 26, 27] Compose MaskedMix
+ 29   s8 field tint              in=[28] Colour [0.24, 0.35, 0.90, 1.00]
+ 30   s8 field mask              in=[29, 28] MaskMix program 3
+ 31   s8 gather mask             in=[] Draw n=1 [993.3 207.3 1092.7 259.2] 48:coverage[993.3 207.3 1092.7 259.2]
+ 32 | s8 gather → spine          in=[28, 30, 31] Compose MaskedMix
+ 33   s9 field tint              in=[32] Colour [0.24, 0.35, 0.90, 1.00]
+ 34   s9 field mask              in=[33, 32] MaskMix program 3
+ 35   s9 gather mask             in=[] Draw n=1 [99.3 362.8 198.7 414.7] 49:coverage[99.3 362.8 198.7 414.7]
+ 36 | s9 gather → spine          in=[32, 34, 35] Compose MaskedMix
+ 37   s10 field tint             in=[36] Colour [0.24, 0.35, 0.90, 1.00]
+ 38   s10 field mask             in=[37, 36] MaskMix program 3
+ 39   s10 gather mask            in=[] Draw n=1 [397.3 362.8 496.7 414.7] 4a:coverage[397.3 362.8 496.7 414.7]
+ 40 | s10 gather → spine         in=[36, 38, 39] Compose MaskedMix
+ 41   s11 field tint             in=[40] Colour [0.24, 0.35, 0.90, 1.00]
+ 42   s11 field mask             in=[41, 40] MaskMix program 3
+ 43   s11 gather mask            in=[] Draw n=1 [695.3 362.8 794.7 414.7] 4b:coverage[695.3 362.8 794.7 414.7]
+ 44 | s11 gather → spine         in=[40, 42, 43] Compose MaskedMix
+ 45   s12 field tint             in=[44] Colour [0.24, 0.35, 0.90, 1.00]
+ 46   s12 field mask             in=[45, 44] MaskMix program 3
+ 47   s12 gather mask            in=[] Draw n=1 [993.3 362.8 1092.7 414.7] 4c:coverage[993.3 362.8 1092.7 414.7]
+ 48 | s12 gather → spine         in=[44, 46, 47] Compose MaskedMix
+ 49   s13 field tint             in=[48] Colour [0.24, 0.35, 0.90, 1.00]
+ 50   s13 field mask             in=[49, 48] MaskMix program 3
+ 51   s13 gather mask            in=[] Draw n=1 [99.3 518.3 198.7 570.2] 4d:coverage[99.3 518.3 198.7 570.2]
+ 52 | s13 gather → spine         in=[48, 50, 51] Compose MaskedMix
+ 53   s14 field tint             in=[52] Colour [0.24, 0.35, 0.90, 1.00]
+ 54   s14 field mask             in=[53, 52] MaskMix program 3
+ 55   s14 gather mask            in=[] Draw n=1 [397.3 518.3 496.7 570.2] 4e:coverage[397.3 518.3 496.7 570.2]
+ 56 | s14 gather → spine         in=[52, 54, 55] Compose MaskedMix
+ 57   s15 field tint             in=[56] Colour [0.24, 0.35, 0.90, 1.00]
+ 58   s15 field mask             in=[57, 56] MaskMix program 3
+ 59   s15 gather mask            in=[] Draw n=1 [695.3 518.3 794.7 570.2] 4f:coverage[695.3 518.3 794.7 570.2]
+ 60 | s15 gather → spine         in=[56, 58, 59] Compose MaskedMix
+ 61   s16 field tint             in=[60] Colour [0.24, 0.35, 0.90, 1.00]
+ 62   s16 field mask             in=[61, 60] MaskMix program 3
+ 63   s16 gather mask            in=[] Draw n=1 [993.3 518.3 1092.7 570.2] 50:coverage[993.3 518.3 1092.7 570.2]
+ 64 | s16 gather → spine         in=[60, 62, 63] Compose MaskedMix

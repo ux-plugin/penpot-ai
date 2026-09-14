@@ -814,17 +814,13 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         render_core::vello::prof::add_scene(render_core::vello::prof::now() - _tsc);
     }
 
-    fn draw_scene_range(&mut self, scene: &mut ClassicCtx, root: Affine, start: usize, end: usize) {
+    fn draw_shape(&mut self, scene: &mut ClassicCtx, root: Affine, id: u128) {
         let _tsc = render_core::vello::prof::now();
         let text = &mut self.text;
         let cache = &mut self.body_cache;
         render_core::vello::abi::with_scene(|model, viewport, modifiers| {
-            crate::walk::draw_scene_range_cached(scene, &ClassicEnv, text, model, root * viewport, start, end, modifiers, cache);
+            crate::walk::draw_shape_cached(scene, &ClassicEnv, text, model, id, root * viewport, modifiers, cache);
         });
-        #[cfg(not(target_arch = "wasm32"))]
-        if std::env::var("WV_DBG_BODYCACHE").is_ok() {
-            eprintln!("WV_DBG_BODYCACHE: hits={} misses={}", self.body_cache.hits, self.body_cache.misses);
-        }
         render_core::vello::prof::add_scene(render_core::vello::prof::now() - _tsc);
     }
 

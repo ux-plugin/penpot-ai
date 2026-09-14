@@ -1,0 +1,82 @@
+frame [0.0 0.0 1192.0 622.0] nodes 81 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 0 item(s)           in=[] Draw n=0 [0.0 0.0 0.0 0.0] 
+  1   s1 drop silhouette         in=[] Draw n=1 [89.4 46.6 208.6 108.8] 1:coverage[89.4 46.6 208.6 108.8]
+  2   s1 drop blur-X σ6.3        in=[1] Blur σ6.3 X srgb transparent
+  3   s1 drop blur-Y σ6.3        in=[2] Blur σ6.3 Y srgb transparent
+  4 | s1 drop → spine            in=[0, 3] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+  5 | draw · 1 item(s)           in=[4] Draw n=1 [89.4 46.6 208.6 108.8] 1:body[89.4 46.6 208.6 108.8]
+  6   s2 drop silhouette         in=[] Draw n=1 [387.4 46.6 506.6 108.8] 2:coverage[387.4 46.6 506.6 108.8]
+  7   s2 drop blur-X σ6.3        in=[6] Blur σ6.3 X srgb transparent
+  8   s2 drop blur-Y σ6.3        in=[7] Blur σ6.3 Y srgb transparent
+  9 | s2 drop → spine            in=[5, 8] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 10 | draw · 1 item(s)           in=[9] Draw n=1 [387.4 46.6 506.6 108.8] 2:body[387.4 46.6 506.6 108.8]
+ 11   s3 drop silhouette         in=[] Draw n=1 [685.4 46.6 804.6 108.8] 3:coverage[685.4 46.6 804.6 108.8]
+ 12   s3 drop blur-X σ6.3        in=[11] Blur σ6.3 X srgb transparent
+ 13   s3 drop blur-Y σ6.3        in=[12] Blur σ6.3 Y srgb transparent
+ 14 | s3 drop → spine            in=[10, 13] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 15 | draw · 1 item(s)           in=[14] Draw n=1 [685.4 46.6 804.6 108.8] 3:body[685.4 46.6 804.6 108.8]
+ 16   s4 drop silhouette         in=[] Draw n=1 [983.4 46.6 1102.6 108.8] 4:coverage[983.4 46.6 1102.6 108.8]
+ 17   s4 drop blur-X σ6.3        in=[16] Blur σ6.3 X srgb transparent
+ 18   s4 drop blur-Y σ6.3        in=[17] Blur σ6.3 Y srgb transparent
+ 19 | s4 drop → spine            in=[15, 18] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 20 | draw · 1 item(s)           in=[19] Draw n=1 [983.4 46.6 1102.6 108.8] 4:body[983.4 46.6 1102.6 108.8]
+ 21   s5 drop silhouette         in=[] Draw n=1 [89.4 202.2 208.6 264.4] 5:coverage[89.4 202.2 208.6 264.4]
+ 22   s5 drop blur-X σ6.3        in=[21] Blur σ6.3 X srgb transparent
+ 23   s5 drop blur-Y σ6.3        in=[22] Blur σ6.3 Y srgb transparent
+ 24 | s5 drop → spine            in=[20, 23] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 25 | draw · 1 item(s)           in=[24] Draw n=1 [89.4 202.2 208.6 264.4] 5:body[89.4 202.2 208.6 264.4]
+ 26   s6 drop silhouette         in=[] Draw n=1 [387.4 202.2 506.6 264.4] 6:coverage[387.4 202.2 506.6 264.4]
+ 27   s6 drop blur-X σ6.3        in=[26] Blur σ6.3 X srgb transparent
+ 28   s6 drop blur-Y σ6.3        in=[27] Blur σ6.3 Y srgb transparent
+ 29 | s6 drop → spine            in=[25, 28] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 30 | draw · 1 item(s)           in=[29] Draw n=1 [387.4 202.2 506.6 264.4] 6:body[387.4 202.2 506.6 264.4]
+ 31   s7 drop silhouette         in=[] Draw n=1 [685.4 202.2 804.6 264.4] 7:coverage[685.4 202.2 804.6 264.4]
+ 32   s7 drop blur-X σ6.3        in=[31] Blur σ6.3 X srgb transparent
+ 33   s7 drop blur-Y σ6.3        in=[32] Blur σ6.3 Y srgb transparent
+ 34 | s7 drop → spine            in=[30, 33] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 35 | draw · 1 item(s)           in=[34] Draw n=1 [685.4 202.2 804.6 264.4] 7:body[685.4 202.2 804.6 264.4]
+ 36   s8 drop silhouette         in=[] Draw n=1 [983.4 202.2 1102.6 264.4] 8:coverage[983.4 202.2 1102.6 264.4]
+ 37   s8 drop blur-X σ6.3        in=[36] Blur σ6.3 X srgb transparent
+ 38   s8 drop blur-Y σ6.3        in=[37] Blur σ6.3 Y srgb transparent
+ 39 | s8 drop → spine            in=[35, 38] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 40 | draw · 1 item(s)           in=[39] Draw n=1 [983.4 202.2 1102.6 264.4] 8:body[983.4 202.2 1102.6 264.4]
+ 41   s9 drop silhouette         in=[] Draw n=1 [89.4 357.6 208.6 419.8] 9:coverage[89.4 357.6 208.6 419.8]
+ 42   s9 drop blur-X σ6.3        in=[41] Blur σ6.3 X srgb transparent
+ 43   s9 drop blur-Y σ6.3        in=[42] Blur σ6.3 Y srgb transparent
+ 44 | s9 drop → spine            in=[40, 43] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 45 | draw · 1 item(s)           in=[44] Draw n=1 [89.4 357.6 208.6 419.8] 9:body[89.4 357.6 208.6 419.8]
+ 46   s10 drop silhouette        in=[] Draw n=1 [387.4 357.6 506.6 419.8] a:coverage[387.4 357.6 506.6 419.8]
+ 47   s10 drop blur-X σ6.3       in=[46] Blur σ6.3 X srgb transparent
+ 48   s10 drop blur-Y σ6.3       in=[47] Blur σ6.3 Y srgb transparent
+ 49 | s10 drop → spine           in=[45, 48] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 50 | draw · 1 item(s)           in=[49] Draw n=1 [387.4 357.6 506.6 419.8] a:body[387.4 357.6 506.6 419.8]
+ 51   s11 drop silhouette        in=[] Draw n=1 [685.4 357.6 804.6 419.8] b:coverage[685.4 357.6 804.6 419.8]
+ 52   s11 drop blur-X σ6.3       in=[51] Blur σ6.3 X srgb transparent
+ 53   s11 drop blur-Y σ6.3       in=[52] Blur σ6.3 Y srgb transparent
+ 54 | s11 drop → spine           in=[50, 53] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 55 | draw · 1 item(s)           in=[54] Draw n=1 [685.4 357.6 804.6 419.8] b:body[685.4 357.6 804.6 419.8]
+ 56   s12 drop silhouette        in=[] Draw n=1 [983.4 357.6 1102.6 419.8] c:coverage[983.4 357.6 1102.6 419.8]
+ 57   s12 drop blur-X σ6.3       in=[56] Blur σ6.3 X srgb transparent
+ 58   s12 drop blur-Y σ6.3       in=[57] Blur σ6.3 Y srgb transparent
+ 59 | s12 drop → spine           in=[55, 58] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 60 | draw · 1 item(s)           in=[59] Draw n=1 [983.4 357.6 1102.6 419.8] c:body[983.4 357.6 1102.6 419.8]
+ 61   s13 drop silhouette        in=[] Draw n=1 [89.4 513.1 208.6 575.4] d:coverage[89.4 513.1 208.6 575.4]
+ 62   s13 drop blur-X σ6.3       in=[61] Blur σ6.3 X srgb transparent
+ 63   s13 drop blur-Y σ6.3       in=[62] Blur σ6.3 Y srgb transparent
+ 64 | s13 drop → spine           in=[60, 63] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 65 | draw · 1 item(s)           in=[64] Draw n=1 [89.4 513.1 208.6 575.4] d:body[89.4 513.1 208.6 575.4]
+ 66   s14 drop silhouette        in=[] Draw n=1 [387.4 513.1 506.6 575.4] e:coverage[387.4 513.1 506.6 575.4]
+ 67   s14 drop blur-X σ6.3       in=[66] Blur σ6.3 X srgb transparent
+ 68   s14 drop blur-Y σ6.3       in=[67] Blur σ6.3 Y srgb transparent
+ 69 | s14 drop → spine           in=[65, 68] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 70 | draw · 1 item(s)           in=[69] Draw n=1 [387.4 513.1 506.6 575.4] e:body[387.4 513.1 506.6 575.4]
+ 71   s15 drop silhouette        in=[] Draw n=1 [685.4 513.1 804.6 575.4] f:coverage[685.4 513.1 804.6 575.4]
+ 72   s15 drop blur-X σ6.3       in=[71] Blur σ6.3 X srgb transparent
+ 73   s15 drop blur-Y σ6.3       in=[72] Blur σ6.3 Y srgb transparent
+ 74 | s15 drop → spine           in=[70, 73] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 75 | draw · 1 item(s)           in=[74] Draw n=1 [685.4 513.1 804.6 575.4] f:body[685.4 513.1 804.6 575.4]
+ 76   s16 drop silhouette        in=[] Draw n=1 [983.4 513.1 1102.6 575.4] 10:coverage[983.4 513.1 1102.6 575.4]
+ 77   s16 drop blur-X σ6.3       in=[76] Blur σ6.3 X srgb transparent
+ 78   s16 drop blur-Y σ6.3       in=[77] Blur σ6.3 Y srgb transparent
+ 79 | s16 drop → spine           in=[75, 78] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 80 | draw · 1 item(s)           in=[79] Draw n=1 [983.4 513.1 1102.6 575.4] 10:body[983.4 513.1 1102.6 575.4]

@@ -6,8 +6,6 @@
 //! `Present` unpacks the frame rows onto the swapchain. Nothing here reads the graph, the scene's
 //! effect stacks, or a node's neighbourhood.
 
-use std::collections::HashMap;
-
 use crate::kurbo::{Affine, Rect, Shape as _};
 use crate::vello::frame_plan::{DrawCmd, FramePlan, Pass, Tiles};
 use crate::vello::frame_graph::DrawStyle;
@@ -163,9 +161,9 @@ impl Sink {
         backend.set_frame_extent(0, 0);
     }
 
-    /// Encode a `Frontend`'s draw commands into `scene`: body runs through the backend's whole-tree
-    /// walk, coverages as white silhouettes, markers as `CMD_EFFECT` boundaries — and bake every
-    /// distance item straight into its store rect (it is not a vello draw).
+    /// Encode a `Frontend`'s draw commands into `scene`: bodies as their subtrees through the
+    /// backend's walk, coverages as white silhouettes, markers as `CMD_EFFECT` boundaries — and
+    /// bake every distance item straight into its store rect (it is not a vello draw).
     fn encode_draws<B: RasterBackend>(
         &mut self,
         scene: &mut B::Scene,
@@ -175,9 +173,6 @@ impl Sink {
         enc: &mut wgpu::CommandEncoder,
         store_tex: &wgpu::Texture,
     ) -> usize {
-        let root_index: HashMap<u128, usize> = crate::vello::abi::with_scene(|live, _, _| {
-            live.roots().iter().enumerate().map(|(i, &id)| (id, i)).collect()
-        });
         let mut baked = 0usize;
         for cmd in draws {
             match cmd {
@@ -186,31 +181,13 @@ impl Sink {
                         scene.set_transform(Affine::IDENTITY);
                         scene.push_clip_layer(&c.to_path(0.1));
                     }
-                    let mut i = 0;
-                    while i < items.len() {
-                        let it = &items[i];
+                    for it in items {
                         match it.style {
-                            DrawStyle::Body => {
-                                let start = *root_index.get(&it.shape).unwrap_or_else(|| panic!("draw item {:x} is not a root", it.shape));
-                                let mut end = start + 1;
-                                i += 1;
-                                while i < items.len()
-                                    && items[i].style == DrawStyle::Body
-                                    && root_index.get(&items[i].shape) == Some(&end)
-                                {
-                                    end += 1;
-                                    i += 1;
-                                }
-                                backend.draw_scene_range(scene, *transform, start, end);
-                            }
-                            DrawStyle::Coverage { spread, .. } => {
-                                backend.draw_coverage(scene, *transform, it.shape, spread);
-                                i += 1;
-                            }
+                            DrawStyle::Body => backend.draw_shape(scene, *transform, it.shape),
+                            DrawStyle::Coverage { spread, .. } => backend.draw_coverage(scene, *transform, it.shape, spread),
                             DrawStyle::Distance { decode } => {
                                 self.bake_distance(device, enc, store_tex, it.shape, *transform, it.bounds, decode, backend);
                                 baked += 1;
-                                i += 1;
                             }
                         }
                     }

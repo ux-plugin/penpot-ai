@@ -1,0 +1,98 @@
+frame [0.0 0.0 1192.0 622.0] nodes 97 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 0 item(s)           in=[] Draw n=0 [0.0 0.0 0.0 0.0] 
+  1 | draw · 1 item(s)           in=[0] Draw n=1 [89.4 46.6 208.6 108.8] 1:body[89.4 46.6 208.6 108.8]
+  2   s1 inner flood             in=[] Draw n=1 [89.4 46.6 208.6 108.8] 1:coverage[89.4 46.6 208.6 108.8]
+  3   s1 punch blur-X σ6.3       in=[2] Blur σ6.3 X srgb transparent
+  4   s1 punch blur-Y σ6.3       in=[3] Blur σ6.3 Y srgb transparent
+  5   s1 inner band              in=[2, 4] EraseBy at 7.0,9.0
+  6 | s1 inner → spine           in=[1, 5] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+  7 | draw · 1 item(s)           in=[6] Draw n=1 [387.4 46.6 506.6 108.8] 2:body[387.4 46.6 506.6 108.8]
+  8   s2 inner flood             in=[] Draw n=1 [387.4 46.6 506.6 108.8] 2:coverage[387.4 46.6 506.6 108.8]
+  9   s2 punch blur-X σ6.3       in=[8] Blur σ6.3 X srgb transparent
+ 10   s2 punch blur-Y σ6.3       in=[9] Blur σ6.3 Y srgb transparent
+ 11   s2 inner band              in=[8, 10] EraseBy at 7.0,9.0
+ 12 | s2 inner → spine           in=[7, 11] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 13 | draw · 1 item(s)           in=[12] Draw n=1 [685.4 46.6 804.6 108.8] 3:body[685.4 46.6 804.6 108.8]
+ 14   s3 inner flood             in=[] Draw n=1 [685.4 46.6 804.6 108.8] 3:coverage[685.4 46.6 804.6 108.8]
+ 15   s3 punch blur-X σ6.3       in=[14] Blur σ6.3 X srgb transparent
+ 16   s3 punch blur-Y σ6.3       in=[15] Blur σ6.3 Y srgb transparent
+ 17   s3 inner band              in=[14, 16] EraseBy at 7.0,9.0
+ 18 | s3 inner → spine           in=[13, 17] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 19 | draw · 1 item(s)           in=[18] Draw n=1 [983.4 46.6 1102.6 108.8] 4:body[983.4 46.6 1102.6 108.8]
+ 20   s4 inner flood             in=[] Draw n=1 [983.4 46.6 1102.6 108.8] 4:coverage[983.4 46.6 1102.6 108.8]
+ 21   s4 punch blur-X σ6.3       in=[20] Blur σ6.3 X srgb transparent
+ 22   s4 punch blur-Y σ6.3       in=[21] Blur σ6.3 Y srgb transparent
+ 23   s4 inner band              in=[20, 22] EraseBy at 7.0,9.0
+ 24 | s4 inner → spine           in=[19, 23] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 25 | draw · 1 item(s)           in=[24] Draw n=1 [89.4 202.2 208.6 264.4] 5:body[89.4 202.2 208.6 264.4]
+ 26   s5 inner flood             in=[] Draw n=1 [89.4 202.2 208.6 264.4] 5:coverage[89.4 202.2 208.6 264.4]
+ 27   s5 punch blur-X σ6.3       in=[26] Blur σ6.3 X srgb transparent
+ 28   s5 punch blur-Y σ6.3       in=[27] Blur σ6.3 Y srgb transparent
+ 29   s5 inner band              in=[26, 28] EraseBy at 7.0,9.0
+ 30 | s5 inner → spine           in=[25, 29] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 31 | draw · 1 item(s)           in=[30] Draw n=1 [387.4 202.2 506.6 264.4] 6:body[387.4 202.2 506.6 264.4]
+ 32   s6 inner flood             in=[] Draw n=1 [387.4 202.2 506.6 264.4] 6:coverage[387.4 202.2 506.6 264.4]
+ 33   s6 punch blur-X σ6.3       in=[32] Blur σ6.3 X srgb transparent
+ 34   s6 punch blur-Y σ6.3       in=[33] Blur σ6.3 Y srgb transparent
+ 35   s6 inner band              in=[32, 34] EraseBy at 7.0,9.0
+ 36 | s6 inner → spine           in=[31, 35] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 37 | draw · 1 item(s)           in=[36] Draw n=1 [685.4 202.2 804.6 264.4] 7:body[685.4 202.2 804.6 264.4]
+ 38   s7 inner flood             in=[] Draw n=1 [685.4 202.2 804.6 264.4] 7:coverage[685.4 202.2 804.6 264.4]
+ 39   s7 punch blur-X σ6.3       in=[38] Blur σ6.3 X srgb transparent
+ 40   s7 punch blur-Y σ6.3       in=[39] Blur σ6.3 Y srgb transparent
+ 41   s7 inner band              in=[38, 40] EraseBy at 7.0,9.0
+ 42 | s7 inner → spine           in=[37, 41] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 43 | draw · 1 item(s)           in=[42] Draw n=1 [983.4 202.2 1102.6 264.4] 8:body[983.4 202.2 1102.6 264.4]
+ 44   s8 inner flood             in=[] Draw n=1 [983.4 202.2 1102.6 264.4] 8:coverage[983.4 202.2 1102.6 264.4]
+ 45   s8 punch blur-X σ6.3       in=[44] Blur σ6.3 X srgb transparent
+ 46   s8 punch blur-Y σ6.3       in=[45] Blur σ6.3 Y srgb transparent
+ 47   s8 inner band              in=[44, 46] EraseBy at 7.0,9.0
+ 48 | s8 inner → spine           in=[43, 47] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 49 | draw · 1 item(s)           in=[48] Draw n=1 [89.4 357.6 208.6 419.8] 9:body[89.4 357.6 208.6 419.8]
+ 50   s9 inner flood             in=[] Draw n=1 [89.4 357.6 208.6 419.8] 9:coverage[89.4 357.6 208.6 419.8]
+ 51   s9 punch blur-X σ6.3       in=[50] Blur σ6.3 X srgb transparent
+ 52   s9 punch blur-Y σ6.3       in=[51] Blur σ6.3 Y srgb transparent
+ 53   s9 inner band              in=[50, 52] EraseBy at 7.0,9.0
+ 54 | s9 inner → spine           in=[49, 53] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 55 | draw · 1 item(s)           in=[54] Draw n=1 [387.4 357.6 506.6 419.8] a:body[387.4 357.6 506.6 419.8]
+ 56   s10 inner flood            in=[] Draw n=1 [387.4 357.6 506.6 419.8] a:coverage[387.4 357.6 506.6 419.8]
+ 57   s10 punch blur-X σ6.3      in=[56] Blur σ6.3 X srgb transparent
+ 58   s10 punch blur-Y σ6.3      in=[57] Blur σ6.3 Y srgb transparent
+ 59   s10 inner band             in=[56, 58] EraseBy at 7.0,9.0
+ 60 | s10 inner → spine          in=[55, 59] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 61 | draw · 1 item(s)           in=[60] Draw n=1 [685.4 357.6 804.6 419.8] b:body[685.4 357.6 804.6 419.8]
+ 62   s11 inner flood            in=[] Draw n=1 [685.4 357.6 804.6 419.8] b:coverage[685.4 357.6 804.6 419.8]
+ 63   s11 punch blur-X σ6.3      in=[62] Blur σ6.3 X srgb transparent
+ 64   s11 punch blur-Y σ6.3      in=[63] Blur σ6.3 Y srgb transparent
+ 65   s11 inner band             in=[62, 64] EraseBy at 7.0,9.0
+ 66 | s11 inner → spine          in=[61, 65] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 67 | draw · 1 item(s)           in=[66] Draw n=1 [983.4 357.6 1102.6 419.8] c:body[983.4 357.6 1102.6 419.8]
+ 68   s12 inner flood            in=[] Draw n=1 [983.4 357.6 1102.6 419.8] c:coverage[983.4 357.6 1102.6 419.8]
+ 69   s12 punch blur-X σ6.3      in=[68] Blur σ6.3 X srgb transparent
+ 70   s12 punch blur-Y σ6.3      in=[69] Blur σ6.3 Y srgb transparent
+ 71   s12 inner band             in=[68, 70] EraseBy at 7.0,9.0
+ 72 | s12 inner → spine          in=[67, 71] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 73 | draw · 1 item(s)           in=[72] Draw n=1 [89.4 513.1 208.6 575.4] d:body[89.4 513.1 208.6 575.4]
+ 74   s13 inner flood            in=[] Draw n=1 [89.4 513.1 208.6 575.4] d:coverage[89.4 513.1 208.6 575.4]
+ 75   s13 punch blur-X σ6.3      in=[74] Blur σ6.3 X srgb transparent
+ 76   s13 punch blur-Y σ6.3      in=[75] Blur σ6.3 Y srgb transparent
+ 77   s13 inner band             in=[74, 76] EraseBy at 7.0,9.0
+ 78 | s13 inner → spine          in=[73, 77] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 79 | draw · 1 item(s)           in=[78] Draw n=1 [387.4 513.1 506.6 575.4] e:body[387.4 513.1 506.6 575.4]
+ 80   s14 inner flood            in=[] Draw n=1 [387.4 513.1 506.6 575.4] e:coverage[387.4 513.1 506.6 575.4]
+ 81   s14 punch blur-X σ6.3      in=[80] Blur σ6.3 X srgb transparent
+ 82   s14 punch blur-Y σ6.3      in=[81] Blur σ6.3 Y srgb transparent
+ 83   s14 inner band             in=[80, 82] EraseBy at 7.0,9.0
+ 84 | s14 inner → spine          in=[79, 83] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 85 | draw · 1 item(s)           in=[84] Draw n=1 [685.4 513.1 804.6 575.4] f:body[685.4 513.1 804.6 575.4]
+ 86   s15 inner flood            in=[] Draw n=1 [685.4 513.1 804.6 575.4] f:coverage[685.4 513.1 804.6 575.4]
+ 87   s15 punch blur-X σ6.3      in=[86] Blur σ6.3 X srgb transparent
+ 88   s15 punch blur-Y σ6.3      in=[87] Blur σ6.3 Y srgb transparent
+ 89   s15 inner band             in=[86, 88] EraseBy at 7.0,9.0
+ 90 | s15 inner → spine          in=[85, 89] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 91 | draw · 1 item(s)           in=[90] Draw n=1 [983.4 513.1 1102.6 575.4] 10:body[983.4 513.1 1102.6 575.4]
+ 92   s16 inner flood            in=[] Draw n=1 [983.4 513.1 1102.6 575.4] 10:coverage[983.4 513.1 1102.6 575.4]
+ 93   s16 punch blur-X σ6.3      in=[92] Blur σ6.3 X srgb transparent
+ 94   s16 punch blur-Y σ6.3      in=[93] Blur σ6.3 Y srgb transparent
+ 95   s16 inner band             in=[92, 94] EraseBy at 7.0,9.0
+ 96 | s16 inner → spine          in=[91, 95] Compose Over colour [0.00, 0.00, 0.00, 0.67]

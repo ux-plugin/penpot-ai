@@ -1,0 +1,50 @@
+frame [0.0 0.0 1192.0 622.0] nodes 49 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 64 item(s)          in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+  1   s1 gather tint             in=[0] Colour [0.24, 0.35, 0.90, 0.59]
+  2   s1 gather mask             in=[] Draw n=1 [99.3 51.8 198.7 103.7] 41:coverage[99.3 51.8 198.7 103.7]
+  3 | s1 gather → spine          in=[0, 1, 2] Compose MaskedMix
+  4   s2 gather tint             in=[3] Colour [0.24, 0.35, 0.90, 0.59]
+  5   s2 gather mask             in=[] Draw n=1 [397.3 51.8 496.7 103.7] 42:coverage[397.3 51.8 496.7 103.7]
+  6 | s2 gather → spine          in=[3, 4, 5] Compose MaskedMix
+  7   s3 gather tint             in=[6] Colour [0.24, 0.35, 0.90, 0.59]
+  8   s3 gather mask             in=[] Draw n=1 [695.3 51.8 794.7 103.7] 43:coverage[695.3 51.8 794.7 103.7]
+  9 | s3 gather → spine          in=[6, 7, 8] Compose MaskedMix
+ 10   s4 gather tint             in=[9] Colour [0.24, 0.35, 0.90, 0.59]
+ 11   s4 gather mask             in=[] Draw n=1 [993.3 51.8 1092.7 103.7] 44:coverage[993.3 51.8 1092.7 103.7]
+ 12 | s4 gather → spine          in=[9, 10, 11] Compose MaskedMix
+ 13   s5 gather tint             in=[12] Colour [0.24, 0.35, 0.90, 0.59]
+ 14   s5 gather mask             in=[] Draw n=1 [99.3 207.3 198.7 259.2] 45:coverage[99.3 207.3 198.7 259.2]
+ 15 | s5 gather → spine          in=[12, 13, 14] Compose MaskedMix
+ 16   s6 gather tint             in=[15] Colour [0.24, 0.35, 0.90, 0.59]
+ 17   s6 gather mask             in=[] Draw n=1 [397.3 207.3 496.7 259.2] 46:coverage[397.3 207.3 496.7 259.2]
+ 18 | s6 gather → spine          in=[15, 16, 17] Compose MaskedMix
+ 19   s7 gather tint             in=[18] Colour [0.24, 0.35, 0.90, 0.59]
+ 20   s7 gather mask             in=[] Draw n=1 [695.3 207.3 794.7 259.2] 47:coverage[695.3 207.3 794.7 259.2]
+ 21 | s7 gather → spine          in=[18, 19, 20] Compose MaskedMix
+ 22   s8 gather tint             in=[21] Colour [0.24, 0.35, 0.90, 0.59]
+ 23   s8 gather mask             in=[] Draw n=1 [993.3 207.3 1092.7 259.2] 48:coverage[993.3 207.3 1092.7 259.2]
+ 24 | s8 gather → spine          in=[21, 22, 23] Compose MaskedMix
+ 25   s9 gather tint             in=[24] Colour [0.24, 0.35, 0.90, 0.59]
+ 26   s9 gather mask             in=[] Draw n=1 [99.3 362.8 198.7 414.7] 49:coverage[99.3 362.8 198.7 414.7]
+ 27 | s9 gather → spine          in=[24, 25, 26] Compose MaskedMix
+ 28   s10 gather tint            in=[27] Colour [0.24, 0.35, 0.90, 0.59]
+ 29   s10 gather mask            in=[] Draw n=1 [397.3 362.8 496.7 414.7] 4a:coverage[397.3 362.8 496.7 414.7]
+ 30 | s10 gather → spine         in=[27, 28, 29] Compose MaskedMix
+ 31   s11 gather tint            in=[30] Colour [0.24, 0.35, 0.90, 0.59]
+ 32   s11 gather mask            in=[] Draw n=1 [695.3 362.8 794.7 414.7] 4b:coverage[695.3 362.8 794.7 414.7]
+ 33 | s11 gather → spine         in=[30, 31, 32] Compose MaskedMix
+ 34   s12 gather tint            in=[33] Colour [0.24, 0.35, 0.90, 0.59]
+ 35   s12 gather mask            in=[] Draw n=1 [993.3 362.8 1092.7 414.7] 4c:coverage[993.3 362.8 1092.7 414.7]
+ 36 | s12 gather → spine         in=[33, 34, 35] Compose MaskedMix
+ 37   s13 gather tint            in=[36] Colour [0.24, 0.35, 0.90, 0.59]
+ 38   s13 gather mask            in=[] Draw n=1 [99.3 518.3 198.7 570.2] 4d:coverage[99.3 518.3 198.7 570.2]
+ 39 | s13 gather → spine         in=[36, 37, 38] Compose MaskedMix
+ 40   s14 gather tint            in=[39] Colour [0.24, 0.35, 0.90, 0.59]
+ 41   s14 gather mask            in=[] Draw n=1 [397.3 518.3 496.7 570.2] 4e:coverage[397.3 518.3 496.7 570.2]
+ 42 | s14 gather → spine         in=[39, 40, 41] Compose MaskedMix
+ 43   s15 gather tint            in=[42] Colour [0.24, 0.35, 0.90, 0.59]
+ 44   s15 gather mask            in=[] Draw n=1 [695.3 518.3 794.7 570.2] 4f:coverage[695.3 518.3 794.7 570.2]
+ 45 | s15 gather → spine         in=[42, 43, 44] Compose MaskedMix
+ 46   s16 gather tint            in=[45] Colour [0.24, 0.35, 0.90, 0.59]
+ 47   s16 gather mask            in=[] Draw n=1 [993.3 518.3 1092.7 570.2] 50:coverage[993.3 518.3 1092.7 570.2]
+ 48 | s16 gather → spine         in=[45, 46, 47] Compose MaskedMix

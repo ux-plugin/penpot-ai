@@ -95,27 +95,11 @@ impl BodyCache {
     }
 }
 
-/// [`draw_scene_range`] with fragment splicing for leaf bodies — the whole-viewport walk's
-/// production path. Containers, masks and clips walk exactly as [`draw_node`] does.
-pub fn draw_scene_range_cached<E: DrawEnv>(
-    ctx: &mut crate::ClassicCtx,
-    env: &E,
-    text: &mut TextState,
-    scene: &Scene,
-    view: Affine,
-    start: usize,
-    end: usize,
-    modifiers: &Modifiers,
-    cache: &mut BodyCache,
-) {
-    let roots = scene.roots();
-    let end = end.min(roots.len());
-    for &root in &roots[start.min(end)..end] {
-        draw_node_cached(ctx, env, text, scene, root, view, modifiers, cache);
-    }
-}
-
-fn draw_node_cached<E: DrawEnv>(
+/// Draw shape `id` and its subtree with fragment splicing for leaf bodies — the whole-viewport
+/// walk's unit of work. A leaf body is encoded once per scene revision into a cached fragment and
+/// appended under its matrix on every frame; containers are walked live so their clip, mask and
+/// isolation brackets surround the children exactly as [`draw_scene`] does.
+pub fn draw_shape_cached<E: DrawEnv>(
     ctx: &mut crate::ClassicCtx,
     env: &E,
     text: &mut TextState,
@@ -173,7 +157,7 @@ fn draw_node_cached<E: DrawEnv>(
         if mask_id.is_some() && i == 0 {
             continue;
         }
-        draw_node_cached(ctx, env, text, scene, child, view, modifiers, cache);
+        draw_shape_cached(ctx, env, text, scene, child, view, modifiers, cache);
     }
     if let Some(mid) = mask_id {
         if let Some(mask) = scene.get(mid) {

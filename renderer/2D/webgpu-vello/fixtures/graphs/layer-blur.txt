@@ -1,0 +1,7 @@
+frame [0.0 0.0 1192.0 242.0] nodes 6 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 0 item(s)           in=[] Draw n=0 [0.0 0.0 0.0 0.0] 
+  1   s1 body leaf               in=[] Draw n=1 [66.0 66.0 176.0 176.0] 1:body[66.0 66.0 176.0 176.0]
+  2   s1 body blur-X σ5.7        in=[1] Blur σ5.7 X linear transparent
+  3   s1 body blur-Y σ5.7        in=[2] Blur σ5.7 Y linear transparent
+  4 | s1 body → spine            in=[0, 3] Compose Over
+  5 | draw · 1 item(s)           in=[4] Draw n=1 [256.0 66.0 366.0 176.0] 2:body[256.0 66.0 366.0 176.0]

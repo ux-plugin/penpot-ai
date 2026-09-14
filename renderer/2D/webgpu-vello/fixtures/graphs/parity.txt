@@ -1,0 +1,57 @@
+frame [0.0 0.0 1192.0 1382.0] nodes 56 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 20 item(s)          in=[] Draw n=20 [48.0 48.0 1144.0 764.0] 1:body[48.0 48.0 194.0 194.0] 2:body[238.0 48.0 384.0 194.0] 3:body[428.0 48.0 574.0 194.0] 4:body[618.0 48.0 764.0 194.0] 5:body[808.0 48.0 954.0 194.0] 6:body[998.0 48.0 1144.0 194.0] +14
+  1   s1 body leaf               in=[] Draw n=1 [428.0 618.0 574.0 764.0] 15:body[428.0 618.0 574.0 764.0]
+  2   s1 body blur-X σ4.0        in=[1] Blur σ4.0 X linear transparent
+  3   s1 body blur-Y σ4.0        in=[2] Blur σ4.0 Y linear transparent
+  4 | s1 body → spine            in=[0, 3] Compose Over
+  5   s2 body leaf               in=[] Draw n=1 [618.0 618.0 764.0 764.0] 16:body[618.0 618.0 764.0 764.0]
+  6   s2 body blur-X σ3.0        in=[5] Blur σ3.0 X linear transparent
+  7   s2 body blur-Y σ3.0        in=[6] Blur σ3.0 Y linear transparent
+  8 | s2 body → spine            in=[4, 7] Compose Over offset 6.0,6.0
+  9 | draw · 1 item(s)           in=[8] Draw n=1 [808.0 618.0 954.0 764.0] 17:body[808.0 618.0 954.0 764.0]
+ 10   s3 gather blur-X σ7.4      in=[9] Blur σ7.4 X linear
+ 11   s3 gather blur-Y σ7.4      in=[10] Blur σ7.4 Y linear
+ 12   s3 gather mask             in=[] Draw n=1 [816.0 626.0 946.0 756.0] 18:coverage[816.0 626.0 946.0 756.0]
+ 13 | s3 gather → spine          in=[9, 11, 12] Compose MaskedMix
+ 14 | draw · 1 item(s)           in=[13] Draw n=1 [998.0 618.0 1144.0 764.0] 19:body[998.0 618.0 1144.0 764.0]
+ 15   s4 lens warp               in=[14] Warp program 0
+ 16   s4 frost blur-X σ3.6       in=[15] Blur σ3.6 X srgb
+ 17   s4 frost blur-Y σ3.6       in=[16] Blur σ3.6 Y srgb
+ 18   s4 lens scatter            in=[17] Scatter
+ 19   s4 lens shade              in=[18] Shade
+ 20   s4 lens mask-mix           in=[19, 14] MaskMix program 0
+ 21   s4 gather mask             in=[] Draw n=1 [1006.0 626.0 1136.0 756.0] 1a:coverage[1006.0 626.0 1136.0 756.0]
+ 22 | s4 gather → spine          in=[14, 20, 21] Compose MaskedMix
+ 23 | draw · 11 item(s)          in=[22] Draw n=11 [0.0 0.0 1144.0 1144.0] 1b:body[48.0 808.0 194.0 954.0] 1c:body[62.0 822.0 194.0 954.0] 1d:body[238.0 808.0 384.0 954.0] 1e:body[252.0 822.0 384.0 954.0] 1f:body[428.0 808.0 574.0 954.0] 21:body[0.0 0.0 0.0 0.0] +5
+ 24   s5 lens sdf                in=[] Draw n=1 [618.0 998.0 764.0 1144.0] 30:distance/146.0[618.0 998.0 764.0 1144.0]
+ 25   s5 lens warp               in=[23, 24] Warp program 0
+ 26   s5 frost blur-X σ3.6       in=[25] Blur σ3.6 X srgb
+ 27   s5 frost blur-Y σ3.6       in=[26] Blur σ3.6 Y srgb
+ 28   s5 lens scatter            in=[27] Scatter
+ 29   s5 lens shade              in=[28] Shade
+ 30   s5 lens mask-mix           in=[29, 23] MaskMix program 0
+ 31   s5 gather mask             in=[] Draw n=1 [618.0 998.0 764.0 1144.0] 30:coverage[618.0 998.0 764.0 1144.0]
+ 32 | s5 gather → spine          in=[23, 30, 31] Compose MaskedMix
+ 33 | draw · 1 item(s)           in=[32] Draw n=1 [808.0 998.0 954.0 1144.0] 31:body[808.0 998.0 954.0 1144.0]
+ 34   s6 gather blur-X σ7.4      in=[33] Blur σ7.4 X linear
+ 35   s6 gather blur-Y σ7.4      in=[34] Blur σ7.4 Y linear
+ 36   s6 gather mask             in=[] Draw n=1 [808.0 998.0 954.0 1144.0] 32:coverage[808.0 998.0 954.0 1144.0]
+ 37 | s6 gather → spine          in=[33, 35, 36] Compose MaskedMix
+ 38   s7 drop silhouette         in=[] Draw n=1 [998.0 998.0 1144.0 1144.0] 33:coverage/glyph[998.0 998.0 1144.0 1144.0]
+ 39   s7 drop blur-X σ4.5        in=[38] Blur σ4.5 X srgb transparent
+ 40   s7 drop blur-Y σ4.5        in=[39] Blur σ4.5 Y srgb transparent
+ 41 | s7 drop → spine            in=[37, 40] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 4.0,6.0
+ 42 | draw · 1 item(s)           in=[41] Draw n=1 [998.0 998.0 1144.0 1144.0] 33:body[998.0 998.0 1144.0 1144.0]
+ 43   s8 gather blur-X σ4.0      in=[42] Blur σ4.0 X linear
+ 44   s8 gather blur-Y σ4.0      in=[43] Blur σ4.0 Y linear
+ 45   s8 gather mask             in=[] Draw n=1 [998.0 1071.0 1144.0 1144.0] 34:coverage[998.0 1071.0 1144.0 1144.0]
+ 46 | s8 gather → spine          in=[42, 44, 45] Compose MaskedMix
+ 47   s9 drop silhouette         in=[] Draw n=1 [48.0 1188.0 194.0 1334.0] 35:coverage[48.0 1188.0 194.0 1334.0]
+ 48   s9 drop blur-X σ7.4        in=[47] Blur σ7.4 X srgb transparent
+ 49   s9 drop blur-Y σ7.4        in=[48] Blur σ7.4 Y srgb transparent
+ 50 | s9 drop → spine            in=[46, 49] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+ 51 | draw · 1 item(s)           in=[50] Draw n=1 [48.0 1188.0 194.0 1334.0] 35:body[48.0 1188.0 194.0 1334.0]
+ 52 | draw · 1 item(s)           in=[51] Draw n=1 [246.0 1196.0 376.0 1326.0] 36:body[246.0 1196.0 376.0 1326.0]
+ 53   s10 gather tint            in=[52] Colour [0.85, 0.35, 0.19, 0.47]
+ 54   s10 gather mask            in=[] Draw n=1 [272.0 1218.0 350.0 1294.0] 37:coverage[272.0 1218.0 350.0 1294.0]
+ 55 | s10 gather → spine         in=[52, 53, 54] Compose MaskedMix

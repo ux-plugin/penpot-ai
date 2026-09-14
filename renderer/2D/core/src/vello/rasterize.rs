@@ -93,12 +93,11 @@ pub trait RasterBackend {
     /// how a `Paint` becomes a single rasterize.
     fn build_bodies(&mut self, scene: &mut Self::Scene, transform: Affine, ops: &[PaintOp]);
 
-    /// Draw the document's root subtrees in z-index range `[start, end)` into `scene` for the viewport
-    /// at `root` — the whole-viewport walk, segmented so effect boundaries can split it. `[0, usize::MAX)`
-    /// is the whole tree. Defaults to a no-op (only classic implements the whole-tree walk). `root` is
-    /// the page→device transform *without* the viewport applied; the backend composes in the viewport
-    /// the same way `build_bodies` does.
-    fn draw_scene_range(&mut self, _scene: &mut Self::Scene, _root: Affine, _start: usize, _end: usize) {}
+    /// Draw shape `id` and its subtree into `scene` for the viewport at `root` — one draw item of
+    /// the whole-viewport walk, with its clip, mask and isolation inside. `root` is the page→device
+    /// transform *without* the viewport applied; the backend composes in the viewport the same way
+    /// `build_bodies` does. Default no-op (only classic draws the whole tree).
+    fn draw_shape(&mut self, _scene: &mut Self::Scene, _root: Affine, _id: u128) {}
 
     /// [`Self::build_bodies`], clipped to `clip` — a rect in the **scene's own** pixel space.
     ///

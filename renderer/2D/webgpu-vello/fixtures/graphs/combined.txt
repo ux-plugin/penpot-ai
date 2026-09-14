@@ -1,0 +1,20 @@
+frame [0.0 0.0 1192.0 242.0] nodes 19 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 0 item(s)           in=[] Draw n=0 [0.0 0.0 0.0 0.0] 
+  1   s1 drop silhouette         in=[] Draw n=1 [48.0 48.0 194.0 194.0] 1:coverage[48.0 48.0 194.0 194.0]
+  2   s1 drop blur-X σ6.9        in=[1] Blur σ6.9 X srgb transparent
+  3   s1 drop blur-Y σ6.9        in=[2] Blur σ6.9 Y srgb transparent
+  4 | s1 drop → spine            in=[0, 3] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 8.0,10.0
+  5 | draw · 1 item(s)           in=[4] Draw n=1 [48.0 48.0 194.0 194.0] 1:body[48.0 48.0 194.0 194.0]
+  6   s1 inner flood             in=[] Draw n=1 [48.0 48.0 194.0 194.0] 1:coverage[48.0 48.0 194.0 194.0]
+  7   s1 punch blur-X σ4.5       in=[6] Blur σ4.5 X srgb transparent
+  8   s1 punch blur-Y σ4.5       in=[7] Blur σ4.5 Y srgb transparent
+  9   s1 inner band              in=[6, 8] EraseBy at -5.0,-6.0
+ 10 | s1 inner → spine           in=[5, 9] Compose Over colour [0.00, 0.00, 0.00, 0.75]
+ 11   s2 drop silhouette         in=[] Draw n=1 [238.0 48.0 384.0 194.0] 2:coverage[238.0 48.0 384.0 194.0]
+ 12   s2 drop blur-X σ6.3        in=[11] Blur σ6.3 X srgb transparent
+ 13   s2 drop blur-Y σ6.3        in=[12] Blur σ6.3 Y srgb transparent
+ 14 | s2 drop → spine            in=[10, 13] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 15   s2 body leaf               in=[] Draw n=1 [238.0 48.0 384.0 194.0] 2:body[238.0 48.0 384.0 194.0]
+ 16   s2 body blur-X σ2.8        in=[15] Blur σ2.8 X linear transparent
+ 17   s2 body blur-Y σ2.8        in=[16] Blur σ2.8 Y linear transparent
+ 18 | s2 body → spine            in=[14, 17] Compose Over

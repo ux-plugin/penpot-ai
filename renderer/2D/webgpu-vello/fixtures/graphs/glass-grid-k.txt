@@ -1,0 +1,130 @@
+frame [0.0 0.0 1192.0 622.0] nodes 129 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 64 item(s)          in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+  1   s1 lens warp               in=[0] Warp program 0
+  2   s1 frost blur-X σ3.6       in=[1] Blur σ3.6 X srgb
+  3   s1 frost blur-Y σ3.6       in=[2] Blur σ3.6 Y srgb
+  4   s1 lens scatter            in=[3] Scatter
+  5   s1 lens shade              in=[4] Shade
+  6   s1 lens mask-mix           in=[5, 0] MaskMix program 0
+  7   s1 gather mask             in=[] Draw n=1 [99.3 51.8 198.7 103.7] 41:coverage[99.3 51.8 198.7 103.7]
+  8 | s1 gather → spine          in=[0, 6, 7] Compose MaskedMix
+  9   s2 lens warp               in=[8] Warp program 0
+ 10   s2 frost blur-X σ3.6       in=[9] Blur σ3.6 X srgb
+ 11   s2 frost blur-Y σ3.6       in=[10] Blur σ3.6 Y srgb
+ 12   s2 lens scatter            in=[11] Scatter
+ 13   s2 lens shade              in=[12] Shade
+ 14   s2 lens mask-mix           in=[13, 8] MaskMix program 0
+ 15   s2 gather mask             in=[] Draw n=1 [397.3 51.8 496.7 103.7] 42:coverage[397.3 51.8 496.7 103.7]
+ 16 | s2 gather → spine          in=[8, 14, 15] Compose MaskedMix
+ 17   s3 lens warp               in=[16] Warp program 0
+ 18   s3 frost blur-X σ3.6       in=[17] Blur σ3.6 X srgb
+ 19   s3 frost blur-Y σ3.6       in=[18] Blur σ3.6 Y srgb
+ 20   s3 lens scatter            in=[19] Scatter
+ 21   s3 lens shade              in=[20] Shade
+ 22   s3 lens mask-mix           in=[21, 16] MaskMix program 0
+ 23   s3 gather mask             in=[] Draw n=1 [695.3 51.8 794.7 103.7] 43:coverage[695.3 51.8 794.7 103.7]
+ 24 | s3 gather → spine          in=[16, 22, 23] Compose MaskedMix
+ 25   s4 lens warp               in=[24] Warp program 0
+ 26   s4 frost blur-X σ3.6       in=[25] Blur σ3.6 X srgb
+ 27   s4 frost blur-Y σ3.6       in=[26] Blur σ3.6 Y srgb
+ 28   s4 lens scatter            in=[27] Scatter
+ 29   s4 lens shade              in=[28] Shade
+ 30   s4 lens mask-mix           in=[29, 24] MaskMix program 0
+ 31   s4 gather mask             in=[] Draw n=1 [993.3 51.8 1092.7 103.7] 44:coverage[993.3 51.8 1092.7 103.7]
+ 32 | s4 gather → spine          in=[24, 30, 31] Compose MaskedMix
+ 33   s5 lens warp               in=[32] Warp program 0
+ 34   s5 frost blur-X σ3.6       in=[33] Blur σ3.6 X srgb
+ 35   s5 frost blur-Y σ3.6       in=[34] Blur σ3.6 Y srgb
+ 36   s5 lens scatter            in=[35] Scatter
+ 37   s5 lens shade              in=[36] Shade
+ 38   s5 lens mask-mix           in=[37, 32] MaskMix program 0
+ 39   s5 gather mask             in=[] Draw n=1 [99.3 207.3 198.7 259.2] 45:coverage[99.3 207.3 198.7 259.2]
+ 40 | s5 gather → spine          in=[32, 38, 39] Compose MaskedMix
+ 41   s6 lens warp               in=[40] Warp program 0
+ 42   s6 frost blur-X σ3.6       in=[41] Blur σ3.6 X srgb
+ 43   s6 frost blur-Y σ3.6       in=[42] Blur σ3.6 Y srgb
+ 44   s6 lens scatter            in=[43] Scatter
+ 45   s6 lens shade              in=[44] Shade
+ 46   s6 lens mask-mix           in=[45, 40] MaskMix program 0
+ 47   s6 gather mask             in=[] Draw n=1 [397.3 207.3 496.7 259.2] 46:coverage[397.3 207.3 496.7 259.2]
+ 48 | s6 gather → spine          in=[40, 46, 47] Compose MaskedMix
+ 49   s7 lens warp               in=[48] Warp program 0
+ 50   s7 frost blur-X σ3.6       in=[49] Blur σ3.6 X srgb
+ 51   s7 frost blur-Y σ3.6       in=[50] Blur σ3.6 Y srgb
+ 52   s7 lens scatter            in=[51] Scatter
+ 53   s7 lens shade              in=[52] Shade
+ 54   s7 lens mask-mix           in=[53, 48] MaskMix program 0
+ 55   s7 gather mask             in=[] Draw n=1 [695.3 207.3 794.7 259.2] 47:coverage[695.3 207.3 794.7 259.2]
+ 56 | s7 gather → spine          in=[48, 54, 55] Compose MaskedMix
+ 57   s8 lens warp               in=[56] Warp program 0
+ 58   s8 frost blur-X σ3.6       in=[57] Blur σ3.6 X srgb
+ 59   s8 frost blur-Y σ3.6       in=[58] Blur σ3.6 Y srgb
+ 60   s8 lens scatter            in=[59] Scatter
+ 61   s8 lens shade              in=[60] Shade
+ 62   s8 lens mask-mix           in=[61, 56] MaskMix program 0
+ 63   s8 gather mask             in=[] Draw n=1 [993.3 207.3 1092.7 259.2] 48:coverage[993.3 207.3 1092.7 259.2]
+ 64 | s8 gather → spine          in=[56, 62, 63] Compose MaskedMix
+ 65   s9 lens warp               in=[64] Warp program 0
+ 66   s9 frost blur-X σ3.6       in=[65] Blur σ3.6 X srgb
+ 67   s9 frost blur-Y σ3.6       in=[66] Blur σ3.6 Y srgb
+ 68   s9 lens scatter            in=[67] Scatter
+ 69   s9 lens shade              in=[68] Shade
+ 70   s9 lens mask-mix           in=[69, 64] MaskMix program 0
+ 71   s9 gather mask             in=[] Draw n=1 [99.3 362.8 198.7 414.7] 49:coverage[99.3 362.8 198.7 414.7]
+ 72 | s9 gather → spine          in=[64, 70, 71] Compose MaskedMix
+ 73   s10 lens warp              in=[72] Warp program 0
+ 74   s10 frost blur-X σ3.6      in=[73] Blur σ3.6 X srgb
+ 75   s10 frost blur-Y σ3.6      in=[74] Blur σ3.6 Y srgb
+ 76   s10 lens scatter           in=[75] Scatter
+ 77   s10 lens shade             in=[76] Shade
+ 78   s10 lens mask-mix          in=[77, 72] MaskMix program 0
+ 79   s10 gather mask            in=[] Draw n=1 [397.3 362.8 496.7 414.7] 4a:coverage[397.3 362.8 496.7 414.7]
+ 80 | s10 gather → spine         in=[72, 78, 79] Compose MaskedMix
+ 81   s11 lens warp              in=[80] Warp program 0
+ 82   s11 frost blur-X σ3.6      in=[81] Blur σ3.6 X srgb
+ 83   s11 frost blur-Y σ3.6      in=[82] Blur σ3.6 Y srgb
+ 84   s11 lens scatter           in=[83] Scatter
+ 85   s11 lens shade             in=[84] Shade
+ 86   s11 lens mask-mix          in=[85, 80] MaskMix program 0
+ 87   s11 gather mask            in=[] Draw n=1 [695.3 362.8 794.7 414.7] 4b:coverage[695.3 362.8 794.7 414.7]
+ 88 | s11 gather → spine         in=[80, 86, 87] Compose MaskedMix
+ 89   s12 lens warp              in=[88] Warp program 0
+ 90   s12 frost blur-X σ3.6      in=[89] Blur σ3.6 X srgb
+ 91   s12 frost blur-Y σ3.6      in=[90] Blur σ3.6 Y srgb
+ 92   s12 lens scatter           in=[91] Scatter
+ 93   s12 lens shade             in=[92] Shade
+ 94   s12 lens mask-mix          in=[93, 88] MaskMix program 0
+ 95   s12 gather mask            in=[] Draw n=1 [993.3 362.8 1092.7 414.7] 4c:coverage[993.3 362.8 1092.7 414.7]
+ 96 | s12 gather → spine         in=[88, 94, 95] Compose MaskedMix
+ 97   s13 lens warp              in=[96] Warp program 0
+ 98   s13 frost blur-X σ3.6      in=[97] Blur σ3.6 X srgb
+ 99   s13 frost blur-Y σ3.6      in=[98] Blur σ3.6 Y srgb
+100   s13 lens scatter           in=[99] Scatter
+101   s13 lens shade             in=[100] Shade
+102   s13 lens mask-mix          in=[101, 96] MaskMix program 0
+103   s13 gather mask            in=[] Draw n=1 [99.3 518.3 198.7 570.2] 4d:coverage[99.3 518.3 198.7 570.2]
+104 | s13 gather → spine         in=[96, 102, 103] Compose MaskedMix
+105   s14 lens warp              in=[104] Warp program 0
+106   s14 frost blur-X σ3.6      in=[105] Blur σ3.6 X srgb
+107   s14 frost blur-Y σ3.6      in=[106] Blur σ3.6 Y srgb
+108   s14 lens scatter           in=[107] Scatter
+109   s14 lens shade             in=[108] Shade
+110   s14 lens mask-mix          in=[109, 104] MaskMix program 0
+111   s14 gather mask            in=[] Draw n=1 [397.3 518.3 496.7 570.2] 4e:coverage[397.3 518.3 496.7 570.2]
+112 | s14 gather → spine         in=[104, 110, 111] Compose MaskedMix
+113   s15 lens warp              in=[112] Warp program 0
+114   s15 frost blur-X σ3.6      in=[113] Blur σ3.6 X srgb
+115   s15 frost blur-Y σ3.6      in=[114] Blur σ3.6 Y srgb
+116   s15 lens scatter           in=[115] Scatter
+117   s15 lens shade             in=[116] Shade
+118   s15 lens mask-mix          in=[117, 112] MaskMix program 0
+119   s15 gather mask            in=[] Draw n=1 [695.3 518.3 794.7 570.2] 4f:coverage[695.3 518.3 794.7 570.2]
+120 | s15 gather → spine         in=[112, 118, 119] Compose MaskedMix
+121   s16 lens warp              in=[120] Warp program 0
+122   s16 frost blur-X σ3.6      in=[121] Blur σ3.6 X srgb
+123   s16 frost blur-Y σ3.6      in=[122] Blur σ3.6 Y srgb
+124   s16 lens scatter           in=[123] Scatter
+125   s16 lens shade             in=[124] Shade
+126   s16 lens mask-mix          in=[125, 120] MaskMix program 0
+127   s16 gather mask            in=[] Draw n=1 [993.3 518.3 1092.7 570.2] 50:coverage[993.3 518.3 1092.7 570.2]
+128 | s16 gather → spine         in=[120, 126, 127] Compose MaskedMix

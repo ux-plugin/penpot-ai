@@ -1,0 +1,31 @@
+frame [0.0 0.0 1192.0 432.0] nodes 30 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 1 item(s)           in=[] Draw n=1 [48.0 48.0 194.0 194.0] 1:body[48.0 48.0 194.0 194.0]
+  1   s1 body leaf               in=[] Draw n=1 [238.0 48.0 384.0 194.0] 2:body[238.0 48.0 384.0 194.0]
+  2   s1 noise warp              in=[1] Warp program 2
+  3   s1 noise clip              in=[2, 1] ClipToSource
+  4 | s1 body → spine            in=[0, 3] Compose Over
+  5   s2 body leaf               in=[] Draw n=1 [428.0 48.0 574.0 194.0] 3:body[428.0 48.0 574.0 194.0]
+  6   s2 noise warp              in=[5] Warp program 2
+  7   s2 noise clip              in=[6, 5] ClipToSource
+  8 | s2 body → spine            in=[4, 7] Compose Over
+  9   s3 body leaf               in=[] Draw n=1 [618.0 48.0 764.0 194.0] 4:body[618.0 48.0 764.0 194.0]
+ 10   s3 noise warp              in=[9] Warp program 2
+ 11   s3 noise clip              in=[10, 9] ClipToSource
+ 12 | s3 body → spine            in=[8, 11] Compose Over
+ 13   s4 body leaf               in=[] Draw n=1 [808.0 48.0 954.0 194.0] 5:body[808.0 48.0 954.0 194.0]
+ 14   s4 noise warp              in=[13] Warp program 2
+ 15 | s4 body → spine            in=[12, 14] Compose Over
+ 16   s5 body leaf               in=[] Draw n=1 [998.0 48.0 1144.0 194.0] 6:body[998.0 48.0 1144.0 194.0]
+ 17   s5 noise warp              in=[16] Warp program 2
+ 18   s5 noise clip              in=[17, 16] ClipToSource
+ 19   s5 body blur-X σ2.8        in=[18] Blur σ2.8 X linear transparent
+ 20   s5 body blur-Y σ2.8        in=[19] Blur σ2.8 Y linear transparent
+ 21 | s5 body → spine            in=[15, 20] Compose Over
+ 22   s6 body leaf               in=[] Draw n=1 [48.0 238.0 194.0 384.0] 7:body[48.0 238.0 194.0 384.0]
+ 23   s6 noise warp              in=[22] Warp program 2
+ 24   s6 noise clip              in=[23, 22] ClipToSource
+ 25   s6 body blur-X σ2.8        in=[24] Blur σ2.8 X linear transparent
+ 26   s6 body blur-Y σ2.8        in=[25] Blur σ2.8 Y linear transparent
+ 27 | s6 body → spine            in=[21, 26] Compose Over offset 10.0,8.0
+ 28   s7 body leaf               in=[] Draw n=1 [238.0 238.0 384.0 384.0] 8:body[238.0 238.0 384.0 384.0]
+ 29 | s7 body → spine            in=[27, 28] Compose Over offset 10.0,8.0
