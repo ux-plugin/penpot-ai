@@ -18,9 +18,11 @@
 //! 4. **Pages** (ruling 19). Every arm output that is not a compose is a rect at frame coordinates
 //!    on a page; a value takes the lowest page where nothing alive overlaps it, and a page is free
 //!    again once its last reader has run.
-//! 5. **Emission.** Clear, one front-end over the leaf draws, the spine in z-order with a marker
-//!    at every compose, and a marker per page arm; one fine per round over that round's tiles;
-//!    present. `params` holds one descriptor per arm and one tile list per round.
+//! 5. **Emission.** Clear, one front-end over the leaf draws (each clipped to its store rect) and
+//!    the spine in z-order (clipped to the frame once pages sit under it, so a shape reaching past
+//!    the frame's bottom never paints a page) with a marker at every compose, and a marker per
+//!    page arm; one fine per round over that round's tiles; present. `params` holds one descriptor
+//!    per arm and one tile list per round.
 
 use std::collections::HashMap;
 
@@ -772,7 +774,7 @@ impl<'a> Scheduler<'a> {
                     for it in &items {
                         Self::tiles_of(it.bounds.intersect(self.frame), &mut tiles[seg]);
                     }
-                    draws.push(DrawCmd::Shapes { items, transform: Affine::IDENTITY, clip: None });
+                    draws.push(DrawCmd::Shapes { items, transform: Affine::IDENTITY, clip: (pages > 0).then_some(self.frame) });
                 }
                 Op::Compose { .. } => {
                     let a = self.arm_of[&i];

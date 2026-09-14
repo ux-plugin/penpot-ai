@@ -101,9 +101,13 @@ impl FramePlan {
     pub fn shape(&self) -> PlanShape {
         let mut s = PlanShape::default();
         let mut rects: Vec<[i64; 4]> = Vec::new();
+        let frame = self.passes.iter().find_map(|p| match p {
+            Pass::Present { from } => Some(rect_i(*from)),
+            _ => None,
+        });
         let mut note = |r: Rect| {
             let k = rect_i(r);
-            if !rects.contains(&k) {
+            if Some(k) != frame && !rects.contains(&k) {
                 rects.push(k);
             }
         };

@@ -151,7 +151,7 @@ pub fn draw_shape_cached<E: DrawEnv>(
     let clip = (node.clip && !node.children.is_empty()).then(|| outline(node));
     if let Some(path) = &clip {
         ctx.set_transform(matrix);
-        ctx.push_layer(Some(path), None, None, None, None);
+        ctx.push_clip_layer(path);
     }
     for (i, &child) in node.children.iter().enumerate() {
         if mask_id.is_some() && i == 0 {
@@ -215,7 +215,7 @@ fn draw_node<C: RenderingContext, E: DrawEnv>(
     let clip = (node.clip && !node.children.is_empty()).then(|| outline(node));
     if let Some(path) = &clip {
         ctx.set_transform(matrix);
-        ctx.push_layer(Some(path), None, None, None, None);
+        ctx.push_clip_layer(path);
     }
     for (i, &child) in node.children.iter().enumerate() {
         if mask_id.is_some() && i == 0 {
