@@ -74,11 +74,12 @@ pub mod bits {
 pub const REC_COUNT: usize = 6;
 
 /// Floats per operand record: `[source, x0, y0, x1]` then `[y1, dx, dy, decode]` — the store rect
-/// the operand occupies (rows carrying its page), the displacement it is read through, and a
-/// distance field's decode. Record `i` sits at `off + 26 + i * REC_STRIDE`. Roles: record 0 = the
-/// VALUE the arm transforms, record 1 = the REFERENCE binary pointwise units read, record 2 = the
-/// compose's COVERAGE, record 3 = the FIELD's distance input, record 4 = the arm's OUTPUT, record 5
-/// = the field anchor. Source 0 = absent, 1 = a store rect, 2 = the tile's own registers (the
+/// the operand occupies (rows carrying its page), the displacement it is read through (a read
+/// offset less the value's placement on its page; for the OUTPUT record the placement itself, so
+/// fine can turn a store pixel back into a frame position), and a distance field's decode. Record
+/// `i` sits at `off + 26 + i * REC_STRIDE`. Roles: record 0 = the VALUE the arm transforms,
+/// record 1 = the REFERENCE binary pointwise units read, record 2 = the compose's COVERAGE,
+/// record 3 = the FIELD's distance input, record 4 = the arm's OUTPUT, record 5 = the field anchor. Source 0 = absent, 1 = a store rect, 2 = the tile's own registers (the
 /// state it holds), 3 = the marker's own silhouette.
 pub const REC_STRIDE: usize = 8;
 

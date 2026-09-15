@@ -902,7 +902,15 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
                 if let Some(node) = model.get(id) {
                     let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
                     let matrix = transform * viewport * modifier * node.effective_transform();
-                    scene.draw_effect(matrix, &render_core::geometry::outline(node), effect_id, params);
+                    let outline = render_core::geometry::outline(node);
+                    let escapes = !r.contains_rect(vello::kurbo::Shape::bounding_box(&(matrix * &outline)));
+                    if escapes {
+                        scene.scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &r);
+                    }
+                    scene.draw_effect(matrix, &outline, effect_id, params);
+                    if escapes {
+                        scene.scene.pop_layer();
+                    }
                 }
             });
         } else {

@@ -1,12 +1,13 @@
 //! The scheduler: frame graph in, frame plan out. Every decision about where and when is made
 //! here, and the executor makes none.
 //!
-//! Five steps, in order:
+//! Six steps, in order:
 //! 1. **Demand.** Backward from the frame: a compose owes its demand to the state below and, less
 //!    its offset, to its value; a neighbourhood op owes its input its own demand grown by its pad
 //!    (a `Transparent` blur grows nothing — the clamp supplies zeros); a pointwise op passes its
-//!    demand through. A node's output rect is its demand clipped to its extent; a draw item that
-//!    misses its draw's demand is dropped.
+//!    demand through. A node's output rect is its demand clipped to its extent — the frame for
+//!    the spine, and for a chain node whatever it reaches, past the frame included, no wider than
+//!    a page; a draw item that misses its draw's demand is dropped.
 //! 2. **Arms.** A chain is cut at its barriers: a head (a blur axis, a warp, a scatter) or a
 //!    pointwise op over a leaf or the spine starts an arm, and the pointwise ops after it ride
 //!    along while the value has no other reader. The compose folds into the arm that makes its
@@ -15,13 +16,20 @@
 //!    at a node is the round of the last compose below it, an arm is its own round. Spine draws
 //!    take the segment of the last compose below them. A tile runs every mark of a window in
 //!    list order, so nothing else separates rounds.
-//! 4. **Pages** (ruling 19). Every arm output that is not a compose is a rect at frame coordinates
-//!    on a page; a value takes the lowest page where nothing alive overlaps it, and a page is free
-//!    again once its last reader has run.
-//! 5. **Emission.** Clear, one front-end over the leaf draws (each clipped to its store rect) and
-//!    the spine in z-order (clipped to the frame once pages sit under it, so a shape reaching past
-//!    the frame's bottom never paints a page) with a marker at every compose, and a marker per
-//!    page arm; one fine per round over that round's tiles; present. `params` holds one descriptor
+//! 4. **Serving** (ruling 13). A page arm that reads the spine past the frame reads a ground
+//!    instead: one value per spine node, the union of every chain read of it, drawn once from the
+//!    items below that node and overwritten by a copy of the frame rows where the two overlap,
+//!    after the composes below have run. Effects below the chain are absent past the frame.
+//! 5. **Pages** (ruling 19). Every leaf, ground and arm output that is not a compose is a rect
+//!    slid to the top-left of a page (its placement rides its records); a value takes the lowest
+//!    page where nothing alive overlaps its rows, spanning the next page when taller than one,
+//!    and rows are free again once their last reader has run.
+//! 6. **Emission.** Clear (the frame and every ground rect to the background, the pages between
+//!    to transparent), one front-end over the leaf and ground draws (each clipped to its
+//!    store rect) and the spine in z-order (clipped to the frame once pages sit under it, so a
+//!    shape reaching past the frame's bottom never paints a page) with a marker at every compose,
+//!    and a marker per page arm; a ground's copy before the fine of the round after its copy
+//!    round; one fine per round over that round's tiles; present. `params` holds one descriptor
 //!    per arm and one tile list per round.
 
 use std::collections::HashMap;
@@ -69,20 +77,37 @@ enum Operand {
     Frame,
 }
 
-/// A value the frame materialises: a leaf drawn at round 0, or an arm's output.
+/// A value the frame materialises: a leaf drawn at round 0, an arm's output, or a served ground.
 #[derive(Clone, Debug)]
 struct Value {
-    /// The graph node whose result this is.
+    /// The graph node whose result this is; a ground's is the spine node it stands for.
     node: NodeId,
-    /// Frame coordinates, tile-aligned, inside the frame.
+    /// Frame coordinates, tile-aligned; a chain value may reach past the frame.
     rect: Rect,
+    /// Where the rect sits on its page: store `= rect + place + (0, page·pitch)`. A value is
+    /// slid to its page's top-left corner, so `place = -rect.origin`.
+    place: Vec2,
+    /// The first round whose rows the value occupies (0 for anything drawn by the front-end).
     birth: u32,
     last_read: u32,
+    /// The first page the value's rows start on; a value taller than a page spans the next.
     page: usize,
     /// The leaf item this value draws, if it is a leaf.
     leaf: Option<DrawItem>,
     /// A distance leaf's decode, for its readers' records.
     decode: f32,
+    /// A served ground: the spine's state below its node over `rect`, drawn from the scene
+    /// where it leaves the frame and copied from the frame rows where it does not.
+    ground: Option<Ground>,
+}
+
+/// What serves a chain's reads of the spine past the frame (ruling 13): the items below the
+/// spine node, drawn once over the whole rect, and the round after which the in-frame part can be
+/// copied over them from the frame rows.
+#[derive(Clone, Debug)]
+struct Ground {
+    items: Vec<DrawItem>,
+    copy_round: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -119,6 +144,8 @@ struct Scheduler<'a> {
     value_of: HashMap<NodeId, usize>,
     /// Leaves served by the marker's own silhouette rather than a rect.
     regs_leaf: HashMap<NodeId, u128>,
+    /// The ground value serving each spine node that a chain reads past the frame.
+    ground_of: HashMap<NodeId, usize>,
     arms: Vec<Arm>,
     values: Vec<Value>,
     pruned: HashMap<NodeId, Vec<DrawItem>>,
@@ -166,6 +193,7 @@ impl<'a> Scheduler<'a> {
             arm_of: HashMap::new(),
             value_of: HashMap::new(),
             regs_leaf: HashMap::new(),
+            ground_of: HashMap::new(),
             arms: Vec::new(),
             values: Vec::new(),
             pruned: HashMap::new(),
@@ -175,8 +203,23 @@ impl<'a> Scheduler<'a> {
     fn run(mut self) -> FramePlan {
         self.demand_pass();
         self.build_arms();
+        self.serve();
         self.assign_pages();
         self.emit()
+    }
+
+    /// A chain rect no wider than a page: what reaches past the frame on either side is kept
+    /// only as far as the page has room for it beside the in-frame part.
+    fn clamp_x(&self, r: Rect) -> Rect {
+        let w = self.frame.width();
+        if r.width() <= w {
+            return r;
+        }
+        let inf = Rect::new(r.x0.max(self.frame.x0), r.y0, r.x1.min(self.frame.x1), r.y1);
+        let avail = w - inf.width();
+        let left = (inf.x0 - r.x0).min(((avail / 2.0) / TILE).floor() * TILE);
+        let right = (r.x1 - inf.x1).min(avail - left);
+        Rect::new(inf.x0 - left, r.y0, inf.x1 + right, r.y1)
     }
 
     /// The extent a reader may see of node `i`: the frame for the spine (its rows hold the page
@@ -206,7 +249,7 @@ impl<'a> Scheduler<'a> {
                 }
                 _ => d.intersect(self.visible_extent(i)),
             };
-            let out = tile_round(out).intersect(tile_round(self.frame));
+            let out = if self.g.is_spine(i) { tile_round(out).intersect(tile_round(self.frame)) } else { self.clamp_x(tile_round(out)) };
             self.out[i] = out;
             if matches!(node.op, Op::Draw(_) | Op::Compose { .. }) {
                 if let Some(&below) = node.inputs.first() {
@@ -382,7 +425,7 @@ impl<'a> Scheduler<'a> {
                     _ => 0.0,
                 };
                 let v = self.values.len();
-                self.values.push(Value { node: i, rect: self.out[i], birth: 0, last_read: 0, page: 0, leaf: items.first().cloned(), decode });
+                self.values.push(Value { node: i, rect: self.out[i], place: Vec2::ZERO, birth: 0, last_read: 0, page: 0, leaf: items.first().cloned(), decode, ground: None });
                 self.value_of.insert(i, v);
             }
             op if is_head(op) || is_pointwise(op) => {
@@ -475,6 +518,68 @@ impl<'a> Scheduler<'a> {
         r
     }
 
+    /// The rect chain node `i` reads of its input `j`: its output grown by its pad for a head, its
+    /// output for a pointwise op, displaced for an `EraseBy` reference.
+    fn read_of(&self, i: NodeId, j: NodeId) -> Rect {
+        let node = &self.g.nodes[i];
+        match &node.op {
+            Op::EraseBy(u) if node.inputs.get(1) == Some(&j) => {
+                let shift = Vec2::new(f64::from(u.first().copied().unwrap_or(0.0)), f64::from(u.get(1).copied().unwrap_or(0.0)));
+                self.out[i] - shift
+            }
+            op if is_head(op) && node.inputs[0] == j => self.read_rect(i),
+            _ => self.out[i],
+        }
+    }
+
+    /// Every item the spine paints at or below node `j` that touches `r`, in z-order.
+    fn spine_items_below(&self, j: NodeId, r: Rect) -> Vec<DrawItem> {
+        let mut groups: Vec<Vec<DrawItem>> = Vec::new();
+        let mut s = Some(j);
+        while let Some(i) = s {
+            if let Op::Draw(items) = &self.g.nodes[i].op {
+                groups.push(items.iter().filter(|it| overlaps(it.bounds, r)).cloned().collect());
+            }
+            s = self.g.nodes[i].inputs.first().copied();
+        }
+        groups.into_iter().rev().flatten().collect()
+    }
+
+    /// Serve the spine to every page arm that reads it past the frame (ruling 13): one ground
+    /// value per spine node, sized to the union of all its chain reads, drawn from the scene once
+    /// and overwritten by a copy of the frame rows where the two overlap.
+    fn serve(&mut self) {
+        let mut reads: HashMap<NodeId, Rect> = HashMap::new();
+        let mut escapes: HashMap<NodeId, bool> = HashMap::new();
+        for arm in &self.arms {
+            if arm.compose.is_some() {
+                continue;
+            }
+            for &i in &arm.nodes {
+                for &j in &self.g.nodes[i].inputs {
+                    if !self.g.is_spine(j) {
+                        continue;
+                    }
+                    let r = self.clamp_x(tile_round(self.read_of(i, j)));
+                    let e = escapes.entry(j).or_default();
+                    *e |= !(self.frame.x0 <= r.x0 && r.x1 <= self.frame.x1 && self.frame.y0 <= r.y0 && r.y1 <= self.frame.y1);
+                    reads.entry(j).and_modify(|u| *u = u.union(r)).or_insert(r);
+                }
+            }
+        }
+        let mut nodes: Vec<NodeId> = reads.keys().copied().filter(|j| escapes[j]).collect();
+        nodes.sort_unstable();
+        for j in nodes {
+            let rect = self.clamp_x(reads[&j]);
+            let inside = rect.intersect(self.frame);
+            let copy_round = if inside.is_zero_area() { 0 } else { self.ready(j, inside) };
+            let items = self.spine_items_below(j, rect);
+            let v = self.values.len();
+            self.values.push(Value { node: j, rect, place: Vec2::ZERO, birth: 0, last_read: 0, page: 0, leaf: None, decode: 0.0, ground: Some(Ground { items, copy_round }) });
+            self.ground_of.insert(j, v);
+        }
+    }
+
     /// Give every non-compose arm its value, mark every value's last reader, and pack the values
     /// onto pages.
     fn assign_pages(&mut self) {
@@ -484,7 +589,7 @@ impl<'a> Scheduler<'a> {
             }
             let tail = *self.arms[a].nodes.last().expect("an arm has nodes");
             let v = self.values.len();
-            self.values.push(Value { node: tail, rect: self.out[tail], birth: self.arms[a].round, last_read: self.arms[a].round, page: 0, leaf: None, decode: 0.0 });
+            self.values.push(Value { node: tail, rect: self.out[tail], place: Vec2::ZERO, birth: self.arms[a].round, last_read: self.arms[a].round, page: 0, leaf: None, decode: 0.0, ground: None });
             self.value_of.insert(tail, v);
             self.arms[a].out = Some(v);
         }
@@ -498,32 +603,41 @@ impl<'a> Scheduler<'a> {
                 if let Some(&v) = self.value_of.get(&j) {
                     self.values[v].last_read = self.values[v].last_read.max(round);
                 }
+                if self.arms[a].compose.is_none() {
+                    if let Some(&v) = self.ground_of.get(&j) {
+                        self.values[v].last_read = self.values[v].last_read.max(round);
+                    }
+                }
             }
         }
         let mut order: Vec<usize> = (0..self.values.len()).collect();
         order.sort_by_key(|&v| (self.values[v].birth, v));
         let mut placed: Vec<usize> = Vec::new();
         for v in order {
-            let (rect, birth) = (self.values[v].rect, self.values[v].birth);
+            let rect = self.values[v].rect;
+            self.values[v].place = Vec2::new(-rect.x0, -rect.y0);
+            let birth = self.values[v].birth;
             let mut page = 1;
             loop {
+                self.values[v].page = page;
+                let mine = self.store_rect(v);
                 let clash = placed.iter().any(|&o| {
                     let ov = &self.values[o];
-                    ov.page == page && overlaps(ov.rect, rect) && ov.last_read >= birth
+                    overlaps(self.store_rect(o), mine) && ov.last_read >= birth
                 });
                 if !clash {
                     break;
                 }
                 page += 1;
             }
-            self.values[v].page = page;
             placed.push(v);
         }
     }
 
-    /// How many pages the frame rents below its own rows.
+    /// How many pages the frame rents below its own rows: enough for the lowest value's rows.
     fn pages(&self) -> usize {
-        self.values.iter().map(|v| v.page).max().unwrap_or(0)
+        let pitch = self.pitch();
+        (0..self.values.len()).map(|v| (self.store_rect(v).y1 / pitch).ceil() as usize - 1).max().unwrap_or(0)
     }
 
     /// The page pitch: the frame height rounded up to whole tiles.
@@ -531,18 +645,27 @@ impl<'a> Scheduler<'a> {
         (self.h / TILE).ceil() * TILE
     }
 
-    /// A value's rect in store texels: its frame rect moved down by its page.
+    /// A value's rect in store texels: its frame rect slid by its placement, down by its page.
     fn store_rect(&self, v: usize) -> Rect {
         let val = &self.values[v];
-        val.rect + Vec2::new(0.0, val.page as f64 * self.pitch())
+        val.rect + val.place + Vec2::new(0.0, val.page as f64 * self.pitch())
     }
 
     /// Where arm `a` reads node `j`: the spine is the tile's own registers when a pointwise read
-    /// lands on the frame and the frame rect otherwise; a silhouette leaf is the marker's area; any
-    /// other value is its store rect.
+    /// lands on the frame, its served ground when a page arm reads it past the frame, and the
+    /// frame rect otherwise; a silhouette leaf is the marker's area; any other value is its store
+    /// rect.
     fn operand_for(&self, a: usize, j: NodeId, shift: Vec2, pointwise: bool) -> Operand {
         if self.g.is_spine(j) {
-            return if pointwise && self.arms[a].compose.is_some() && shift == Vec2::ZERO { Operand::Regs } else { Operand::Frame };
+            if pointwise && self.arms[a].compose.is_some() && shift == Vec2::ZERO {
+                return Operand::Regs;
+            }
+            if self.arms[a].compose.is_none() {
+                if let Some(&v) = self.ground_of.get(&j) {
+                    return Operand::Value { v, shift };
+                }
+            }
+            return Operand::Frame;
         }
         if self.regs_leaf.contains_key(&j) {
             return Operand::Area;
@@ -561,7 +684,8 @@ impl<'a> Scheduler<'a> {
             Operand::Area => r[0] = SRC_AREA,
             Operand::Value { v, shift } => {
                 let s = self.store_rect(v);
-                r = [SRC_STORE, s.x0 as f32, s.y0 as f32, s.x1 as f32, s.y1 as f32, shift.x as f32, shift.y as f32, decode];
+                let d = shift - self.values[v].place;
+                r = [SRC_STORE, s.x0 as f32, s.y0 as f32, s.x1 as f32, s.y1 as f32, d.x as f32, d.y as f32, decode];
             }
             Operand::Frame => {
                 let f = self.frame;
@@ -689,9 +813,9 @@ impl<'a> Scheduler<'a> {
         }
         let mut rec = [[0.0f32; 4]; 12];
         bake::stamp_field_anchor(&desc, &mut rec);
-        let out_rect = match self.arms[a].out {
-            Some(v) => self.store_rect(v),
-            None => self.out[compose.expect("an arm composes or writes a value")],
+        let (out_rect, out_place) = match self.arms[a].out {
+            Some(v) => (self.store_rect(v), self.values[v].place),
+            None => (self.out[compose.expect("an arm composes or writes a value")], Vec2::ZERO),
         };
         let mut records = [[0.0f32; REC_STRIDE]; REC_COUNT];
         records[REC_VALUE] = self.record(value, 0.0);
@@ -702,7 +826,7 @@ impl<'a> Scheduler<'a> {
             _ => 0.0,
         };
         records[REC_DISTANCE] = self.record(distance, dec);
-        records[REC_OUTPUT] = [SRC_STORE, out_rect.x0 as f32, out_rect.y0 as f32, out_rect.x1 as f32, out_rect.y1 as f32, 0.0, 0.0, 0.0];
+        records[REC_OUTPUT] = [SRC_STORE, out_rect.x0 as f32, out_rect.y0 as f32, out_rect.x1 as f32, out_rect.y1 as f32, out_place.x as f32, out_place.y as f32, 0.0];
         records[5][0] = rec[10][0];
         records[5][1] = rec[10][1];
         let off = params.len();
@@ -741,23 +865,27 @@ impl<'a> Scheduler<'a> {
         let rounds = self.arms.iter().map(|a| a.round + 1).max().unwrap_or(1);
 
         let mut draws: Vec<DrawCmd> = Vec::new();
-        for v in &self.values {
-            if let Some(item) = &v.leaf {
-                let rect = self.store_rect(self.value_of[&v.node]);
-                let mut it = item.clone();
-                it.bounds = self.out[v.node];
-                draws.push(DrawCmd::Shapes {
-                    items: vec![it],
-                    transform: Affine::translate((0.0, v.page as f64 * pitch)),
-                    clip: Some(rect),
-                });
-            }
-        }
+        let mut grounds: Vec<Pass> = Vec::new();
+        let mut copies: Vec<Vec<Pass>> = vec![Vec::new(); rounds as usize + 1];
         let mut tiles: Vec<Vec<u32>> = vec![Vec::new(); rounds as usize];
         Self::tiles_of(self.frame, &mut tiles[0]);
-        for v in &self.values {
-            if v.leaf.is_some() {
-                Self::tiles_of(self.store_rect(self.value_of[&v.node]), &mut tiles[0]);
+        for (vi, v) in self.values.iter().enumerate() {
+            let rect = self.store_rect(vi);
+            let transform = Affine::translate(v.place + Vec2::new(0.0, v.page as f64 * pitch));
+            if let Some(item) = &v.leaf {
+                let mut it = item.clone();
+                it.bounds = self.out[v.node];
+                draws.push(DrawCmd::Shapes { items: vec![it], transform, clip: Some(rect) });
+                Self::tiles_of(rect, &mut tiles[0]);
+            }
+            if let Some(ground) = &v.ground {
+                grounds.push(Pass::Clear { rect, colour: self.g.background.components });
+                draws.push(DrawCmd::Shapes { items: ground.items.clone(), transform, clip: Some(rect) });
+                Self::tiles_of(rect, &mut tiles[0]);
+                let inside = v.rect.intersect(self.frame);
+                if !inside.is_zero_area() && (ground.copy_round as usize) < rounds as usize {
+                    copies[ground.copy_round as usize + 1].push(Pass::Copy { src: inside, dst: inside + v.place + Vec2::new(0.0, v.page as f64 * pitch) });
+                }
             }
         }
         for i in 0..self.g.nodes.len() {
@@ -817,8 +945,10 @@ impl<'a> Scheduler<'a> {
         if pages > 0 {
             passes.push(Pass::Clear { rect: Rect::new(0.0, self.h, self.frame.x1, store_h), colour: [0.0; 4] });
         }
+        passes.append(&mut grounds);
         passes.push(Pass::Frontend { draws });
         for (r, list) in tiles.iter_mut().enumerate() {
+            passes.append(&mut copies[r]);
             list.sort_unstable();
             list.dedup();
             let off = params.len() as u32;

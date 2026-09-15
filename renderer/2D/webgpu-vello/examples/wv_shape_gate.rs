@@ -30,8 +30,8 @@ struct Ceiling {
 
 fn ceilings() -> Vec<Ceiling> {
     vec![
-        Ceiling { name: "glass-at-rest", pan: (0.0, 0.0), max: [7, 13, 7, 7] },
-        Ceiling { name: "glass-crossing-left", pan: (-450.0, -165.0), max: [7, 12, 7, 7] },
+        Ceiling { name: "glass-at-rest", pan: (0.0, 0.0), max: [8, 19, 7, 7] },
+        Ceiling { name: "glass-crossing-left", pan: (-450.0, -165.0), max: [8, 17, 7, 7] },
     ]
 }
 
