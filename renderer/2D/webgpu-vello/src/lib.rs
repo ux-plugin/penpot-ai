@@ -51,6 +51,14 @@ use vello_example_scenes::{
     SampleRect, Stroke, TextureId,
 };
 
+/// The scheduler packs store values in whole tiles; that tile must be the one vello's coarse bins
+/// into and one fine workgroup writes.
+const _: () = assert!(
+    render_core::vello::scheduler::TILE_WIDTH == vello::TILE_WIDTH
+        && render_core::vello::scheduler::TILE_HEIGHT == vello::TILE_HEIGHT,
+    "the scheduler's tile is not vello's"
+);
+
 /// Stateful adapter: a classic `vello::Scene` plus the pen state the immediate-mode API needs
 /// supplied per call. One of these is built per surface the sink rasterizes.
 pub struct ClassicCtx {

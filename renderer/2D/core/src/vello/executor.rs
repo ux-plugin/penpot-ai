@@ -40,7 +40,7 @@ impl Sink {
         height: u32,
     ) {
         plan.validate().unwrap_or_else(|e| panic!("frame plan: {e}"));
-        assert_eq!(plan.store.0, width, "the store is the frame's width");
+        assert!(plan.store.0 >= width, "the store holds the frame's columns");
         assert!(plan.store.1 >= height, "the store holds the frame rows");
         crate::vello::frame_log::begin();
         self.raster_usage = backend.rasterize_target_usage();

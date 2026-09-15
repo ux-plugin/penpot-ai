@@ -36,6 +36,7 @@ pub mod rasterize;
 pub mod scheduler;
 pub mod sdf;
 pub mod store;
+pub mod store_pack;
 pub mod rich_editor;
 pub mod svg;
 /// The GPU production sink — executes a `crate::schedule::Schedule` on a Vello backend. Generic

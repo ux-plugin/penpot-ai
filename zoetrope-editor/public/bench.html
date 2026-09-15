@@ -39,6 +39,9 @@ const LENS_TINT = Number(q.get('lensTint') ?? 0)
 const LENS_RADII = Number(q.get('lensRadii') ?? 1)
 const LENS_FRINGE = Number(q.get('lensFringe') ?? 0)
 const PACE = q.get('pace') ?? 'raf'
+const REPLAY = q.get('replay')
+const ZOOM0 = Number(q.get('zoom') ?? 1)
+const PAN0 = (q.get('pan') ?? '0,0').split(',').map(Number)
 
 const out = document.getElementById('out')
 const log = (s) => { out.textContent = s }
@@ -96,7 +99,31 @@ function main() {
     window.__R__ = renderer
 
     const SCENE = q.get('scene')
-    if (SCENE !== 'scale' && (SCENE === 'parity' || SCENE === 'showcase' || SCENE === 'image' || SCENE === 'path-shadow' || SCENE === 'layer-blur' || (SCENE && SCENE.startsWith('scope')))) {
+    if (REPLAY) {
+      const raw = await (await fetch(REPLAY)).text()
+      const rec = JSON.parse(raw.trim().startsWith('"') ? JSON.parse(raw) : raw)
+      const skip = new Set(['init', 'set_render_options', 'resize_viewbox', 'render', 'clean_up', 'store_font', 'is_font_uploaded', 'calculate_position_data'])
+      const missing = new Set()
+      let ptr = 0, applied = 0
+      for (const call of rec.calls) {
+        if (skip.has(call.fn)) continue
+        const fn = X[call.fn]
+        if (typeof fn !== 'function') { missing.add(call.fn); continue }
+        if (call.fn === 'alloc_bytes') { ptr = fn(...call.args); continue }
+        if (call.buffer !== undefined) {
+          const bin = atob(call.buffer)
+          const bytes = new Uint8Array(bin.length)
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+          new Uint8Array(X.memory.buffer).set(bytes, ptr)
+          ptr = 0
+        }
+        fn(...call.args)
+        applied++
+      }
+      if (X.set_canvas_background) X.set_canvas_background(0xffffffff)
+      window.__REPLAYED__ = { applied, missing: [...missing] }
+    }
+    if (!REPLAY && SCENE !== 'scale' && (SCENE === 'parity' || SCENE === 'showcase' || SCENE === 'image' || SCENE === 'path-shadow' || SCENE === 'layer-blur' || (SCENE && SCENE.startsWith('scope')))) {
       const cells =
         SCENE === 'showcase' ? X.load_showcase_scene()
         : SCENE === 'scope' ? X.load_scope_scene()
@@ -206,6 +233,7 @@ function main() {
     const shapeXY = (i) => [(i % cols) * CELL, Math.floor(i / cols) * CELL]
 
     const STACK_TOTAL = STACKS * STACK * (1 + STACK_BETWEEN + (STACK_SHAPES ? 1 : 0))
+    if (!REPLAY) {
     X.init_shapes_pool(N + DEPTH + STACK + LENSES + 200 + STACK_TOTAL + 32)
 
     if (BGFILL) {
@@ -326,6 +354,8 @@ function main() {
       }
     }
 
+    }
+
     const chan = new MessageChannel()
     const raf = PACE === 'msg'
       ? () => new Promise((r) => { chan.port1.onmessage = () => r(); chan.port2.postMessage(0) })
@@ -339,7 +369,7 @@ function main() {
     }
 
     const MODES = {
-      idle: () => { X.set_view(1, 0, 0) },
+      idle: () => { X.set_view(ZOOM0, PAN0[0], PAN0[1]) },
       pan: (i) => { X.set_view(1, (i * 13) % 2000, (i * 7) % 1200) },
       zoom: (i) => { X.set_view(ZOOMS[i % ZOOMS.length], 0, 0) },
       edit1: (i) => { X.set_view(1, 0, 0); moveShape(8, i % 40, i % 40) },

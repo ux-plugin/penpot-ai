@@ -39,9 +39,15 @@ use crate::kurbo::{Affine, Rect, Vec2};
 use crate::vello::bake::{self, Policy, REC_COUNT, REC_STRIDE};
 use crate::vello::frame_graph::{pad, BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, FrameGraph, NodeId, Op};
 use crate::vello::frame_plan::{DrawCmd, FramePlan, Pass, Tiles, Window};
+use crate::vello::store_pack::StorePacker;
 use crate::vello::units::{BlurEdge, UnitOp};
 
-const TILE: f64 = 16.0;
+/// Pixel columns per tile. Must equal vello's `TILE_WIDTH`; the backend checks it at compile time.
+pub const TILE_WIDTH: u32 = 16;
+/// Pixel rows per tile. Must equal vello's `TILE_HEIGHT`; the backend checks it at compile time.
+pub const TILE_HEIGHT: u32 = 16;
+const TILE_W: f64 = TILE_WIDTH as f64;
+const TILE_H: f64 = TILE_HEIGHT as f64;
 /// Descriptor floats per arm: the 26-float header and the operand records.
 const DESC_FLOATS: usize = 26 + REC_COUNT * REC_STRIDE;
 /// Operand record sources, as `fine.wgsl` reads them: absent, a store rect, the tile's registers,
@@ -152,7 +158,7 @@ struct Scheduler<'a> {
 }
 
 fn tile_round(r: Rect) -> Rect {
-    Rect::new((r.x0 / TILE).floor() * TILE, (r.y0 / TILE).floor() * TILE, (r.x1 / TILE).ceil() * TILE, (r.y1 / TILE).ceil() * TILE)
+    Rect::new((r.x0 / TILE_W).floor() * TILE_W, (r.y0 / TILE_H).floor() * TILE_H, (r.x1 / TILE_W).ceil() * TILE_W, (r.y1 / TILE_H).ceil() * TILE_H)
 }
 
 fn union_into(slot: &mut Option<Rect>, r: Rect) {
@@ -217,7 +223,7 @@ impl<'a> Scheduler<'a> {
         }
         let inf = Rect::new(r.x0.max(self.frame.x0), r.y0, r.x1.min(self.frame.x1), r.y1);
         let avail = w - inf.width();
-        let left = (inf.x0 - r.x0).min(((avail / 2.0) / TILE).floor() * TILE);
+        let left = (inf.x0 - r.x0).min(((avail / 2.0) / TILE_W).floor() * TILE_W);
         let right = (r.x1 - inf.x1).min(avail - left);
         Rect::new(inf.x0 - left, r.y0, inf.x1 + right, r.y1)
     }
@@ -581,7 +587,7 @@ impl<'a> Scheduler<'a> {
     }
 
     /// Give every non-compose arm its value, mark every value's last reader, and pack the values
-    /// onto pages.
+    /// into the rows below the frame.
     fn assign_pages(&mut self) {
         for a in 0..self.arms.len() {
             if self.arms[a].compose.is_some() {
@@ -612,26 +618,22 @@ impl<'a> Scheduler<'a> {
         }
         let mut order: Vec<usize> = (0..self.values.len()).collect();
         order.sort_by_key(|&v| (self.values[v].birth, v));
-        let mut placed: Vec<usize> = Vec::new();
+        let pitch = self.pitch();
+        let mut packer = StorePacker::new((self.store_width() / TILE_W) as u32);
         for v in order {
-            let rect = self.values[v].rect;
-            self.values[v].place = Vec2::new(-rect.x0, -rect.y0);
-            let birth = self.values[v].birth;
-            let mut page = 1;
-            loop {
-                self.values[v].page = page;
-                let mine = self.store_rect(v);
-                let clash = placed.iter().any(|&o| {
-                    let ov = &self.values[o];
-                    overlaps(self.store_rect(o), mine) && ov.last_read >= birth
-                });
-                if !clash {
-                    break;
-                }
-                page += 1;
-            }
-            placed.push(v);
+            let (rect, birth, death) = (self.values[v].rect, self.values[v].birth, self.values[v].last_read);
+            let [x, y] = packer.place((rect.width() / TILE_W).ceil() as u32, (rect.height() / TILE_H).ceil() as u32, birth, death);
+            let origin = Vec2::new(f64::from(x) * TILE_W, pitch + f64::from(y) * TILE_H);
+            let page = (origin.y / pitch).floor() as usize;
+            self.values[v].page = page;
+            self.values[v].place = origin - Vec2::new(0.0, page as f64 * pitch) - rect.origin().to_vec2();
         }
+    }
+
+    /// The store's width: the frame's, rounded up to whole tiles so a value against the right edge
+    /// keeps its last column.
+    fn store_width(&self) -> f64 {
+        (self.frame.x1 / TILE_W).ceil() * TILE_W
     }
 
     /// How many pages the frame rents below its own rows: enough for the lowest value's rows.
@@ -642,7 +644,7 @@ impl<'a> Scheduler<'a> {
 
     /// The page pitch: the frame height rounded up to whole tiles.
     fn pitch(&self) -> f64 {
-        (self.h / TILE).ceil() * TILE
+        (self.h / TILE_H).ceil() * TILE_H
     }
 
     /// A value's rect in store texels: its frame rect slid by its placement, down by its page.
@@ -846,7 +848,7 @@ impl<'a> Scheduler<'a> {
 
     fn tiles_of(r: Rect, out: &mut Vec<u32>) {
         let r = tile_round(r);
-        let (x0, y0, x1, y1) = ((r.x0 / TILE) as u32, (r.y0 / TILE) as u32, (r.x1 / TILE) as u32, (r.y1 / TILE) as u32);
+        let (x0, y0, x1, y1) = ((r.x0 / TILE_W) as u32, (r.y0 / TILE_H) as u32, (r.x1 / TILE_W) as u32, (r.y1 / TILE_H) as u32);
         for y in y0..y1 {
             for x in x0..x1 {
                 out.push(0x4000_0000 | (y << 16) | x);
@@ -957,7 +959,7 @@ impl<'a> Scheduler<'a> {
             passes.push(Pass::Fine { window: Window { rounds: (r, r + 1), tiles: Tiles::List { off, n: list.len() as u32 } } });
         }
         passes.push(Pass::Present { from: self.frame });
-        FramePlan { store: (self.frame.x1 as u32, store_h as u32), page: pitch as u32, params, passes }
+        FramePlan { store: (self.store_width() as u32, store_h as u32), page: pitch as u32, params, passes }
     }
 }
 
@@ -1000,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn rounds_are_dependency_depth_and_values_take_pages() {
+    fn rounds_are_dependency_depth_and_live_values_share_a_page_apart() {
         let g = graph();
         g.validate().expect("valid");
         let s = Scheduler::new(&g, 640, 480);
@@ -1012,11 +1014,13 @@ mod tests {
         assert_eq!(arms[0], (vec![2], None, 1), "blur X reads the round-0 silhouette");
         assert_eq!(arms[1], (vec![3], Some(4), 2), "blur Y lands the drop shadow");
         assert_eq!(arms[2], (vec![6, 7, 8], Some(10), 3), "the lens is one arm landing the glass after the body draws");
-        assert_eq!(s.pages(), 2, "the silhouette and the blur-X value are alive together");
-        let sil = s.values.iter().find(|v| v.node == 1).unwrap();
-        let bx = s.values.iter().find(|v| v.node == 2).unwrap();
-        assert_eq!((sil.birth, sil.last_read, sil.page), (0, 1, 1));
-        assert_eq!((bx.birth, bx.last_read, bx.page), (1, 2, 2));
+        assert_eq!(s.pages(), 1, "both values fit beside each other on the first page");
+        let sil = s.values.iter().position(|v| v.node == 1).unwrap();
+        let bx = s.values.iter().position(|v| v.node == 2).unwrap();
+        assert_eq!((s.values[sil].birth, s.values[sil].last_read), (0, 1));
+        assert_eq!((s.values[bx].birth, s.values[bx].last_read), (1, 2));
+        assert!(!overlaps(s.store_rect(sil), s.store_rect(bx)), "values alive in the same round never share a texel");
+        assert!(s.store_rect(sil).y0 >= s.pitch() && s.store_rect(bx).y0 >= s.pitch(), "values sit below the frame rows");
     }
 
     #[test]
@@ -1024,7 +1028,7 @@ mod tests {
         let g = graph();
         let p = plan(&g, 640, 480);
         p.validate().unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(p.store, (640, 480 * 3));
+        assert_eq!(p.store, (640, 480 * 2));
         let fines: Vec<&Pass> = p.passes.iter().filter(|p| matches!(p, Pass::Fine { .. })).collect();
         assert_eq!(fines.len(), 4, "rounds 0..3");
         for (r, f) in fines.iter().enumerate() {
