@@ -46,6 +46,20 @@ use vello_example_scenes::RenderingContext;
 /// window (the final window, or — with `seg_lo == 0` — a full render). Matches vello's `SEG_ALL`.
 pub const SEG_ALL: u32 = u32::MAX;
 
+/// Floors for vello's bump-allocated pools, in elements; zero keeps the backend's own size.
+/// The executor raises whichever pool a frame overflowed and hands the floors to every later
+/// front-end, so an overflow costs one frame, once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BumpSizes {
+    pub bin_data: u32,
+    pub tiles: u32,
+    pub lines: u32,
+    pub seg_counts: u32,
+    pub segments: u32,
+    pub blend_spill: u32,
+    pub ptcl: u32,
+}
+
 pub trait RasterBackend {
 
     /// The backend's scene type (a `vello_hybrid::Scene`, or the classic `RenderingContext` wrapper).
@@ -183,7 +197,9 @@ pub trait RasterBackend {
     /// Dispatch the effects `fine` for the window `[seg_lo, seg_target)` of the shared PTCL built by
     /// [`Self::phased_frontend_full`], reading and writing the packed r32uint store `out` in place;
     /// every operand a mark reads is a store rect its descriptor names. [`SEG_ALL`] as `seg_target`
-    /// removes the upper bound. Classic-only; default panics.
+    /// removes the upper bound. `label` names the dispatch in profiler builds. Classic-only;
+    /// default panics.
+    #[expect(clippy::too_many_arguments, reason = "one dispatch, one binding set")]
     fn phased_fine(
         &mut self,
         _device: &wgpu::Device,
@@ -192,9 +208,24 @@ pub trait RasterBackend {
         _seg_lo: u32,
         _seg_target: u32,
         _out: &wgpu::TextureView,
+        _label: &'static str,
     ) {
         unimplemented!("phased session is classic-only")
     }
+
+    /// The pool floors every later [`Self::phased_begin`] allocates with. Default: ignored.
+    fn set_bump_sizes(&mut self, _sizes: BumpSizes) {}
+
+    /// What the front-end's tile and bin allocators were estimated to need for the session begun
+    /// by the last [`Self::phased_begin`], `[tiles, bins]`. Default zero.
+    fn phased_estimate(&self) -> [u32; 2] {
+        [0, 0]
+    }
+
+    /// Record a copy of the session's bump allocators — the overflow flag then every pool's
+    /// watermark, eight `u32`s — into `dst` (32 bytes, `COPY_DST`), so the caller can read them
+    /// back after the submit. Must run before [`Self::phased_finish`]. Default: no-op.
+    fn phased_bump_copy(&mut self, _enc: &mut wgpu::CommandEncoder, _dst: &wgpu::Buffer) {}
 
     /// Fill exactly one node's outline, dilated by `spread` page px, in solid white into `scene`
     /// at `root` (composed with the viewport as [`Self::draw_scene_range`] does) — a coverage draw

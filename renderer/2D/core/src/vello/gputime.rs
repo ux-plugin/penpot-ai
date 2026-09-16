@@ -198,9 +198,9 @@ impl GpuTimer {
     }
 }
 
-/// Max timestamp boundaries [`PassProfiler`] records per frame. Sized for a deep stack: 8 gathers ×
-/// ~6 stamps + the swap-blit pair ≈ 50, with headroom.
-const PMAX: usize = 64;
+/// Max timestamp boundaries [`PassProfiler`] records per frame: one per fine window of a plan
+/// plus one ahead of the first, so a plan of a few hundred rounds is still fully attributed.
+const PMAX: usize = 512;
 
 /// Per-**region** GPU timing for the whole-viewport gather frame. Where [`GpuTimer`] brackets the
 /// whole frame with two stamps, this records a stamp between every region of interest (empty

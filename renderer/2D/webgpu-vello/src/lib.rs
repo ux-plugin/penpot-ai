@@ -681,6 +681,10 @@ pub struct ClassicBackend {
     debug_bump_id: Option<vello::low_level::ResourceId>,
     #[cfg(not(target_arch = "wasm32"))]
     debug_gpu: Option<(wgpu::Device, wgpu::Queue)>,
+    /// The pool floors the next phased session allocates with (see `RasterBackend::set_bump_sizes`).
+    bump_sizes: vello::BumpSizes,
+    /// What the last phased session's front-end was sized for: `[tiles, bins]`.
+    estimate: [u32; 2],
 }
 
 impl ClassicBackend {
@@ -701,6 +705,8 @@ impl ClassicBackend {
             debug_bump_id: None,
             #[cfg(not(target_arch = "wasm32"))]
             debug_gpu: None,
+            bump_sizes: vello::BumpSizes::default(),
+            estimate: [0, 0],
         }
     }
 
@@ -970,13 +976,14 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         let session = self
             .renderer
             .inner
-            .phased_begin_into(device, queue, scene.scene(), &params, effect_params, enc)
+            .phased_begin_into(device, queue, scene.scene(), &params, effect_params, self.bump_sizes, enc)
             .expect("phased_begin_into");
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.debug_bump_id = Some(session.debug_bump_proxy_id());
             self.debug_gpu = Some((device.clone(), queue.clone()));
         }
+        self.estimate = [session.estimate.tiles, session.estimate.bins];
         self.phased_session = Some(session);
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
         render_core::vello::prof::inc_render();
@@ -1000,14 +1007,37 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         seg_lo: u32,
         seg_target: u32,
         out: &wgpu::TextureView,
+        label: &'static str,
     ) {
         let _trd = render_core::vello::prof::now();
         let session = self.phased_session.as_mut().expect("phased_fine without phased_begin");
         self.renderer
             .inner
-            .phased_fine_into(session, device, queue, enc, seg_lo, seg_target, out)
+            .phased_fine_into(session, device, queue, enc, seg_lo, seg_target, out, label)
             .expect("phased_fine_into");
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
+    }
+
+    fn set_bump_sizes(&mut self, sizes: render_core::vello::rasterize::BumpSizes) {
+        self.bump_sizes = vello::BumpSizes {
+            bin_data: sizes.bin_data,
+            tiles: sizes.tiles,
+            lines: sizes.lines,
+            seg_counts: sizes.seg_counts,
+            segments: sizes.segments,
+            blend_spill: sizes.blend_spill,
+            ptcl: sizes.ptcl,
+        };
+    }
+
+    fn phased_estimate(&self) -> [u32; 2] {
+        self.estimate
+    }
+
+    fn phased_bump_copy(&mut self, enc: &mut wgpu::CommandEncoder, dst: &wgpu::Buffer) {
+        if let Some(session) = self.phased_session.as_ref() {
+            self.renderer.inner.phased_bump_copy_into(session, enc, dst);
+        }
     }
 
 

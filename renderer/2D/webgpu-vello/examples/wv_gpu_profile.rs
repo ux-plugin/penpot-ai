@@ -28,12 +28,23 @@ const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// per frame at 4K — can be measured small. A run whose frames each hold the queue for ~a second
 /// starves the window server for as long as it lasts, so shrink the viewport and the frame count
 /// before measuring anything known to be slow.
+#[path = "util/stack_scene.rs"]
+mod stack_scene;
+
 fn env_u32(key: &str, default: u32) -> u32 {
     std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+/// Sum every timed scope by label. A `fine:<kind>` scope (one plan window, labelled by the work
+/// it runs) is counted as itself and its nested `fine_packed` dispatch is not counted again.
 #[cfg(feature = "gpu-profiler")]
 fn collect(node: &wgpu_profiler::GpuTimerQueryResult, agg: &mut BTreeMap<String, (f64, u32)>) {
+    if node.label.starts_with("fine:") {
+        let e = agg.entry(node.label.clone()).or_insert((0.0, 0));
+        e.0 += subtree_ms(node);
+        e.1 += 1;
+        return;
+    }
     if let Some(t) = &node.time {
         let e = agg.entry(node.label.clone()).or_insert((0.0, 0));
         e.0 += (t.end - t.start) * 1000.0;
@@ -41,6 +52,15 @@ fn collect(node: &wgpu_profiler::GpuTimerQueryResult, agg: &mut BTreeMap<String,
     }
     for child in &node.nested_queries {
         collect(child, agg);
+    }
+}
+
+/// A scope's own span, or the sum of its nested scopes when it carries none.
+#[cfg(feature = "gpu-profiler")]
+fn subtree_ms(node: &wgpu_profiler::GpuTimerQueryResult) -> f64 {
+    match &node.time {
+        Some(t) => (t.end - t.start) * 1000.0,
+        None => node.nested_queries.iter().map(subtree_ms).sum(),
     }
 }
 
@@ -73,7 +93,12 @@ fn main() {
 
     let step = std::env::var("WV_STEP").ok().and_then(|v| v.parse::<f32>().ok());
     let glass = std::env::var("WV_GLASS").ok().and_then(|v| v.parse::<u32>().ok());
-    let cells = if std::env::var("WV_SHOWCASE").is_ok() {
+    let cells = if std::env::var("WV_STACK").is_ok() {
+        render_core::vello::abi::init(w as i32, h as i32);
+        let (n, stack, stacks, between) = stack_scene::build_from_env(w, h);
+        println!("stack scene: {n} shapes, {stacks} stacks of {stack} glass, {between} between");
+        stacks * stack
+    } else if std::env::var("WV_SHOWCASE").is_ok() {
         render_core::vello::abi::load_showcase_scene()
     } else {
         match (glass, step) {
@@ -174,6 +199,20 @@ fn main() {
                     collect(r, &mut gpu_agg);
                 }
                 profiled_frames += 1;
+                if std::env::var("WV_GPU_SEQ").is_ok() && profiled_frames == 1 {
+                    println!("== dispatch sequence (first timed frame) ==");
+                    fn walk(node: &wgpu_profiler::GpuTimerQueryResult, depth: usize) {
+                        if let Some(t) = &node.time {
+                            println!("{:indent$}{:<28} {:8.3} ms", "", node.label, (t.end - t.start) * 1000.0, indent = depth * 2);
+                        }
+                        for c in &node.nested_queries {
+                            walk(c, depth + 1);
+                        }
+                    }
+                    for r in &results {
+                        walk(r, 0);
+                    }
+                }
             }
         }
         if timed {

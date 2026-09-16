@@ -57,7 +57,7 @@ use crate::kurbo::{Affine, Rect, Vec2};
 
 use crate::vello::bake::{self, Policy, REC_COUNT, REC_STRIDE};
 use crate::vello::frame_graph::{pad_at, scale_rect, BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, FrameGraph, NodeId, Op};
-use crate::vello::frame_plan::{DrawCmd, FramePlan, Pass, Tiles, Window};
+use crate::vello::frame_plan::{self, DrawCmd, FramePlan, Pass, Tiles, Window};
 use crate::vello::store_pack::StorePacker;
 use crate::vello::units::{BlurEdge, UnitOp};
 
@@ -199,8 +199,6 @@ struct Scheduler<'a> {
     demand: Vec<Option<Rect>>,
     out: Vec<Rect>,
     readers: Vec<Vec<NodeId>>,
-    /// Round of the last compose at or below each spine node.
-    spine_round: HashMap<NodeId, u32>,
     /// The arm each chain node belongs to.
     arm_of: HashMap<NodeId, usize>,
     /// The value each leaf or arm-tail node produces.
@@ -257,7 +255,6 @@ impl<'a> Scheduler<'a> {
             demand: Vec::new(),
             out: Vec::new(),
             readers: Vec::new(),
-            spine_round: HashMap::new(),
             arm_of: HashMap::new(),
             value_of: HashMap::new(),
             regs_leaf: HashMap::new(),
@@ -317,7 +314,41 @@ impl<'a> Scheduler<'a> {
         self.serve();
         self.fit_rounds();
         self.assign_pages();
+        if std::env::var_os("WV_PLAN_DUMP").is_some() {
+            eprint!("{}", self.schedule_dump());
+        }
         self.emit()
+    }
+
+    /// The schedule as text, one line per arm in round order: round, chain (its compose's label),
+    /// the resolution its nodes run at, the nodes, and the value's rect and texels — then one
+    /// line per round with the texels live in it.
+    fn schedule_dump(&self) -> String {
+        let mut arms: Vec<usize> = (0..self.arms.len()).collect();
+        arms.sort_by_key(|&a| (self.arms[a].round, a));
+        let mut s = String::from("schedule\n");
+        for a in arms {
+            let arm = &self.arms[a];
+            let k = arm.nodes.first().map_or(1.0, |&i| self.k[i]);
+            let labels: Vec<&str> = arm.nodes.iter().map(|&i| self.g.nodes[i].label.as_str()).collect();
+            let rect = arm.out.map(|v| self.values[v].rect);
+            s.push_str(&format!(
+                "  r{:<3} {:<26} k={:<5} [{}]{}{}\n",
+                arm.round,
+                self.g.nodes[arm.chain].label,
+                k,
+                labels.join(", "),
+                arm.compose.map_or(String::new(), |c| format!(" → {}", self.g.nodes[c].label)),
+                rect.map_or(String::new(), |r| format!(" out {}x{}", r.width(), r.height())),
+            ));
+        }
+        let rounds = self.arms.iter().map(|a| a.round + 1).max().unwrap_or(1);
+        for r in 0..rounds {
+            let live: f64 = self.values.iter().filter(|v| v.birth <= r && r <= v.last_read).map(|v| v.rect.area()).sum();
+            let n = self.values.iter().filter(|v| v.birth <= r && r <= v.last_read).count();
+            s.push_str(&format!("  round {r:<3} live {:>5.0}k texels in {n} values\n", live / 1000.0));
+        }
+        s
     }
 
     /// Whether scale `i` opens a pair: what it reads is not inside one.
@@ -588,53 +619,40 @@ impl<'a> Scheduler<'a> {
                 self.regs_leaf.insert(i, shape);
             }
         }
-        let mut current = 0u32;
         for i in 0..n {
             if !self.live(i) || !self.g.is_spine(i) {
                 continue;
             }
-            match &self.g.nodes[i].op {
-                Op::Draw(_) => {
-                    self.spine_round.insert(i, current);
+            if let Op::Compose { .. } = &self.g.nodes[i].op {
+                self.chain = i;
+                let value = self.input(i, 1);
+                let cov = self.g.nodes[i].inputs.get(2).map(|&c| self.alias[c]);
+                self.lower_chain(value);
+                if let Some(c) = cov {
+                    self.lower_chain(c);
                 }
-                Op::Compose { .. } => {
-                    self.chain = i;
-                    let value = self.input(i, 1);
-                    let cov = self.g.nodes[i].inputs.get(2).map(|&c| self.alias[c]);
-                    self.lower_chain(value);
-                    if let Some(c) = cov {
-                        self.lower_chain(c);
-                    }
-                    let round = self.compose(i, value);
-                    current = round;
-                    self.spine_round.insert(i, round);
-                }
-                _ => {}
+                self.compose(i, value);
             }
         }
     }
 
     /// The round after which node `i`'s result can be read over `r`: an arm's own round, a leaf's
-    /// round 0, and for the spine the round of the last live compose or draw below `i` that
-    /// touches `r` (a pruned compose has no arm and is walked past).
+    /// round 0, and for the spine the round of the last live compose below `i` that touches `r`
+    /// (a pruned compose has no arm and is walked past). A spine draw has no round of its own:
+    /// a tile's segment advances only at the markers binned into it, so the draw's items are
+    /// painted over `r` in whatever round the last compose touching `r` gave those tiles — two
+    /// chains over disjoint ground run in the same rounds even with draws between them.
     fn ready(&self, i: NodeId, r: Rect) -> u32 {
         if self.g.is_spine(i) {
             let mut s = i;
             loop {
                 let node = &self.g.nodes[s];
-                match &node.op {
-                    Op::Compose { .. } if overlaps(self.out[s], r) => {
+                if let Op::Compose { .. } = &node.op {
+                    if overlaps(self.out[s], r) {
                         if let Some(&a) = self.arm_of.get(&s) {
                             return self.arms[a].round;
                         }
                     }
-                    Op::Draw(_) => {
-                        let painted = self.pruned.get(&s).is_some_and(|items| items.iter().any(|it| overlaps(it.bounds, r)));
-                        if painted {
-                            return self.spine_round[&s];
-                        }
-                    }
-                    _ => {}
                 }
                 match node.inputs.first() {
                     Some(&below) => s = below,
@@ -942,13 +960,6 @@ impl<'a> Scheduler<'a> {
                     drawn[v] = true;
                 }
                 self.values[v].last_read = self.values[v].last_read.max(d + shift);
-            }
-            let round = self.arms[*arms.last().expect("a chain has arms")].round;
-            self.spine_round.insert(c, round);
-            let mut s = c + 1;
-            while s < self.g.nodes.len() && self.g.is_spine(s) && matches!(self.g.nodes[s].op, Op::Draw(_)) {
-                self.spine_round.insert(s, round);
-                s += 1;
             }
         }
     }
@@ -1263,6 +1274,23 @@ impl<'a> Scheduler<'a> {
         let mut copies: Vec<Vec<Pass>> = vec![Vec::new(); rounds as usize + 1];
         let mut tiles: Vec<Vec<u32>> = vec![Vec::new(); rounds as usize];
         Self::tiles_of(self.frame, &mut tiles[0]);
+        let mut work: Vec<u32> = vec![0; rounds as usize];
+        work[0] |= frame_plan::work::PAINT;
+        for arm in &self.arms {
+            let w = &mut work[arm.round as usize];
+            for &i in &arm.nodes {
+                *w |= match &self.g.nodes[i].op {
+                    Op::Scale { .. } => frame_plan::work::SCALE,
+                    Op::Warp(_) => frame_plan::work::WARP,
+                    Op::Blur { .. } => frame_plan::work::BLUR,
+                    Op::Scatter(_) => frame_plan::work::SCATTER,
+                    _ => frame_plan::work::POINTWISE,
+                };
+            }
+            if arm.compose.is_some() {
+                *w |= frame_plan::work::POINTWISE;
+            }
+        }
         let mut page_work: Vec<(u32, u32, Vec<DrawCmd>)> = Vec::new();
         for (vi, v) in self.values.iter().enumerate() {
             let rect = self.store_rect(vi);
@@ -1292,6 +1320,7 @@ impl<'a> Scheduler<'a> {
                 (None, None) => continue,
             };
             Self::tiles_of(rect, &mut tiles[v.birth as usize]);
+            work[v.birth as usize] |= frame_plan::work::DRAW;
             let mut cmds = Vec::new();
             if v.birth > 0 {
                 cmds.push(DrawCmd::Marker {
@@ -1305,8 +1334,13 @@ impl<'a> Scheduler<'a> {
                     params_off: 0,
                 });
             }
-            cmds.push(DrawCmd::Shapes { items, transform, clip: Some(rect) });
+            cmds.push(DrawCmd::Clip { rect });
+            cmds.push(DrawCmd::Shapes { items, transform });
+            cmds.push(DrawCmd::Unclip);
             page_work.push((v.birth, 0, cmds));
+        }
+        if pages > 0 {
+            draws.push(DrawCmd::Clip { rect: Rect::new(0.0, 0.0, self.store_width(), pitch) });
         }
         for i in 0..self.g.nodes.len() {
             if !self.live(i) || !self.g.is_spine(i) {
@@ -1318,11 +1352,7 @@ impl<'a> Scheduler<'a> {
                     if items.is_empty() {
                         continue;
                     }
-                    let seg = self.spine_round[&i] as usize;
-                    for it in &items {
-                        Self::tiles_of(it.bounds.intersect(self.frame), &mut tiles[seg]);
-                    }
-                    draws.push(DrawCmd::Shapes { items, transform: Affine::IDENTITY, clip: (pages > 0).then_some(self.frame) });
+                    draws.push(DrawCmd::Shapes { items, transform: Affine::IDENTITY });
                 }
                 Op::Compose { .. } => {
                     let a = self.arm_of[&i];
@@ -1342,6 +1372,9 @@ impl<'a> Scheduler<'a> {
                 }
                 _ => {}
             }
+        }
+        if pages > 0 {
+            draws.push(DrawCmd::Unclip);
         }
         for a in (0..self.arms.len()).filter(|&a| self.arms[a].compose.is_none()) {
             let arm = &self.arms[a];
@@ -1374,7 +1407,7 @@ impl<'a> Scheduler<'a> {
             let off = params.len() as u32;
             params.extend(list.iter().map(|&w| f32::from_bits(w)));
             let r = r as u32;
-            passes.push(Pass::Fine { window: Window { rounds: (r, r + 1), tiles: Tiles::List { off, n: list.len() as u32 } } });
+            passes.push(Pass::Fine { window: Window { rounds: (r, r + 1), tiles: Tiles::List { off, n: list.len() as u32 } }, work: work[r as usize] });
         }
         passes.push(Pass::Present { from: self.frame });
         FramePlan { store: (self.store_width() as u32, store_h as u32), page: pitch as u32, params, passes }
@@ -1450,7 +1483,7 @@ mod tests {
         let fines: Vec<&Pass> = p.passes.iter().filter(|p| matches!(p, Pass::Fine { .. })).collect();
         assert_eq!(fines.len(), 4, "rounds 0..3");
         for (r, f) in fines.iter().enumerate() {
-            let Pass::Fine { window } = f else { unreachable!() };
+            let Pass::Fine { window, .. } = f else { unreachable!() };
             assert_eq!(window.rounds, (r as u32, r as u32 + 1));
             let Tiles::List { n, .. } = window.tiles else { panic!("a tile list per round") };
             assert!(n > 0);

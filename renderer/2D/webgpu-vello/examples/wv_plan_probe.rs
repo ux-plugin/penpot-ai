@@ -108,8 +108,8 @@ fn plain_plan() -> FramePlan {
         params: vec![],
         passes: vec![
             Pass::Clear { rect: frame, colour: bg },
-            Pass::Frontend { draws: vec![DrawCmd::Shapes { items, transform: Affine::IDENTITY, clip: None }] },
-            Pass::Fine { window: Window { rounds: (0, u32::MAX), tiles: Tiles::All } },
+            Pass::Frontend { draws: vec![DrawCmd::Shapes { items, transform: Affine::IDENTITY }] },
+            Pass::Fine { window: Window { rounds: (0, u32::MAX), tiles: Tiles::All }, work: render_core::vello::frame_plan::work::PAINT },
             Pass::Present { from: frame },
         ],
     }

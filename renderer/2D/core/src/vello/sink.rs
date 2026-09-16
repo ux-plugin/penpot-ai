@@ -358,6 +358,17 @@ pub struct Sink {
     pub(crate) sdf_baker: Option<crate::vello::sdf::SdfBaker>,
     /// The store fill/copy pipeline the plan executor runs its `Clear` and `Copy` passes with.
     pub(crate) store_ops: Option<crate::vello::store::StoreOps>,
+    /// The pool floors the front-end allocates with: grown by every overflow, never shrunk.
+    pub(crate) bump_sizes: crate::vello::rasterize::BumpSizes,
+    /// The overflow readback ring; built on the first plan.
+    pub(crate) bump_watch: Option<crate::vello::bump_watch::BumpWatch>,
+    /// How many times the running plan has been re-run after an overflow, so a pool the device
+    /// cannot grow does not loop.
+    pub(crate) reruns: u32,
+    /// The per-window GPU profiler the executor stamps between fine passes when
+    /// `abi::prof_passes()` is on; built lazily, `None` without `TIMESTAMP_QUERY`.
+    pub(crate) pass_prof: Option<crate::vello::gputime::PassProfiler>,
+    pub(crate) pass_prof_tried: bool,
 }
 
 impl Sink {
@@ -385,6 +396,11 @@ impl Sink {
             blend_scratch: None,
             sdf_baker: None,
             store_ops: None,
+            bump_sizes: crate::vello::rasterize::BumpSizes::default(),
+            bump_watch: None,
+            reruns: 0,
+            pass_prof: None,
+            pass_prof_tried: false,
         }
     }
 
@@ -723,9 +739,15 @@ impl Sink {
         }
         self.last_view = Some(full_view);
 
+        let t0 = crate::vello::prof::now();
         let graph = crate::vello::graph_build::build_frame_graph(root, width, height);
+        let t1 = crate::vello::prof::now();
         let (_, pages) = crate::vello::abi::effect_preset();
         let plan = crate::vello::scheduler::plan(&graph, width, height, device.limits().max_texture_dimension_2d, pages, &mut self.scale_memory);
+        let t2 = crate::vello::prof::now();
+        crate::vello::prof::dbg_add(26, t1 - t0);
+        crate::vello::prof::dbg_add(27, t2 - t1);
+        crate::vello::prof::add_plan(t2 - t0);
         if std::env::var_os("WV_PLAN_DUMP").is_some() {
             eprintln!("{}{}", crate::vello::graph_build::dump(&graph), plan.dump());
         }

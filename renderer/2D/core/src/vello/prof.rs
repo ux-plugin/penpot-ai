@@ -137,16 +137,21 @@ pub fn inc_graph() {
 thread_local! {
     /// TEMP scratch buckets for ad-hoc diagnostics, read via `prof_read(100 + i)`. Indices 0..15 are
     /// the tiled-path gather/atlas diagnostics; 16..28 are the per-pass GPU profiler's accumulators
-    /// (16..27 pass/phase deltas, 28 = profiled-frame count) — a different render path, so no clash.
-    static DBG: std::cell::RefCell<[f64; 32]> = const { std::cell::RefCell::new([0.0; 32]) };
+    /// (16..27 pass/phase deltas, 28 = profiled-frame count) — a different render path, so no clash;
+    /// 26..31 the plan executor's CPU phases; 40..47 the executor's fine windows by work kind
+    /// (scale, warp, blur, scatter, pointwise, draw, paint, mixed) in GPU ms; 48 frames whose
+    /// front-end overflowed a pool; 49/50 the tile and bin records the last front-end was sized for.
+    static DBG: std::cell::RefCell<[f64; DBG_N]> = const { std::cell::RefCell::new([0.0; DBG_N]) };
 }
-/// TEMP: set diagnostic bucket `i` (0..32), read via `prof_read(100 + i)`.
+/// Debug buckets available to `dbg_set`/`dbg_add`, read via `prof_read(100..100 + DBG_N)`.
+pub const DBG_N: usize = 64;
+/// TEMP: set diagnostic bucket `i`, read via `prof_read(100 + i)`.
 pub fn dbg_set(i: usize, v: f64) {
-    DBG.with(|c| { if i < 32 { c.borrow_mut()[i] = v; } });
+    DBG.with(|c| { if i < DBG_N { c.borrow_mut()[i] = v; } });
 }
 /// Accumulate into a debug bucket (reset per frame like the rest), for counting occurrences.
 pub fn dbg_add(i: usize, v: f64) {
-    DBG.with(|c| { if i < 32 { c.borrow_mut()[i] += v; } });
+    DBG.with(|c| { if i < DBG_N { c.borrow_mut()[i] += v; } });
 }
 /// Count one `renderer.render` call — with the atlas, one render covers many steps, so this drops
 /// below `steps` and is the number the atlas is meant to shrink.
@@ -177,7 +182,7 @@ pub fn reset() {
     PRESENT.with(|c| c.set(0.0));
     GPU.with(|c| c.set(0.0));
     GPUN.with(|c| c.set(0));
-    DBG.with(|c| *c.borrow_mut() = [0.0; 32]);
+    DBG.with(|c| *c.borrow_mut() = [0.0; DBG_N]);
 }
 
 /// Read a bucket: 0 build, 1 scene, 2 render, 3 submit, 4 tex, 5 steps, 6 texn (ms except counts).
@@ -205,7 +210,7 @@ pub fn read(which: u32) -> f64 {
         19 => f64::from(GPUN.with(Cell::get)),
         20 => f64::from(TRANSIENT_PEAK.with(Cell::get)),
         21 => f64::from(TRANSIENT_SUM.with(Cell::get)),
-        100..=131 => DBG.with(|c| c.borrow()[(which - 100) as usize]),
+        100..=163 => DBG.with(|c| c.borrow()[(which - 100) as usize]),
         _ => 0.0,
     }
 }

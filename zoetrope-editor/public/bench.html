@@ -427,33 +427,30 @@ function main() {
         schedSteps: X.prof_read(112), schedPaints: X.prof_read(113), schedComposites: X.prof_read(114),
       }
       const cpuBreakdown = {
-        gatherDetect_ms: +(X.prof_read(126) / FRAMES).toFixed(3),
-        phaseLoopRecord_ms: +(X.prof_read(127) / FRAMES).toFixed(3),
-        boundaryReencode_ms: +(X.prof_read(129) / FRAMES).toFixed(3),
-        mainEncode_ms: +(X.prof_read(130) / FRAMES).toFixed(3),
-        phasedBeginResolve_ms: +(X.prof_read(131) / FRAMES).toFixed(3),
+        graphBuild_ms: +(X.prof_read(126) / FRAMES).toFixed(3),
+        schedule_ms: +(X.prof_read(127) / FRAMES).toFixed(3),
+        passesRecord_ms: +(X.prof_read(129) / FRAMES).toFixed(3),
+        sceneEncode_ms: +(X.prof_read(130) / FRAMES).toFixed(3),
+        frontendRecord_ms: +(X.prof_read(131) / FRAMES).toFixed(3),
       }
       const pf = X.prof_read(128)
       const rb = (id) => +(X.prof_read(id) / pf).toFixed(3)
       let passes = null
       if (pf > 0) {
-        const crop = rb(16), disp = rb(17), refr = rb(18), blur = rb(19), comp = rb(20), stamp = rb(21), swapBlit = rb(22)
-        const gatherTotal = +(crop + disp + refr + blur + comp + stamp).toFixed(3)
-        const effectPasses = +(disp + refr + blur + comp).toFixed(3)
-        const velloRender = +(((gpuN > 0 ? gpuMs / gpuN : 0)) - gatherTotal - swapBlit).toFixed(3)
+        const fine = { scale: rb(140), warp: rb(141), blur: rb(142), scatter: rb(143), pointwise: rb(144), draw: rb(145), paint: rb(146), mixed: rb(147) }
+        const fineTotal = +Object.values(fine).reduce((a, b) => a + b, 0).toFixed(3)
+        const frame = gpuN > 0 ? gpuMs / gpuN : 0
         passes = {
           profiledFrames: pf,
-          velloDocumentRender_ms: velloRender,
-          swapBlit_ms: swapBlit,
-          gatherTotal_ms: gatherTotal,
-          backdropCrop_ms: crop,
-          glassDisplacement_ms: disp,
-          glassRefraction_ms: refr,
-          blur_ms: blur,
-          glassComposite_ms: comp,
-          glassStamp_ms: stamp,
-          effectPassesOnly_ms: effectPasses,
+          fineTotal_ms: fineTotal,
+          frontendAndRest_ms: +(frame - fineTotal).toFixed(3),
+          fine,
         }
+      }
+      const bump = {
+        overflowFrames: X.prof_read(148),
+        tileRecordsSizedFor: X.prof_read(149),
+        binWordsSizedFor: X.prof_read(150),
       }
       let frames = 0, sustainCpu = 0
       const t1 = performance.now()
@@ -494,6 +491,7 @@ function main() {
         dbg,
         src,
         passes,
+        bump,
         cpuBreakdown,
         sustainedFps: fps,
         sustainCpuMs: +sustainCpuMs.toFixed(3),

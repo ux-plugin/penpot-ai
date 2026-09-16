@@ -1,6 +1,6 @@
-//! The browser bench's 6-glass stack (`bench.html?n=2000&stack=6&stackFx=glass&stackHalf=400`,
-//! 3840×2160) built through the same ABI calls, rendered once natively so `WV_PLAN_DUMP=1` shows the
-//! plan the wasm build runs. Structure only: timings from this binary are not the product's.
+//! The browser bench's glass stacks (see `util/stack_scene.rs` for the env that shapes them) rendered
+//! once natively so `WV_PLAN_DUMP=1` shows the plan the wasm build runs. Structure only: timings
+//! from this binary are not the product's.
 
 use render_core::kurbo::Affine;
 use render_core::vello::abi;
@@ -9,22 +9,11 @@ use vello_gpu_renderer::ClassicBackend;
 
 const W: u32 = 3840;
 const H: u32 = 2160;
-const N: u32 = 2000;
-const CELL: f32 = 40.0;
-const REC: usize = 164;
 
-fn solid_fill(color: u32) {
-    let size = 4 + REC;
-    let ptr = abi::alloc_bytes(size);
-    let bytes = unsafe { std::slice::from_raw_parts_mut(ptr, size) };
-    bytes.fill(0);
-    bytes[0] = 1;
-    bytes[8..12].copy_from_slice(&color.to_le_bytes());
-    abi::set_shape_fills();
-}
+#[path = "util/stack_scene.rs"]
+mod stack_scene;
 
 fn main() {
-    let stack: u32 = std::env::var("STACK").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("adapter");
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("device");
@@ -33,29 +22,7 @@ fn main() {
     abi::set_render_options(0, 1.0);
     abi::set_scheduler(1);
     abi::set_tile_effects(1);
-    abi::init_shapes_pool((N + stack + 200 + stack + 32) as usize);
-    let cols = (N as f32).sqrt().ceil() as u32;
-    for i in 0..N {
-        let (cx, cy) = (((i % cols) as f32) * CELL, ((i / cols) as f32) * CELL);
-        abi::use_shape(0, 0, 0, i + 1);
-        abi::set_shape_type(3);
-        abi::set_shape_selrect(cx + 2.0, cy + 2.0, cx + CELL - 2.0, cy + CELL - 2.0);
-        solid_fill(0xff00_0000 | (i.wrapping_mul(2_654_435_761) & 0x00ff_ffff));
-        abi::use_shape(0, 0, 0, 0);
-        abi::add_shape_child(0, 0, 0, i + 1);
-    }
-    let mut id = N + stack + 100;
-    for s in 0..stack {
-        let half = 400.0 - s as f32 * 18.0;
-        let (gx, gy) = (W as f32 / 2.0, H as f32 / 2.0);
-        abi::use_shape(0, 0, 0, id);
-        abi::set_shape_type(3);
-        abi::set_shape_selrect(gx - half, gy - half, gx + half, gy + half);
-        abi::set_shape_glass(0, 4.0, 8.0, 1.5, 0.0, 0.4, 1.0, 0.2, 0.0, 0.0, 0.0, 1.0, 6.0, 3.0, 1.0, 0, 0);
-        abi::use_shape(0, 0, 0, 0);
-        abi::add_shape_child(0, 0, 0, id);
-        id += 1;
-    }
+    stack_scene::build_from_env(W, H);
     abi::set_view(1.0, 0.0, 0.0);
 
     let target = device.create_texture(&wgpu::TextureDescriptor {

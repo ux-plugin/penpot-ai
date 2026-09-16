@@ -34,19 +34,42 @@ pub enum Pass {
     /// vello's front-end + binning + coarse over `draws`, once — the PTCL every `Fine` walks.
     Frontend { draws: Vec<DrawCmd> },
     /// One `fine` dispatch over one window. Every operand a mark reads and the rect it writes are
-    /// named by its descriptor's records in `params`; the store is the only binding.
-    Fine { window: Window },
+    /// named by its descriptor's records in `params`; the store is the only binding. `work` is
+    /// the [`work`] kinds the window runs — a label for the profiler's buckets, never branched on.
+    Fine { window: Window, work: u32 },
     /// Copy `src` to `dst` (same size, disjoint).
     Copy { src: Rect, dst: Rect },
     /// Unpack `from` onto the swapchain.
     Present { from: Rect },
 }
 
+/// The kinds of work a `Fine` window runs, as bits of `Pass::Fine::work`.
+pub mod work {
+    pub const SCALE: u32 = 1;
+    pub const WARP: u32 = 2;
+    pub const BLUR: u32 = 4;
+    pub const SCATTER: u32 = 8;
+    /// Shade, mask-mix, erase, colour, clip-to-source and every compose.
+    pub const POINTWISE: u32 = 16;
+    /// A leaf or ground drawn into its rect this round.
+    pub const DRAW: u32 = 32;
+    /// The frame's own paint: round 0 over every tile.
+    pub const PAINT: u32 = 64;
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum DrawCmd {
-    /// Draw `items` under `transform` (page → store, the viewport applied by the backend),
-    /// clipped to `clip` (store texels). A served ground is this under a translated transform.
-    Shapes { items: Vec<DrawItem>, transform: Affine, clip: Option<Rect> },
+    /// Draw `items` under `transform` (page → store, the viewport applied by the backend). A
+    /// served ground is this under a translated transform.
+    Shapes { items: Vec<DrawItem>, transform: Affine },
+    /// Every draw until the matching `Unclip` is clipped to `rect` (store texels, whole tiles).
+    /// Coarse drops the clip on the tiles it covers and every draw inside it on the tiles it
+    /// misses, so its only cost is one path's tile records: one clip serves any number of draws.
+    /// A rect that covers its tiles only partly would reach fine as clip commands, and a clip
+    /// that opens in one window and closes in another cannot be run there — so a clip spanning
+    /// markers must be tile-aligned.
+    Clip { rect: Rect },
+    Unclip,
     /// A `CMD_EFFECT` boundary. `footprint` is the rect coarse bins it into; `shape` and
     /// `transform` give the silhouette a masked marker draws; `params_off` addresses its
     /// descriptor in `params`; `ctl` is its control word.
@@ -88,6 +111,25 @@ pub struct PlanShape {
     pub rounds: u32,
 }
 
+/// The profiler's name for a window's `work`: its one kind, `paint` when the frame's own paint
+/// is in it, `mixed` for several kinds, `idle` for none.
+#[must_use]
+pub fn work_label(work: u32) -> &'static str {
+    if work & work::PAINT != 0 {
+        return "paint";
+    }
+    match work {
+        0 => "idle",
+        work::SCALE => "scale",
+        work::WARP => "warp",
+        work::BLUR => "blur",
+        work::SCATTER => "scatter",
+        work::POINTWISE => "pointwise",
+        work::DRAW => "draw",
+        _ => "mixed",
+    }
+}
+
 fn rect_i(r: Rect) -> [i64; 4] {
     [r.x0 as i64, r.y0 as i64, r.x1 as i64, r.y1 as i64]
 }
@@ -105,9 +147,10 @@ impl FramePlan {
             Pass::Present { from } => Some(rect_i(*from)),
             _ => None,
         });
+        let holds_frame = |r: Rect| frame.is_some_and(|f| rect_i(r).iter().zip(f).enumerate().all(|(i, (a, b))| if i < 2 { a <= &b } else { a >= &b }));
         let mut note = |r: Rect| {
             let k = rect_i(r);
-            if Some(k) != frame && !rects.contains(&k) {
+            if !holds_frame(r) && !rects.contains(&k) {
                 rects.push(k);
             }
         };
@@ -116,12 +159,9 @@ impl FramePlan {
                 Pass::Frontend { draws } => {
                     for d in draws {
                         match d {
-                            DrawCmd::Shapes { items, clip, .. } => {
-                                s.draws += items.len() as u32;
-                                if let Some(c) = clip {
-                                    note(*c);
-                                }
-                            }
+                            DrawCmd::Shapes { items, .. } => s.draws += items.len() as u32,
+                            DrawCmd::Clip { rect } => note(*rect),
+                            DrawCmd::Unclip => {}
                             DrawCmd::Marker { eid, footprint, .. } => {
                                 s.markers += 1;
                                 if *eid == crate::vello::bake::EID_MATERIALIZE {
@@ -131,7 +171,7 @@ impl FramePlan {
                         }
                     }
                 }
-                Pass::Fine { window } => {
+                Pass::Fine { window, .. } => {
                     s.windows += 1;
                     s.rounds = s.rounds.max(window.rounds.0 + 1);
                 }
@@ -154,10 +194,12 @@ impl FramePlan {
                     s.push_str(&format!("{i:>3} Frontend {} draws\n", draws.len()));
                     for d in draws {
                         match d {
-                            DrawCmd::Shapes { items, transform, clip } => {
+                            DrawCmd::Shapes { items, transform } => {
                                 let t = transform.as_coeffs();
-                                s.push_str(&format!("      Shapes n={} at +{:.0},{:.0} clip {}\n", items.len(), t[4], t[5], clip.map_or("-".into(), r)));
+                                s.push_str(&format!("      Shapes n={} at +{:.0},{:.0}\n", items.len(), t[4], t[5]));
                             }
+                            DrawCmd::Clip { rect } => s.push_str(&format!("      Clip {}\n", r(*rect))),
+                            DrawCmd::Unclip => s.push_str("      Unclip\n"),
                             DrawCmd::Marker { shape, eid, round, footprint, params_off, .. } => {
                                 s.push_str(&format!("      Marker eid {eid} round {round} shape {:x} at {} params {params_off}", shape & 0xffff, r(*footprint)));
                                 let o = *params_off as usize;
@@ -175,12 +217,12 @@ impl FramePlan {
                         }
                     }
                 }
-                Pass::Fine { window } => {
+                Pass::Fine { window, work } => {
                     let tiles = match window.tiles {
                         Tiles::All => "all".to_string(),
                         Tiles::List { n, .. } => format!("{n} tiles"),
                     };
-                    s.push_str(&format!("{i:>3} Fine rounds {:?} {tiles}\n", window.rounds));
+                    s.push_str(&format!("{i:>3} Fine rounds {:?} {tiles} work {}\n", window.rounds, work_label(*work)));
                 }
                 Pass::Copy { src, dst } => s.push_str(&format!("{i:>3} Copy {} -> {}\n", r(*src), r(*dst))),
                 Pass::Present { from } => s.push_str(&format!("{i:>3} Present {}\n", r(*from))),
@@ -205,8 +247,31 @@ impl FramePlan {
         for (i, p) in self.passes.iter().enumerate() {
             match p {
                 Pass::Clear { rect, .. } => inside(*rect, "clear")?,
-                Pass::Frontend { .. } => {}
-                Pass::Fine { window } => {
+                Pass::Frontend { draws } => {
+                    let mut depth = 0i32;
+                    for d in draws {
+                        match d {
+                            DrawCmd::Clip { rect } => {
+                                inside(*rect, "clip")?;
+                                if [rect.x0, rect.y0, rect.x1, rect.y1].iter().any(|v| v % 16.0 != 0.0) {
+                                    return Err(format!("pass {i}: clip {rect:?} is not tile-aligned"));
+                                }
+                                depth += 1;
+                            }
+                            DrawCmd::Unclip => {
+                                depth -= 1;
+                                if depth < 0 {
+                                    return Err(format!("pass {i}: an Unclip with no Clip open"));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if depth != 0 {
+                        return Err(format!("pass {i}: {depth} clips left open"));
+                    }
+                }
+                Pass::Fine { window, .. } => {
                     if window.rounds.1 <= window.rounds.0 {
                         return Err(format!("pass {i}: window {:?} is empty", window.rounds));
                     }
@@ -242,12 +307,31 @@ mod tests {
             passes: vec![
                 Pass::Clear { rect: frame, colour: [1.0; 4] },
                 Pass::Frontend { draws: vec![] },
-                Pass::Fine { window: Window { rounds: (0, u32::MAX), tiles: Tiles::All } },
+                Pass::Fine { window: Window { rounds: (0, u32::MAX), tiles: Tiles::All }, work: work::PAINT },
                 Pass::Present { from: frame },
             ],
         };
         plan.validate().expect("valid");
         assert_eq!(plan.shape(), PlanShape { rects: 0, draws: 0, markers: 0, windows: 1, rounds: 1 });
+    }
+
+    #[test]
+    fn an_unbalanced_clip_is_refused() {
+        let frame = Rect::new(0.0, 0.0, 64.0, 32.0);
+        let plan = FramePlan {
+            store: (64, 32),
+            page: 32,
+            params: vec![],
+            passes: vec![Pass::Frontend { draws: vec![DrawCmd::Clip { rect: frame }] }],
+        };
+        assert!(plan.validate().is_err());
+        let plan = FramePlan {
+            store: (64, 32),
+            page: 32,
+            params: vec![],
+            passes: vec![Pass::Frontend { draws: vec![DrawCmd::Unclip] }],
+        };
+        assert!(plan.validate().is_err());
     }
 
     #[test]
