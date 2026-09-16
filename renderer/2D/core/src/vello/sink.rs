@@ -724,7 +724,8 @@ impl Sink {
         self.last_view = Some(full_view);
 
         let graph = crate::vello::graph_build::build_frame_graph(root, width, height);
-        let plan = crate::vello::scheduler::plan(&graph, width, height, device.limits().max_texture_dimension_2d, &mut self.scale_memory);
+        let (_, pages) = crate::vello::abi::effect_preset();
+        let plan = crate::vello::scheduler::plan(&graph, width, height, device.limits().max_texture_dimension_2d, pages, &mut self.scale_memory);
         if std::env::var_os("WV_PLAN_DUMP").is_some() {
             eprintln!("{}{}", crate::vello::graph_build::dump(&graph), plan.dump());
         }

@@ -21,8 +21,10 @@
 //! - every run of sampling ops in a chain sits between a `Scale` pair: down at the run's start, up
 //!   before the pointwise tail that reads the state below. A run holding a blur of device σ ≥ 2
 //!   targets half resolution (a lens's authored `acceptable_downscale` lowers that further); any
-//!   other run targets 1, which the scheduler may still lower. A leaf read both inside and past a
-//!   half-resolution pair is drawn twice, once at each resolution.
+//!   other run targets 1. Every target is then scaled by the preset's effect resolution (the rows
+//!   effects run at over the frame's, never above 1) and rounded down the ladder of halves; the
+//!   scheduler may still lower it. A leaf read both inside and past a lowered pair is drawn
+//!   twice, once at each resolution.
 
 use crate::kurbo::{Affine, Rect, Vec2};
 use crate::model::{Node, Scene, ShapeKind};
@@ -45,13 +47,16 @@ pub fn build_frame_graph(root: Affine, width: u32, height: u32) -> FrameGraph {
     let view = crate::vello::abi::effective_view(root);
     let frame = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
     let background = crate::vello::abi::background();
+    let (rows, _) = crate::vello::abi::effect_preset();
+    let effect_scale = if rows == 0 || height == 0 { 1.0 } else { (rows as f32 / height as f32).min(1.0) };
     crate::vello::abi::with_scene(|live, _, modifiers| {
         let modifier = |id: ShapeId| modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-        build(live, &modifier, view, frame, background)
+        build(live, &modifier, view, frame, background, effect_scale)
     })
 }
 
 /// The frame graph of `scene` under the page→device `view`, for a caller that holds the scene.
+/// `effect_scale` is the preset's effect resolution over the frame's, in (0, 1].
 #[must_use]
 pub fn build(
     scene: &Scene,
@@ -59,6 +64,7 @@ pub fn build(
     view: Affine,
     frame: Rect,
     background: crate::peniko::Color,
+    effect_scale: f32,
 ) -> FrameGraph {
     let c = view.as_coeffs();
     let mut b = Builder {
@@ -66,6 +72,7 @@ pub fn build(
         modifier,
         view,
         scale: ((c[0] * c[0] + c[1] * c[1]).sqrt()) as f32,
+        effect_scale,
         frame,
         nodes: Vec::new(),
         spine: 0,
@@ -87,6 +94,8 @@ struct Builder<'a> {
     view: Affine,
     /// The view's uniform scale: page px → device px.
     scale: f32,
+    /// The preset's effect resolution over the frame's: every pair's target is scaled by it.
+    effect_scale: f32,
     frame: Rect,
     nodes: Vec<GNode>,
     /// The node the spine currently ends at.
@@ -262,9 +271,9 @@ impl Builder<'_> {
     }
 
     /// Close the chain's scale pair, if open, after `cur`: the down node's target becomes half
-    /// when the run holds a soft blur, lowered further by the authored ceiling, and the up node
-    /// returns to frame resolution. Returns the node the tail continues from and whether the run
-    /// runs below frame resolution.
+    /// when the run holds a soft blur, lowered further by the authored ceiling, scaled by the
+    /// preset and rounded down the ladder of halves; the up node returns to frame resolution.
+    /// Returns the node the tail continues from and whether the run runs below frame resolution.
     fn close_pair(&mut self, cur: NodeId, name: &str) -> (NodeId, bool) {
         let Some((down, ceiling)) = self.pair.take() else { return (cur, false) };
         if cur == down {
@@ -273,7 +282,7 @@ impl Builder<'_> {
             return (input, false);
         }
         let soft = (down + 1..=cur).any(|i| matches!(self.nodes[i].op, Op::Blur { sigma, .. } if sigma >= SOFT_SIGMA));
-        let target = if soft { SOFT_TARGET } else { 1.0 }.min(ceiling);
+        let target = ladder(if soft { SOFT_TARGET } else { 1.0 }.min(ceiling) * self.effect_scale);
         let Op::Scale { key, .. } = self.nodes[down].op else { unreachable!("the pair opened on a scale") };
         self.nodes[down].op = Op::Scale { target, key };
         (self.push(Op::Scale { target: 1.0, key }, vec![cur], format!("{name} up")), target < 1.0)
@@ -475,6 +484,16 @@ impl Builder<'_> {
     }
 }
 
+/// The largest halving of 1 at or below `x`, for `x` in (0, 1]: a resample between rungs is a
+/// whole box.
+fn ladder(x: f32) -> f32 {
+    let mut k = 1.0f32;
+    while k > x && k > f32::MIN_POSITIVE {
+        k *= 0.5;
+    }
+    k
+}
+
 /// The graph as text, one node per line: index, spine mark, label, op, inputs, and every draw
 /// item's shape, style and bounds. Numbers print to one decimal so a fixture is stable.
 #[must_use]
@@ -643,6 +662,25 @@ mod tests {
             .filter(|it| it.shape == items[0].shape)
             .count();
         assert_eq!(blurred, 0, "a replaced body is not drawn on the spine");
+    }
+
+    #[test]
+    fn the_preset_scales_every_pair_and_rounds_down_the_ladder() {
+        let targets = |g: &FrameGraph| -> Vec<f32> {
+            g.nodes.iter().filter_map(|n| match n.op { Op::Scale { target, .. } if target < 1.0 || n.label.ends_with("down") => Some(target), _ => None }).collect()
+        };
+        let at = graph_of(|| { crate::vello::abi::load_stack_glass_scene(2, 1); }, 1.0);
+        let full = targets(&at);
+        assert!(full.iter().any(|&t| t == 0.5) && full.iter().all(|&t| t == 0.5 || t == 1.0), "frost lenses target half at the display's resolution: {full:?}");
+        crate::vello::abi::set_effect_preset(200, 4000);
+        let g = build_frame_graph(Affine::IDENTITY, 800, 600);
+        crate::vello::abi::set_effect_preset(0, 4000);
+        let third = targets(&g);
+        assert_eq!(third.len(), full.len());
+        for (a, b) in full.iter().zip(&third) {
+            assert_eq!(*b, ladder(a / 3.0), "a 200-row preset on 600 rows is a third, rounded down the ladder: {a} → {b}");
+        }
+        assert!(third.iter().all(|&t| t == 0.25 || t == 0.125), "{third:?}");
     }
 
     #[test]

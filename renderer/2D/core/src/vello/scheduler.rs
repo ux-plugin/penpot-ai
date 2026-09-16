@@ -9,7 +9,8 @@
 //!    rect is its demand clipped to its extent — the frame for the spine, and for a chain node
 //!    whatever it reaches, past the frame included; a draw item that misses its draw's demand is
 //!    dropped.
-//! 2. **Capacity.** The store below the frame is a budget of texels. With demand known at every
+//! 2. **Capacity.** The store below the frame is a budget of texels (the preset's pages, capped
+//!    by the device). With demand known at every
 //!    pair's target, each pair's resolution is decided in closed form, then demand runs again:
 //!    the run between a pair may be no wider than the store, and no two adjacent links of it
 //!    (the leaf or ground it starts from included) may together exceed half the budget, so two
@@ -80,19 +81,18 @@ const REC_COVERAGE: usize = 2;
 const REC_DISTANCE: usize = 3;
 const REC_OUTPUT: usize = 4;
 
-/// The rows the store may hold below the frame, in frame heights, when the device allows them.
-const STORE_PAGES: f64 = 4.0;
 /// The share of the store's texels the budget counts on: the rest absorbs the packer's gaps.
 const STORE_FILL: f64 = 0.75;
 /// How far past the next rung the rule that lowered a pair must rise before the pair climbs back.
 const CLIMB_MARGIN: f32 = 1.25;
 
 /// The plan for `graph` on a `width × height` frame, on a device whose textures reach `max_dim`
-/// texels a side. `memory` is what each pair ran at last frame, keyed by its `key`; the plan
-/// reads it and writes what it chose.
+/// texels a side, with `pages` frame heights of store below the frame (the preset's; the device
+/// caps it). `memory` is what each pair ran at last frame, keyed by its `key`; the plan reads it
+/// and writes what it chose.
 #[must_use]
-pub fn plan(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, memory: &mut HashMap<u128, f32>) -> FramePlan {
-    Scheduler::new(graph, width, height, max_dim, memory).run()
+pub fn plan(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64, memory: &mut HashMap<u128, f32>) -> FramePlan {
+    Scheduler::new(graph, width, height, max_dim, pages, memory).run()
 }
 
 /// The resolution a pair runs at this frame: `bound` is the highest its rules allow (the target
@@ -238,10 +238,10 @@ fn is_pointwise(op: &Op) -> bool {
 }
 
 impl<'a> Scheduler<'a> {
-    fn new(g: &'a FrameGraph, width: u32, height: u32, max_dim: u32, memory: &'a mut HashMap<u128, f32>) -> Self {
+    fn new(g: &'a FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64, memory: &'a mut HashMap<u128, f32>) -> Self {
         let frame = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
         let pitch = (f64::from(height) / TILE_H).ceil() * TILE_H;
-        let rows = (f64::from(max_dim) - pitch).max(0.0).min(STORE_PAGES * pitch);
+        let rows = (f64::from(max_dim) - pitch).max(0.0).min(pages * pitch);
         let mut s = Self {
             g,
             frame,
@@ -1423,7 +1423,7 @@ mod tests {
         let g = graph();
         g.validate().expect("valid");
         let mut memory = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 8192, &mut memory);
+        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut memory);
         s.demand_pass();
         s.build_arms();
         s.assign_pages();
@@ -1443,7 +1443,7 @@ mod tests {
     #[test]
     fn the_plan_validates_and_lists_tiles_per_round() {
         let g = graph();
-        let p = plan(&g, 640, 480, 8192, &mut HashMap::new());
+        let p = plan(&g, 640, 480, 8192, 4.0, &mut HashMap::new());
         p.validate().unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(p.store, (640, 480 * 2));
         let fines: Vec<&Pass> = p.passes.iter().filter(|p| matches!(p, Pass::Fine { .. })).collect();
@@ -1494,8 +1494,8 @@ mod tests {
 
     #[test]
     fn a_pair_between_equal_resolutions_is_nothing() {
-        let plain = plan(&graph(), 640, 480, 8192, &mut HashMap::new());
-        let paired = plan(&scaled_graph(1.0), 640, 480, 8192, &mut HashMap::new());
+        let plain = plan(&graph(), 640, 480, 8192, 4.0, &mut HashMap::new());
+        let paired = plan(&scaled_graph(1.0), 640, 480, 8192, 4.0, &mut HashMap::new());
         assert_eq!(paired.store, plain.store);
         assert_eq!(paired.params, plain.params);
         assert_eq!(paired.passes.len(), plain.passes.len());
@@ -1506,7 +1506,7 @@ mod tests {
     fn a_half_pair_runs_its_run_at_half_and_resamples_at_its_ends() {
         let g = scaled_graph(0.5);
         let mut memory = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 8192, &mut memory);
+        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut memory);
         assert!(s.elided[2], "a leaf's downscale is the leaf drawn at half");
         assert!(!s.elided[5] && !s.elided[8] && !s.elided[10]);
         assert_eq!((s.k[1], s.k[3], s.k[4], s.k[5], s.k[9], s.k[10]), (0.5, 0.5, 0.5, 1.0, 0.5, 1.0));
@@ -1536,7 +1536,7 @@ mod tests {
         assert_eq!(at(3), (true, 2.0, bake::SCALE_CLAMP), "down from the spine, inside the frame");
         assert_eq!(at(5), (true, 0.5, bake::SCALE_CLAMP), "up from the backdrop chain");
         assert!(!at(0).0);
-        let p = plan(&g, 640, 480, 8192, &mut HashMap::new());
+        let p = plan(&g, 640, 480, 8192, 4.0, &mut HashMap::new());
         p.validate().unwrap_or_else(|e| panic!("{e}"));
         let Some(Pass::Frontend { draws }) = p.passes.iter().find(|p| matches!(p, Pass::Frontend { .. })) else { panic!() };
         let leaf = draws.iter().find_map(|d| match d {
@@ -1595,7 +1595,7 @@ mod tests {
         };
         g.validate().expect("valid");
         let mut memory = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 8192, &mut memory);
+        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut memory);
         s.demand_pass();
         assert!(s.out[2].width() > 640.0, "at target 1 the backdrop the blur needs is wider than the store: {:?}", s.out[2]);
         assert!(s.decide());
@@ -1606,7 +1606,7 @@ mod tests {
         assert!(!s.elided[1], "the pair is now real");
         assert_eq!(memory.get(&7), Some(&0.25), "the pair remembers what it ran at");
         let mut memory = HashMap::from([(7u128, 0.25f32)]);
-        let s2 = Scheduler::new(&g, 640, 480, 8192, &mut memory);
+        let s2 = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut memory);
         drop(s2);
         assert_eq!(memory.get(&7), Some(&0.25), "an untouched memory keeps last frame");
     }
@@ -1615,7 +1615,7 @@ mod tests {
     fn chains_are_placed_first_fit_within_the_budget() {
         let g = shadows(3, 4.0, EdgeClampStyle::Transparent);
         let mut roomy = HashMap::new();
-        let wide = Scheduler::new(&g, 640, 480, 8192, &mut roomy);
+        let wide = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut roomy);
         let mut wide = wide;
         wide.demand_pass();
         assert!(!wide.decide(), "three small shadows need no lowering with room to spare");
@@ -1626,7 +1626,7 @@ mod tests {
         assert_eq!(natural, vec![1, 2, 1, 2, 1, 2], "disjoint chains run side by side: {natural:?}");
 
         let mut tight = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 480 + 64, &mut tight);
+        let mut s = Scheduler::new(&g, 640, 480, 480 + 64, 4.0, &mut tight);
         s.demand_pass();
         if s.decide() {
             s.set_resolutions();
@@ -1651,7 +1651,7 @@ mod tests {
         let mut g = graph();
         let Op::Draw(items) = &mut g.nodes[0].op else { unreachable!() };
         items.push(body(9, Rect::new(2000.0, 2000.0, 2100.0, 2100.0)));
-        let p = plan(&g, 640, 480, 8192, &mut HashMap::new());
+        let p = plan(&g, 640, 480, 8192, 4.0, &mut HashMap::new());
         let Some(Pass::Frontend { draws }) = p.passes.iter().find(|p| matches!(p, Pass::Frontend { .. })) else { panic!() };
         let ground = draws.iter().find_map(|d| match d {
             DrawCmd::Shapes { items, transform, .. } if *transform == Affine::IDENTITY && items.iter().any(|i| i.shape == 1) => Some(items),

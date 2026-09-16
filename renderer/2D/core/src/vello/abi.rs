@@ -710,6 +710,27 @@ pub fn tile_effects() -> bool {
 }
 
 thread_local! {
+    /// The effect quality preset: the rows effects are computed at (0 = the display's), and the
+    /// store the frame may rent below itself, in thousandths of a frame height.
+    static EFFECT_PRESET: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 4000)) };
+}
+
+/// Set the effect quality preset: `rows` is the resolution effects run at (2160, 1080, 720, or 0
+/// for the display's — never above it), `pages_milli` the store below the frame in thousandths
+/// of a frame height (the device's texture limit still caps it).
+#[unsafe(no_mangle)]
+pub extern "C" fn set_effect_preset(rows: u32, pages_milli: u32) {
+    EFFECT_PRESET.with(|c| c.set((rows, pages_milli.max(1))));
+}
+
+/// The effect preset as (rows, pages): see [`set_effect_preset`].
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn effect_preset() -> (u32, f64) {
+    let (rows, milli) = EFFECT_PRESET.with(std::cell::Cell::get);
+    (rows, f64::from(milli) / 1000.0)
+}
+
+thread_local! {
     /// Route rendering through the render-core schedule + GPU production sink (the "one pipeline"
     /// scheduler) instead of the whole-scene-per-tile bypass. Default ON — this is the production
     /// path; `set_scheduler(0)` remains only for bring-up style bypass comparisons.
