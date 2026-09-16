@@ -13,8 +13,9 @@
 //!    by the device). With demand known at every
 //!    pair's target, each pair's resolution is decided in closed form, then demand runs again:
 //!    the run between a pair may be no wider than the store, and no two adjacent links of it
-//!    (the leaf or ground it starts from included) may together exceed half the budget, so two
-//!    chains can always run beside each other. Resolutions step down a ladder of halves, so a
+//!    (the leaf or ground it starts from included) may together exceed the budget: a chain is
+//!    lowered only when it could not fit the store alone; chains that cannot share a round run
+//!    one after the other. Resolutions step down a ladder of halves, so a
 //!    resample is a whole box; there is no floor. Across frames a pair keeps its resolution until
 //!    the rule that set it has moved by a margin, so a zoom does not flicker.
 //! 3. **Arms.** A chain is cut at its barriers: a head (a blur axis, a warp, a scatter, a scale)
@@ -368,7 +369,7 @@ impl<'a> Scheduler<'a> {
     /// Decide every pair's resolution from the demand at its target (step 2). Returns whether
     /// any pair now runs below its target, so demand must be measured again.
     fn decide(&mut self) -> bool {
-        let half = self.budget / 2.0;
+        let budget = self.budget;
         let width = self.store_width();
         let mut seen: Vec<u128> = Vec::new();
         for d in 0..self.g.nodes.len() {
@@ -399,7 +400,7 @@ impl<'a> Scheduler<'a> {
                 }
                 peak = peak.max(a);
             }
-            let bound = f64::from(t) * (width / widest).min((half / peak).sqrt());
+            let bound = f64::from(t) * (width / widest).min((budget / peak).sqrt());
             let k = settle(target, bound as f32, self.memory.get(&key).copied());
             seen.push(key);
             self.memory.insert(key, k);
