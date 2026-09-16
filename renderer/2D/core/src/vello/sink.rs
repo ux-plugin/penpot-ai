@@ -307,6 +307,8 @@ pub struct Sink {
     /// non-generic allocation helpers (`ensure_surface`, the atlas + scratch textures) can OR it in
     /// without threading the backend through. Hybrid renders as an attachment; classic adds storage.
     pub(crate) raster_usage: wgpu::TextureUsages,
+    /// The resolution each scale pair ran at last frame, by its key, so a zoom does not flicker.
+    scale_memory: HashMap<u128, f32>,
 
     /// Recycled render-target textures, so a dirty frame reuses last frame's surfaces instead of
     /// `create_texture` per tile/effect/scratch. Fed at frame boundaries + on tile eviction/replace.
@@ -379,6 +381,7 @@ impl Sink {
             canvas: None,
             canvas_view: None,
             last_view: None,
+            scale_memory: HashMap::new(),
             blend_scratch: None,
             sdf_baker: None,
             store_ops: None,
@@ -721,7 +724,7 @@ impl Sink {
         self.last_view = Some(full_view);
 
         let graph = crate::vello::graph_build::build_frame_graph(root, width, height);
-        let plan = crate::vello::scheduler::plan(&graph, width, height);
+        let plan = crate::vello::scheduler::plan(&graph, width, height, device.limits().max_texture_dimension_2d, &mut self.scale_memory);
         if std::env::var_os("WV_PLAN_DUMP").is_some() {
             eprintln!("{}{}", crate::vello::graph_build::dump(&graph), plan.dump());
         }

@@ -72,6 +72,7 @@ pub fn build(
         pending: Vec::new(),
         fx_no: 0,
         pair: None,
+        shape: (0, 0),
     };
     for &root in scene.roots() {
         b.walk(root);
@@ -95,6 +96,8 @@ struct Builder<'a> {
     fx_no: u32,
     /// The open scale pair of the chain being lowered: its down node and the authored ceiling.
     pair: Option<(NodeId, f32)>,
+    /// The shape whose effects are being lowered, and how many pairs it has opened: a pair's key.
+    shape: (ShapeId, u32),
 }
 
 impl Builder<'_> {
@@ -249,7 +252,9 @@ impl Builder<'_> {
                 cur
             }
             None => {
-                let down = self.push(Op::Scale { target: 1.0 }, vec![cur], format!("{name} down"));
+                let key = self.shape.0 ^ u128::from(self.shape.1);
+                self.shape.1 += 1;
+                let down = self.push(Op::Scale { target: 1.0, key }, vec![cur], format!("{name} down"));
                 self.pair = Some((down, 1.0));
                 down
             }
@@ -269,8 +274,9 @@ impl Builder<'_> {
         }
         let soft = (down + 1..=cur).any(|i| matches!(self.nodes[i].op, Op::Blur { sigma, .. } if sigma >= SOFT_SIGMA));
         let target = if soft { SOFT_TARGET } else { 1.0 }.min(ceiling);
-        self.nodes[down].op = Op::Scale { target };
-        (self.push(Op::Scale { target: 1.0 }, vec![cur], format!("{name} up")), target < 1.0)
+        let Op::Scale { key, .. } = self.nodes[down].op else { unreachable!("the pair opened on a scale") };
+        self.nodes[down].op = Op::Scale { target, key };
+        (self.push(Op::Scale { target: 1.0, key }, vec![cur], format!("{name} up")), target < 1.0)
     }
 
     fn compose(&mut self, mode: ComposeMode, colour: Option<[f32; 4]>, offset: [f32; 2], value: NodeId, coverage: Option<NodeId>, label: String) {
@@ -283,6 +289,7 @@ impl Builder<'_> {
     /// coverage, the body (or its replacement) over it, inners over the body.
     fn lower_effect_node(&mut self, id: ShapeId, node: &Node, effects: &[Effect]) {
         self.fx_no += 1;
+        self.shape = (id, 0);
         let name = format!("s{}", self.fx_no);
         let has_replace = effects.iter().any(|e| e.compose == Compose::Replace);
         let mut body_done = false;
@@ -509,7 +516,7 @@ fn op(o: &Op) -> String {
         }
         Op::Warp(u) => format!("Warp program {:.0}", u.get(PAYLOAD_PROGRAM_SLOT).copied().unwrap_or(0.0)),
         Op::Scatter(_) => "Scatter".into(),
-        Op::Scale { target } => format!("Scale → {target}"),
+        Op::Scale { target, .. } => format!("Scale → {target}"),
         Op::Shade(_) => "Shade".into(),
         Op::MaskMix(u) => format!("MaskMix program {:.0}", u.get(PAYLOAD_PROGRAM_SLOT).copied().unwrap_or(0.0)),
         Op::EraseBy(u) => format!("EraseBy at {:.1},{:.1}", u.first().copied().unwrap_or(0.0), u.get(1).copied().unwrap_or(0.0)),

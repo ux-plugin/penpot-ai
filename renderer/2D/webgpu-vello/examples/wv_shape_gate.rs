@@ -7,7 +7,7 @@
 //! The ceilings are the CURRENT numbers, not targets: they only ever move down, and a phase that
 //! wants to move them must say why in its commit. R4's scale pairs moved them UP once: every soft
 //! chain now runs between a down-scale round and an up-scale round, so rounds and windows doubled
-//! while the pixels each round touches halved; S3's first-fit rounds are to bring them back. Run:
+//! while the pixels each round touches halved. Run:
 //! `cargo run --release --example wv_shape_gate` (`WV_SHAPE_PRINT=1` prints the frame lines).
 
 use render_core::kurbo::Affine;

@@ -61,8 +61,9 @@ pub enum Op {
     /// A resolution boundary. inputs = `[value]`. From here the value runs at `target` of the
     /// frame's resolution, or lower when the store cannot hold it; `target = 1.0` restores frame
     /// resolution. The ops between a pair never see the scale: their payloads and pads are read in
-    /// the value's own texels.
-    Scale { target: f32 },
+    /// the value's own texels. `key` names the effect the boundary belongs to, the same from frame
+    /// to frame, so a scheduler can keep the resolution it chose.
+    Scale { target: f32, key: u128 },
     /// Land a value on the state below. inputs = `[below, value]` or `[below, value, coverage]`.
     /// `offset` translates the value as it is read — a shadow's displacement — so the value is
     /// never drawn displaced.
@@ -180,7 +181,7 @@ impl FrameGraph {
             } else if n.inputs.is_empty() && !matches!(n.op, Op::Draw(_)) {
                 return Err(format!("node {i} ({}): a chain op with no value", n.label));
             }
-            if let Op::Scale { target } = n.op {
+            if let Op::Scale { target, .. } = n.op {
                 if !(target > 0.0 && target <= 1.0) {
                     return Err(format!("node {i} ({}): scale target {target} is not in (0, 1]", n.label));
                 }
@@ -217,11 +218,18 @@ impl FrameGraph {
     /// the space that reads it).
     #[must_use]
     pub fn resolutions(&self) -> Vec<f32> {
+        self.resolutions_with(&|_, target| target)
+    }
+
+    /// [`Self::resolutions`] with every scale's target passed through `decide(node, target)`, for
+    /// a scheduler that lowers some of them.
+    #[must_use]
+    pub fn resolutions_with(&self, decide: &dyn Fn(NodeId, f32) -> f32) -> Vec<f32> {
         let n = self.nodes.len();
         let mut k = vec![1.0f32; n];
         for (i, node) in self.nodes.iter().enumerate() {
             k[i] = match &node.op {
-                Op::Scale { target } => *target,
+                Op::Scale { target, .. } => decide(i, *target),
                 _ if self.is_spine(i) => 1.0,
                 Op::Draw(_) => 1.0,
                 _ => k[node.inputs[0]],
