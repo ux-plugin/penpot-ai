@@ -20,10 +20,10 @@
 //!    instead: one value per spine node, the union of every chain read of it, drawn once from the
 //!    items below that node and overwritten by a copy of the frame rows where the two overlap,
 //!    after the composes below have run. Effects below the chain are absent past the frame.
-//! 5. **Pages** (ruling 19). Every leaf, ground and arm output that is not a compose is a rect
-//!    slid to the top-left of a page (its placement rides its records); a value takes the lowest
-//!    page where nothing alive overlaps its rows, spanning the next page when taller than one,
-//!    and rows are free again once their last reader has run.
+//! 5. **Packing** (ruling 19, amended at R4). Every leaf, ground and arm output that is not a
+//!    compose is a rect placed in the rows below the frame by [`StorePacker`], which hands out whole
+//!    tiles and lets values whose lifetimes do not meet share them. Its origin splits back into the
+//!    page fine folds rows by and the placement that rides the records.
 //! 6. **Emission.** Clear (the frame and every ground rect to the background, the pages between
 //!    to transparent), one front-end over the leaf and ground draws (each clipped to its
 //!    store rect) and the spine in z-order (clipped to the frame once pages sit under it, so a
@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use crate::kurbo::{Affine, Rect, Vec2};
 
 use crate::vello::bake::{self, Policy, REC_COUNT, REC_STRIDE};
-use crate::vello::frame_graph::{pad, BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, FrameGraph, NodeId, Op};
+use crate::vello::frame_graph::{pad_at, scale_rect, BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, FrameGraph, NodeId, Op};
 use crate::vello::frame_plan::{DrawCmd, FramePlan, Pass, Tiles, Window};
 use crate::vello::store_pack::StorePacker;
 use crate::vello::units::{BlurEdge, UnitOp};
@@ -108,12 +108,12 @@ struct Value {
 }
 
 /// What serves a chain's reads of the spine past the frame (ruling 13): the items below the
-/// spine node, drawn once over the whole rect, and the round after which the in-frame part can be
-/// copied over them from the frame rows.
+/// spine node, drawn once over the whole rect, and the round after which the in-frame part is
+/// copied over them from the frame rows — or `None` when a scale arm resamples it instead.
 #[derive(Clone, Debug)]
 struct Ground {
     items: Vec<DrawItem>,
-    copy_round: u32,
+    copy_round: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -138,6 +138,12 @@ struct Scheduler<'a> {
     g: &'a FrameGraph,
     frame: Rect,
     h: f64,
+    /// The resolution each node's value runs at, a fraction of the frame's.
+    k: Vec<f32>,
+    /// A scale between equal resolutions is nothing: it is dropped and its readers read through it.
+    elided: Vec<bool>,
+    /// The node a reader really reads: itself, or what an elided scale reads.
+    alias: Vec<NodeId>,
     ext: Vec<Rect>,
     demand: Vec<Option<Rect>>,
     out: Vec<Rect>,
@@ -170,7 +176,7 @@ fn overlaps(a: Rect, b: Rect) -> bool {
 }
 
 fn is_head(op: &Op) -> bool {
-    matches!(op, Op::Blur { .. } | Op::Warp(_) | Op::Scatter(_))
+    matches!(op, Op::Blur { .. } | Op::Warp(_) | Op::Scatter(_) | Op::Scale { .. })
 }
 
 fn is_pointwise(op: &Op) -> bool {
@@ -180,10 +186,24 @@ fn is_pointwise(op: &Op) -> bool {
 impl<'a> Scheduler<'a> {
     fn new(g: &'a FrameGraph, width: u32, height: u32) -> Self {
         let n = g.nodes.len();
+        let k = g.resolutions();
+        let mut elided = vec![false; n];
+        let mut alias: Vec<NodeId> = (0..n).collect();
+        for (i, node) in g.nodes.iter().enumerate() {
+            if let Op::Scale { .. } = node.op {
+                if k[node.inputs[0]] == k[i] {
+                    elided[i] = true;
+                    alias[i] = alias[node.inputs[0]];
+                }
+            }
+        }
         let mut readers = vec![Vec::new(); n];
         for (i, node) in g.nodes.iter().enumerate() {
+            if elided[i] {
+                continue;
+            }
             for &j in &node.inputs {
-                readers[j].push(i);
+                readers[alias[j]].push(i);
             }
         }
         let frame = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
@@ -191,7 +211,10 @@ impl<'a> Scheduler<'a> {
             g,
             frame,
             h: f64::from(height),
-            ext: g.extents(),
+            ext: g.extents_at(&k),
+            k,
+            elided,
+            alias,
             demand: vec![None; n],
             out: vec![Rect::ZERO; n],
             readers,
@@ -214,14 +237,35 @@ impl<'a> Scheduler<'a> {
         self.emit()
     }
 
+    /// Input `n` of node `i`, read through any elided scale.
+    fn input(&self, i: NodeId, n: usize) -> NodeId {
+        self.alias[self.g.nodes[i].inputs[n]]
+    }
+
+    /// Every input of node `i`, read through any elided scale.
+    fn inputs(&self, i: NodeId) -> Vec<NodeId> {
+        self.g.nodes[i].inputs.iter().map(|&j| self.alias[j]).collect()
+    }
+
+    /// `r`, given in node `from`'s texels, in node `to`'s.
+    fn in_space_of(&self, r: Rect, from: NodeId, to: NodeId) -> Rect {
+        if self.k[from] == self.k[to] {
+            r
+        } else {
+            scale_rect(r, f64::from(self.k[to] / self.k[from]))
+        }
+    }
+
     /// A chain rect no wider than a page: what reaches past the frame on either side is kept
-    /// only as far as the page has room for it beside the in-frame part.
-    fn clamp_x(&self, r: Rect) -> Rect {
-        let w = self.frame.width();
+    /// only as far as the page has room for it beside the in-frame part. `k` is the rect's
+    /// resolution, so the page's width is measured in the same texels.
+    fn clamp_x(&self, r: Rect, k: f32) -> Rect {
+        let frame = scale_rect(self.frame, f64::from(k));
+        let w = frame.width();
         if r.width() <= w {
             return r;
         }
-        let inf = Rect::new(r.x0.max(self.frame.x0), r.y0, r.x1.min(self.frame.x1), r.y1);
+        let inf = Rect::new(r.x0.max(frame.x0), r.y0, r.x1.min(frame.x1), r.y1);
         let avail = w - inf.width();
         let left = (inf.x0 - r.x0).min(((avail / 2.0) / TILE_W).floor() * TILE_W);
         let right = (r.x1 - inf.x1).min(avail - left);
@@ -247,6 +291,10 @@ impl<'a> Scheduler<'a> {
         for i in (0..n).rev() {
             let Some(d) = self.demand[i] else { continue };
             let node = &self.g.nodes[i];
+            if self.elided[i] {
+                union_into(&mut self.demand[node.inputs[0]], d);
+                continue;
+            }
             let out = match &node.op {
                 Op::Compose { offset, .. } => {
                     let v = self.ext[node.inputs[1]] + Vec2::new(f64::from(offset[0]), f64::from(offset[1]));
@@ -255,7 +303,7 @@ impl<'a> Scheduler<'a> {
                 }
                 _ => d.intersect(self.visible_extent(i)),
             };
-            let out = if self.g.is_spine(i) { tile_round(out).intersect(tile_round(self.frame)) } else { self.clamp_x(tile_round(out)) };
+            let out = if self.g.is_spine(i) { tile_round(out).intersect(tile_round(self.frame)) } else { self.clamp_x(tile_round(out), self.k[i]) };
             self.out[i] = out;
             if matches!(node.op, Op::Draw(_) | Op::Compose { .. }) {
                 if let Some(&below) = node.inputs.first() {
@@ -266,17 +314,23 @@ impl<'a> Scheduler<'a> {
                 continue;
             }
             let grown = |p: f32| out.inflate(f64::from(p), f64::from(p));
+            let k = self.k[i];
             match &node.op {
                 Op::Draw(items) => {
-                    let kept: Vec<DrawItem> = items.iter().filter(|it| overlaps(it.bounds, out)).cloned().collect();
+                    let frame_out = scale_rect(out, 1.0 / f64::from(k));
+                    let kept: Vec<DrawItem> = items.iter().filter(|it| overlaps(it.bounds, frame_out)).cloned().collect();
                     self.pruned.insert(i, kept);
                 }
                 Op::Blur { edge_clamp_style, .. } => {
-                    let r = if *edge_clamp_style == EdgeClampStyle::Transparent { out } else { grown(pad(&node.op)) };
+                    let r = if *edge_clamp_style == EdgeClampStyle::Transparent { out } else { grown(pad_at(&node.op, k)) };
                     union_into(&mut self.demand[node.inputs[0]], r);
                 }
+                Op::Scale { .. } => {
+                    let j = node.inputs[0];
+                    union_into(&mut self.demand[j], scale_rect(out, f64::from(self.k[j] / k)));
+                }
                 Op::Warp(_) | Op::Scatter(_) => {
-                    union_into(&mut self.demand[node.inputs[0]], grown(pad(&node.op)));
+                    union_into(&mut self.demand[node.inputs[0]], grown(pad_at(&node.op, k)));
                     if let Some(&sdf) = node.inputs.get(1) {
                         union_into(&mut self.demand[sdf], out);
                     }
@@ -302,7 +356,31 @@ impl<'a> Scheduler<'a> {
     }
 
     fn live(&self, i: NodeId) -> bool {
-        self.demand[i].is_some() && !self.out[i].is_zero_area()
+        !self.elided[i] && self.demand[i].is_some() && !self.out[i].is_zero_area()
+    }
+
+    /// Whether node `i` is a scale between different resolutions: an arm that resamples.
+    fn is_scale(&self, i: NodeId) -> bool {
+        matches!(self.g.nodes[i].op, Op::Scale { .. }) && !self.elided[i]
+    }
+
+    /// Whether the chain holding node `i` is rooted in a drawn leaf rather than the spine, so
+    /// its values are transparent past their rects.
+    fn rooted_in_leaf(&self, i: NodeId) -> bool {
+        let mut cur = i;
+        loop {
+            let node = &self.g.nodes[cur];
+            if self.g.is_spine(cur) {
+                return false;
+            }
+            if matches!(node.op, Op::Draw(_)) {
+                return true;
+            }
+            match node.inputs.first() {
+                Some(&j) => cur = j,
+                None => return true,
+            }
+        }
     }
 
     /// Whether leaf `i` can ride the marker's own silhouette: analytic coverage, no spread, read
@@ -357,8 +435,8 @@ impl<'a> Scheduler<'a> {
                     self.spine_round.insert(i, current);
                 }
                 Op::Compose { .. } => {
-                    let value = self.g.nodes[i].inputs[1];
-                    let cov = self.g.nodes[i].inputs.get(2).copied();
+                    let value = self.input(i, 1);
+                    let cov = self.g.nodes[i].inputs.get(2).map(|&c| self.alias[c]);
                     self.lower_chain(value);
                     if let Some(c) = cov {
                         self.lower_chain(c);
@@ -406,9 +484,9 @@ impl<'a> Scheduler<'a> {
         0
     }
 
-    /// The region node `i` reads of an input: its output grown by its own pad.
+    /// The region node `i` reads of an input, in `i`'s own texels: its output grown by its pad.
     fn read_rect(&self, i: NodeId) -> Rect {
-        let p = f64::from(pad(&self.g.nodes[i].op));
+        let p = f64::from(pad_at(&self.g.nodes[i].op, self.k[i]));
         self.out[i].inflate(p, p)
     }
 
@@ -417,7 +495,7 @@ impl<'a> Scheduler<'a> {
         if self.g.is_spine(i) || self.arm_of.contains_key(&i) || self.value_of.contains_key(&i) || !self.live(i) {
             return;
         }
-        for &j in &self.g.nodes[i].inputs.clone() {
+        for j in self.inputs(i) {
             self.lower_chain(j);
         }
         let node = &self.g.nodes[i];
@@ -427,7 +505,7 @@ impl<'a> Scheduler<'a> {
                     return;
                 }
                 let decode = match items.first().map(|it| it.style) {
-                    Some(DrawStyle::Distance { decode }) => decode,
+                    Some(DrawStyle::Distance { decode }) => decode * self.k[i],
                     _ => 0.0,
                 };
                 let v = self.values.len();
@@ -435,7 +513,7 @@ impl<'a> Scheduler<'a> {
                 self.value_of.insert(i, v);
             }
             op if is_head(op) || is_pointwise(op) => {
-                let in0 = node.inputs[0];
+                let in0 = self.input(i, 0);
                 let joins = is_pointwise(op)
                     && self.arm_of.get(&in0).is_some_and(|&a| {
                         self.arms[a].compose.is_none() && *self.arms[a].nodes.last().unwrap() == in0 && self.readers[in0].len() == 1
@@ -475,15 +553,15 @@ impl<'a> Scheduler<'a> {
         let arm = &self.arms[a];
         let mut r = 0;
         for &i in &arm.nodes {
-            for &j in &self.g.nodes[i].inputs {
+            for j in self.inputs(i) {
                 if self.arm_of.get(&j) == Some(&a) {
                     continue;
                 }
-                r = r.max(self.ready(j, self.read_rect(i)));
+                r = r.max(self.ready(j, self.in_space_of(self.read_rect(i), i, j)));
             }
         }
         if let Some(c) = arm.compose {
-            for &j in &self.g.nodes[c].inputs {
+            for j in self.inputs(c) {
                 if self.arm_of.get(&j) == Some(&a) {
                     continue;
                 }
@@ -524,18 +602,19 @@ impl<'a> Scheduler<'a> {
         r
     }
 
-    /// The rect chain node `i` reads of its input `j`: its output grown by its pad for a head, its
-    /// output for a pointwise op, displaced for an `EraseBy` reference.
+    /// The rect chain node `i` reads of its input `j`, in `j`'s texels: its output grown by its
+    /// pad for a head, its output for a pointwise op, displaced for an `EraseBy` reference.
     fn read_of(&self, i: NodeId, j: NodeId) -> Rect {
         let node = &self.g.nodes[i];
-        match &node.op {
-            Op::EraseBy(u) if node.inputs.get(1) == Some(&j) => {
+        let r = match &node.op {
+            Op::EraseBy(u) if node.inputs.get(1).map(|&x| self.alias[x]) == Some(j) => {
                 let shift = Vec2::new(f64::from(u.first().copied().unwrap_or(0.0)), f64::from(u.get(1).copied().unwrap_or(0.0)));
                 self.out[i] - shift
             }
-            op if is_head(op) && node.inputs[0] == j => self.read_rect(i),
+            op if is_head(op) && self.input(i, 0) == j => self.read_rect(i),
             _ => self.out[i],
-        }
+        };
+        self.in_space_of(r, i, j)
     }
 
     /// Every item the spine paints at or below node `j` that touches `r`, in z-order.
@@ -558,15 +637,15 @@ impl<'a> Scheduler<'a> {
         let mut reads: HashMap<NodeId, Rect> = HashMap::new();
         let mut escapes: HashMap<NodeId, bool> = HashMap::new();
         for arm in &self.arms {
-            if arm.compose.is_some() {
+            if arm.compose.is_some() || arm.nodes.first().is_some_and(|&i| self.is_scale(i)) {
                 continue;
             }
             for &i in &arm.nodes {
-                for &j in &self.g.nodes[i].inputs {
+                for j in self.inputs(i) {
                     if !self.g.is_spine(j) {
                         continue;
                     }
-                    let r = self.clamp_x(tile_round(self.read_of(i, j)));
+                    let r = self.clamp_x(tile_round(self.read_of(i, j)), 1.0);
                     let e = escapes.entry(j).or_default();
                     *e |= !(self.frame.x0 <= r.x0 && r.x1 <= self.frame.x1 && self.frame.y0 <= r.y0 && r.y1 <= self.frame.y1);
                     reads.entry(j).and_modify(|u| *u = u.union(r)).or_insert(r);
@@ -576,12 +655,12 @@ impl<'a> Scheduler<'a> {
         let mut nodes: Vec<NodeId> = reads.keys().copied().filter(|j| escapes[j]).collect();
         nodes.sort_unstable();
         for j in nodes {
-            let rect = self.clamp_x(reads[&j]);
+            let rect = self.clamp_x(reads[&j], 1.0);
             let inside = rect.intersect(self.frame);
             let copy_round = if inside.is_zero_area() { 0 } else { self.ready(j, inside) };
             let items = self.spine_items_below(j, rect);
             let v = self.values.len();
-            self.values.push(Value { node: j, rect, place: Vec2::ZERO, birth: 0, last_read: 0, page: 0, leaf: None, decode: 0.0, ground: Some(Ground { items, copy_round }) });
+            self.values.push(Value { node: j, rect, place: Vec2::ZERO, birth: 0, last_read: 0, page: 0, leaf: None, decode: 0.0, ground: Some(Ground { items, copy_round: Some(copy_round) }) });
             self.ground_of.insert(j, v);
         }
     }
@@ -598,12 +677,24 @@ impl<'a> Scheduler<'a> {
             self.values.push(Value { node: tail, rect: self.out[tail], place: Vec2::ZERO, birth: self.arms[a].round, last_read: self.arms[a].round, page: 0, leaf: None, decode: 0.0, ground: None });
             self.value_of.insert(tail, v);
             self.arms[a].out = Some(v);
+            let head = self.arms[a].nodes[0];
+            if self.is_scale(head) {
+                let j = self.input(head, 0);
+                if self.g.is_spine(j) {
+                    let region = self.read_of(head, j);
+                    let escapes = !(self.frame.x0 <= region.x0 && region.x1 <= self.frame.x1 && self.frame.y0 <= region.y0 && region.y1 <= self.frame.y1);
+                    if escapes {
+                        let items = self.spine_items_below(j, region);
+                        self.values[v].ground = Some(Ground { items, copy_round: None });
+                    }
+                }
+            }
         }
         for a in 0..self.arms.len() {
             let round = self.arms[a].round;
-            let mut inputs: Vec<NodeId> = self.arms[a].nodes.iter().flat_map(|&i| self.g.nodes[i].inputs.clone()).collect();
+            let mut inputs: Vec<NodeId> = self.arms[a].nodes.iter().flat_map(|&i| self.inputs(i)).collect();
             if let Some(c) = self.arms[a].compose {
-                inputs.extend(self.g.nodes[c].inputs.iter().copied());
+                inputs.extend(self.inputs(c));
             }
             for j in inputs {
                 if let Some(&v) = self.value_of.get(&j) {
@@ -662,7 +753,7 @@ impl<'a> Scheduler<'a> {
             if pointwise && self.arms[a].compose.is_some() && shift == Vec2::ZERO {
                 return Operand::Regs;
             }
-            if self.arms[a].compose.is_none() {
+            if self.arms[a].compose.is_none() && !self.is_scale(self.arms[a].nodes[0]) {
                 if let Some(&v) = self.ground_of.get(&j) {
                     return Operand::Value { v, shift };
                 }
@@ -717,7 +808,7 @@ impl<'a> Scheduler<'a> {
             Op::MaskMix(u) => UnitOp::MaskMix(u.clone()),
             Op::ClipToSource(u) => UnitOp::ClipToSource(u.clone()),
             Op::EraseBy(_) => UnitOp::EraseBy(Vec::new()),
-            Op::Colour(_) | Op::Draw(_) | Op::Compose { .. } => return None,
+            Op::Colour(_) | Op::Draw(_) | Op::Compose { .. } | Op::Scale { .. } => return None,
         })
     }
 
@@ -735,12 +826,17 @@ impl<'a> Scheduler<'a> {
         let mut edge_coverage = false;
         let mut blur: Option<(f32, bool, bool)> = None;
         let mut program: Option<f32> = None;
+        let mut scale: Option<(f32, bool)> = None;
         for (k, &i) in nodes.iter().enumerate() {
             let node = &self.g.nodes[i];
             match &node.op {
                 Op::Blur { sigma, linear, axis, edge_clamp_style } => {
-                    blur = Some((*sigma, *linear, *axis == BlurAxis::Y));
+                    blur = Some((*sigma * self.k[i], *linear, *axis == BlurAxis::Y));
                     edge_coverage = *edge_clamp_style == EdgeClampStyle::Transparent;
+                }
+                Op::Scale { .. } => {
+                    let j = self.input(i, 0);
+                    scale = Some((self.k[j] / self.k[i], self.rooted_in_leaf(i)));
                 }
                 Op::Colour(c) => tint = Some([c[0], c[1], c[2], c[3]]),
                 Op::MaskMix(u) if u.get(bake::PAYLOAD_PROGRAM_SLOT).copied() == Some(bake::PROGRAM_RADIAL) => program = Some(bake::PROGRAM_RADIAL),
@@ -750,8 +846,9 @@ impl<'a> Scheduler<'a> {
                 run.push(u);
             }
             if k == 0 {
-                value = self.operand_for(a, node.inputs[0], Vec2::ZERO, is_pointwise(&node.op));
+                value = self.operand_for(a, self.input(i, 0), Vec2::ZERO, is_pointwise(&node.op));
                 if let (Op::Warp(_), Some(&sdf)) = (&node.op, node.inputs.get(1)) {
+                    let sdf = self.alias[sdf];
                     let dec = self.value_of.get(&sdf).map_or(0.0, |&v| self.values[v].decode);
                     distance = self.operand_for(a, sdf, Vec2::ZERO, true);
                     if let Operand::Value { .. } = distance {
@@ -762,10 +859,10 @@ impl<'a> Scheduler<'a> {
             match &node.op {
                 Op::EraseBy(u) => {
                     let shift = Vec2::new(f64::from(u.first().copied().unwrap_or(0.0)), f64::from(u.get(1).copied().unwrap_or(0.0)));
-                    reference = self.operand_for(a, node.inputs[1], shift, true);
+                    reference = self.operand_for(a, self.input(i, 1), shift, true);
                 }
                 Op::MaskMix(_) | Op::ClipToSource(_) => {
-                    reference = self.operand_for(a, node.inputs[1], Vec2::ZERO, true);
+                    reference = self.operand_for(a, self.input(i, 1), Vec2::ZERO, true);
                 }
                 _ => {}
             }
@@ -775,12 +872,12 @@ impl<'a> Scheduler<'a> {
             let Op::Compose { mode, colour, offset } = &self.g.nodes[c].op else { unreachable!() };
             let cnode = &self.g.nodes[c];
             if nodes.is_empty() {
-                value = self.operand_for(a, cnode.inputs[1], Vec2::new(f64::from(offset[0]), f64::from(offset[1])), true);
+                value = self.operand_for(a, self.input(c, 1), Vec2::new(f64::from(offset[0]), f64::from(offset[1])), true);
             } else if let Operand::Value { v, .. } = value {
                 value = Operand::Value { v, shift: Vec2::new(f64::from(offset[0]), f64::from(offset[1])) };
             }
-            if let Some(&cv) = cnode.inputs.get(2) {
-                coverage = self.operand_for(a, cv, Vec2::ZERO, true);
+            if cnode.inputs.len() > 2 {
+                coverage = self.operand_for(a, self.input(c, 2), Vec2::ZERO, true);
             }
             match (mode, colour) {
                 (ComposeMode::Over, Some(c)) => {
@@ -790,14 +887,14 @@ impl<'a> Scheduler<'a> {
                 (ComposeMode::Over, None) => policy.value_over = true,
                 (ComposeMode::MaskedMix, _) => {}
             }
-            for &j in &cnode.inputs[1..] {
+            for j in self.inputs(c).into_iter().skip(1) {
                 if let Some(&shape) = self.regs_leaf.get(&j) {
                     mask_shape = Some(shape);
                 }
             }
         }
         for &i in &nodes {
-            for &j in &self.g.nodes[i].inputs {
+            for j in self.inputs(i) {
                 if let Some(&shape) = self.regs_leaf.get(&j) {
                     mask_shape = Some(shape);
                 }
@@ -807,6 +904,11 @@ impl<'a> Scheduler<'a> {
             Some((sigma, linear, axis_y)) => bake::blur_arm(sigma, linear, axis_y, policy, tint.filter(|_| policy.colour_over)),
             None => bake::arm_descriptor(&run, policy, program),
         };
+        if let Some((ratio, transparent)) = scale {
+            desc[0] = (desc[0] as u32 | bake::bits::SCALE) as f32;
+            desc[2] = ratio;
+            desc[3] = f32::from(transparent);
+        }
         if let Some(t) = tint {
             if !policy.colour_over {
                 desc[0] = (desc[0] as u32 | bake::bits::TINT) as f32;
@@ -873,10 +975,12 @@ impl<'a> Scheduler<'a> {
         Self::tiles_of(self.frame, &mut tiles[0]);
         for (vi, v) in self.values.iter().enumerate() {
             let rect = self.store_rect(vi);
-            let transform = Affine::translate(v.place + Vec2::new(0.0, v.page as f64 * pitch));
+            let k = f64::from(self.k[v.node]);
+            let origin = v.place + Vec2::new(0.0, v.page as f64 * pitch);
+            let transform = if k == 1.0 { Affine::translate(origin) } else { Affine::translate(origin) * Affine::scale(k) };
             if let Some(item) = &v.leaf {
                 let mut it = item.clone();
-                it.bounds = self.out[v.node];
+                it.bounds = scale_rect(self.out[v.node], 1.0 / k);
                 draws.push(DrawCmd::Shapes { items: vec![it], transform, clip: Some(rect) });
                 Self::tiles_of(rect, &mut tiles[0]);
             }
@@ -885,8 +989,10 @@ impl<'a> Scheduler<'a> {
                 draws.push(DrawCmd::Shapes { items: ground.items.clone(), transform, clip: Some(rect) });
                 Self::tiles_of(rect, &mut tiles[0]);
                 let inside = v.rect.intersect(self.frame);
-                if !inside.is_zero_area() && (ground.copy_round as usize) < rounds as usize {
-                    copies[ground.copy_round as usize + 1].push(Pass::Copy { src: inside, dst: inside + v.place + Vec2::new(0.0, v.page as f64 * pitch) });
+                if let Some(copy_round) = ground.copy_round {
+                    if !inside.is_zero_area() && (copy_round as usize) < rounds as usize {
+                        copies[copy_round as usize + 1].push(Pass::Copy { src: inside, dst: inside + origin });
+                    }
                 }
             }
         }
@@ -1040,6 +1146,93 @@ mod tests {
         let shape = p.shape();
         assert_eq!(shape.markers, 3);
         assert_eq!(shape.rounds, 4);
+    }
+
+    /// [`graph`] with a scale pair of `target` around the shadow's blurs and another around the
+    /// lens's warp.
+    fn scaled_graph(target: f32) -> FrameGraph {
+        let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let b = Rect::new(100.0, 100.0, 300.0, 260.0);
+        let g = Rect::new(200.0, 200.0, 400.0, 380.0);
+        let blur = |axis, input| GNode { op: Op::Blur { sigma: 4.0, axis, linear: false, edge_clamp_style: EdgeClampStyle::Transparent }, inputs: vec![input], label: String::new() };
+        let scale = |target, input| GNode { op: Op::Scale { target }, inputs: vec![input], label: String::new() };
+        let g = FrameGraph {
+            frame,
+            background: Color::WHITE,
+            nodes: vec![
+                GNode { op: Op::Draw(vec![body(1, frame)]), inputs: vec![], label: "ground".into() },
+                GNode { op: Op::Draw(vec![cov(2, b)]), inputs: vec![], label: "sil".into() },
+                scale(target, 1),
+                blur(BlurAxis::X, 2),
+                blur(BlurAxis::Y, 3),
+                scale(1.0, 4),
+                GNode { op: Op::Compose { mode: ComposeMode::Over, colour: Some([0.0, 0.0, 0.0, 0.5]), offset: [6.0, 8.0] }, inputs: vec![0, 5], label: "drop".into() },
+                GNode { op: Op::Draw(vec![body(2, b)]), inputs: vec![6], label: "body".into() },
+                scale(target, 7),
+                GNode { op: Op::Warp(vec![0.0; 24]), inputs: vec![8], label: "warp".into() },
+                scale(1.0, 9),
+                GNode { op: Op::Shade(vec![0.0; 24]), inputs: vec![10], label: "shade".into() },
+                GNode { op: Op::MaskMix(vec![0.0; 24]), inputs: vec![11, 7], label: "mix".into() },
+                GNode { op: Op::Draw(vec![cov(3, g)]), inputs: vec![], label: "mask".into() },
+                GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![7, 12, 13], label: "glass".into() },
+            ],
+        };
+        g.validate().expect("valid");
+        g
+    }
+
+    #[test]
+    fn a_pair_between_equal_resolutions_is_nothing() {
+        let plain = plan(&graph(), 640, 480);
+        let paired = plan(&scaled_graph(1.0), 640, 480);
+        assert_eq!(paired.store, plain.store);
+        assert_eq!(paired.params, plain.params);
+        assert_eq!(paired.passes.len(), plain.passes.len());
+        assert_eq!(paired.shape(), plain.shape());
+    }
+
+    #[test]
+    fn a_half_pair_runs_its_run_at_half_and_resamples_at_its_ends() {
+        let g = scaled_graph(0.5);
+        let mut s = Scheduler::new(&g, 640, 480);
+        assert!(s.elided[2], "a leaf's downscale is the leaf drawn at half");
+        assert!(!s.elided[5] && !s.elided[8] && !s.elided[10]);
+        assert_eq!((s.k[1], s.k[3], s.k[4], s.k[5], s.k[9], s.k[10]), (0.5, 0.5, 0.5, 1.0, 0.5, 1.0));
+        s.demand_pass();
+        s.build_arms();
+        s.serve();
+        s.assign_pages();
+        let mut params = Vec::new();
+        for a in 0..s.arms.len() {
+            s.bake_arm(a, &mut params);
+        }
+        let arms: Vec<(Vec<NodeId>, Option<NodeId>)> = s.arms.iter().map(|a| (a.nodes.clone(), a.compose)).collect();
+        assert_eq!(arms[0], (vec![3], None), "blur X at half");
+        assert_eq!(arms[1], (vec![4], None), "blur Y at half");
+        assert_eq!(arms[2], (vec![5], Some(6)), "the upscale lands the shadow");
+        assert_eq!(arms[3], (vec![8], None), "the downscale of the body's backdrop is its own arm");
+        assert_eq!(arms[4], (vec![9], None), "the warp at half");
+        assert_eq!(arms[5], (vec![10, 11, 12], Some(14)), "the upscale heads the lens's tail");
+        assert!(matches!(s.arms[3].value, Operand::Frame), "a downscale of the spine reads the frame rows");
+        let sil = s.values.iter().position(|v| v.node == 1).unwrap();
+        let by = s.values.iter().position(|v| v.node == 4).unwrap();
+        assert_eq!(s.values[sil].rect, Rect::new(48.0, 48.0, 160.0, 144.0), "the silhouette at half, with its AA, in tiles");
+        assert_eq!(s.values[by].rect, Rect::new(16.0, 16.0, 192.0, 160.0), "the blur at half, padded twice by the half-resolution pad");
+        let desc = |a: usize| &params[s.arms[a].params_off as usize..][..4];
+        let at = |a: usize| (desc(a)[0] as u32 & bake::bits::SCALE != 0, desc(a)[2], desc(a)[3]);
+        assert_eq!(at(2), (true, 0.5, 1.0), "up from a transparent chain");
+        assert_eq!(at(3), (true, 2.0, 0.0), "down from the spine");
+        assert_eq!(at(5), (true, 0.5, 0.0), "up from the backdrop chain");
+        assert!(!at(0).0);
+        let p = plan(&g, 640, 480);
+        p.validate().unwrap_or_else(|e| panic!("{e}"));
+        let Some(Pass::Frontend { draws }) = p.passes.iter().find(|p| matches!(p, Pass::Frontend { .. })) else { panic!() };
+        let leaf = draws.iter().find_map(|d| match d {
+            DrawCmd::Shapes { items, transform, .. } if items.iter().any(|i| i.shape == 2 && matches!(i.style, DrawStyle::Coverage { .. })) => Some(*transform),
+            _ => None,
+        }).expect("the silhouette draw");
+        let c = leaf.as_coeffs();
+        assert_eq!((c[0], c[3]), (0.5, 0.5), "the leaf is drawn at half");
     }
 
     #[test]

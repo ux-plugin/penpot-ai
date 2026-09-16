@@ -56,6 +56,10 @@ pub mod bits {
     pub const SCATTER: u32 = 256;
     /// Text inner flood: recover unoffset glyph coverage from the offset silhouette.
     pub const FLOOD_ERASE: u32 = 4096;
+    /// Sampling head: resample the value between resolutions (`u[0].x` = input texels per
+    /// output texel: a box average when above 1, bilinear below; `u[0].y` = reads past the value
+    /// are transparent rather than kept).
+    pub const SCALE: u32 = 8192;
     /// COMPOSE MODE — how the arm's result lands, a one-hot enum over three bits (all clear = the
     /// default field/coverage-masked mix). Mutually exclusive by construction: an arm composites one
     /// way. `COLOUR_OVER` (bit 7): the value is a COVERAGE — lay the straight colour in `u[3]`

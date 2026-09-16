@@ -246,7 +246,7 @@ impl Sink {
             Some(crate::vello::sdf::flatten_segments(&(transform * viewport * m * crate::geometry::outline(n)), 0.3))
         });
         let Some(segments) = segments else { return };
-        let r = texels(bounds.with_origin(transform * bounds.origin()));
+        let r = texels(transform.transform_rect_bbox(bounds));
         let layer = r[1] / LAYER_PX;
         assert_eq!((r[3] - 1) / LAYER_PX, layer, "a distance rect sits inside one store layer");
         let view = store_tex.create_view(&wgpu::TextureViewDescriptor {

@@ -57,6 +57,11 @@ pub enum Op {
     ClipToSource(Vec<f32>),
     /// The chain's straight colour. inputs = `[value]`.
     Colour(Vec<f32>),
+    /// A resolution boundary. inputs = `[value]`. From here the value runs at `target` of the
+    /// frame's resolution, or lower when the store cannot hold it; `target = 1.0` restores frame
+    /// resolution. The ops between a pair never see the scale: their payloads and pads are read in
+    /// the value's own texels.
+    Scale { target: f32 },
     /// Land a value on the state below. inputs = `[below, value]` or `[below, value, coverage]`.
     /// `offset` translates the value as it is read — a shadow's displacement — so the value is
     /// never drawn displaced.
@@ -97,7 +102,7 @@ impl Op {
     pub fn arity(&self) -> (usize, usize) {
         match self {
             Op::Draw(_) => (0, 1),
-            Op::Blur { .. } | Op::Scatter(_) | Op::Shade(_) | Op::Colour(_) => (1, 1),
+            Op::Blur { .. } | Op::Scatter(_) | Op::Shade(_) | Op::Colour(_) | Op::Scale { .. } => (1, 1),
             Op::Warp(_) => (1, 2),
             Op::MaskMix(_) | Op::EraseBy(_) | Op::ClipToSource(_) => (2, 2),
             Op::Compose { .. } => (2, 3),
@@ -110,14 +115,28 @@ impl Op {
 /// a lens warp or scatter by the lens slack.
 #[must_use]
 pub fn pad(op: &Op) -> f32 {
-    match op {
-        Op::Blur { sigma, .. } => (3.0 * sigma).ceil() + 8.0,
+    pad_at(op, 1.0)
+}
+
+/// [`pad`] in the texels of a value running at `k` of the frame's resolution: the reach scales,
+/// the eight-texel guard does not.
+#[must_use]
+pub fn pad_at(op: &Op, k: f32) -> f32 {
+    let reach = match op {
+        Op::Blur { sigma, .. } => 3.0 * sigma,
         Op::Warp(u) if u.get(crate::vello::bake::PAYLOAD_PROGRAM_SLOT).copied() == Some(crate::vello::bake::PROGRAM_NOISE) => {
-            u.get(2).copied().unwrap_or(0.0).ceil() + 8.0
+            u.get(2).copied().unwrap_or(0.0)
         }
-        Op::Warp(_) | Op::Scatter(_) => 32.0,
-        _ => 0.0,
-    }
+        Op::Warp(_) | Op::Scatter(_) => 24.0,
+        _ => return 0.0,
+    };
+    (reach * k).ceil() + 8.0
+}
+
+/// `r` in the texels of a value at `k`: scaled about the frame's origin.
+#[must_use]
+pub fn scale_rect(r: Rect, k: f64) -> Rect {
+    Rect::new(r.x0 * k, r.y0 * k, r.x1 * k, r.y1 * k)
 }
 
 impl FrameGraph {
@@ -156,6 +175,25 @@ impl FrameGraph {
             } else if n.inputs.is_empty() && !matches!(n.op, Op::Draw(_)) {
                 return Err(format!("node {i} ({}): a chain op with no value", n.label));
             }
+            if let Op::Scale { target } = n.op {
+                if !(target > 0.0 && target <= 1.0) {
+                    return Err(format!("node {i} ({}): scale target {target} is not in (0, 1]", n.label));
+                }
+            }
+        }
+        let k = self.resolutions();
+        for (i, n) in self.nodes.iter().enumerate() {
+            if let Op::Compose { .. } = n.op {
+                if let Some(&j) = n.inputs[1..].iter().find(|&&j| k[j] != 1.0) {
+                    return Err(format!("node {i} ({}): composes input {j} at {} of frame resolution", n.label, k[j]));
+                }
+            }
+            if matches!(n.op, Op::Draw(_)) && !self.is_spine(i) {
+                let readers: Vec<f32> = self.nodes.iter().filter(|r| r.inputs.contains(&i)).map(|r| k[self.nodes.iter().position(|x| std::ptr::eq(x, r)).unwrap()]).collect();
+                if readers.windows(2).any(|w| w[0] != w[1]) {
+                    return Err(format!("node {i} ({}): read at more than one resolution", n.label));
+                }
+            }
         }
         if !self.is_spine(self.nodes.len() - 1) {
             return Err("the last node is not a spine node".into());
@@ -163,28 +201,62 @@ impl FrameGraph {
         Ok(())
     }
 
-    /// Every node's device extent, computed forward: a draw is its items' union over the state
-    /// below; a neighbourhood op inflates its value by [`pad`]; a pointwise op keeps its value's
-    /// extent; a compose is the state below joined with the value, translated by its offset.
+    /// The resolution each node's value runs at, as a fraction of the frame's, when every
+    /// [`Op::Scale`] sits at its target: the spine is 1, a `Scale` is its target, a chain op runs
+    /// at its value's resolution, and a leaf runs at its readers' (a leaf is drawn straight into
+    /// the space that reads it).
+    #[must_use]
+    pub fn resolutions(&self) -> Vec<f32> {
+        let n = self.nodes.len();
+        let mut k = vec![1.0f32; n];
+        for (i, node) in self.nodes.iter().enumerate() {
+            k[i] = match &node.op {
+                Op::Scale { target } => *target,
+                _ if self.is_spine(i) => 1.0,
+                Op::Draw(_) => 1.0,
+                _ => k[node.inputs[0]],
+            };
+        }
+        for (i, node) in self.nodes.iter().enumerate() {
+            for &j in &node.inputs {
+                if matches!(self.nodes[j].op, Op::Draw(_)) && !self.is_spine(j) {
+                    k[j] = k[i];
+                }
+            }
+        }
+        k
+    }
+
+    /// Every node's extent, computed forward, in the texels of its own resolution (see
+    /// [`Self::resolutions`]): a draw is its items' union over the state below; a neighbourhood
+    /// op inflates its value by [`pad_at`]; a pointwise op keeps its value's extent; a scale
+    /// rescales it; a compose is the state below joined with the value, translated by its offset.
     #[must_use]
     pub fn extents(&self) -> Vec<Rect> {
+        self.extents_at(&self.resolutions())
+    }
+
+    /// [`Self::extents`] with the resolutions `k` the scheduler decided.
+    #[must_use]
+    pub fn extents_at(&self, k: &[f32]) -> Vec<Rect> {
         let mut ext: Vec<Rect> = Vec::with_capacity(self.nodes.len());
-        for n in &self.nodes {
+        for (i, n) in self.nodes.iter().enumerate() {
             let of = |i: usize| ext[i];
             let r = match &n.op {
                 Op::Draw(items) => items
                     .iter()
-                    .map(|it| it.bounds)
+                    .map(|it| scale_rect(it.bounds, f64::from(k[i])))
                     .chain(n.inputs.first().map(|&b| of(b)))
                     .reduce(|a, b| a.union(b))
                     .unwrap_or(Rect::ZERO),
                 Op::Blur { .. } | Op::Warp(_) | Op::Scatter(_) => {
-                    let p = f64::from(pad(&n.op));
+                    let p = f64::from(pad_at(&n.op, k[i]));
                     of(n.inputs[0]).inflate(p, p)
                 }
                 Op::Shade(_) | Op::Colour(_) | Op::MaskMix(_) | Op::EraseBy(_) | Op::ClipToSource(_) => {
                     of(n.inputs[0])
                 }
+                Op::Scale { .. } => scale_rect(of(n.inputs[0]), f64::from(k[i] / k[n.inputs[0]])),
                 Op::Compose { offset, .. } => {
                     let v = of(n.inputs[1]) + crate::kurbo::Vec2::new(f64::from(offset[0]), f64::from(offset[1]));
                     of(n.inputs[0]).union(v)
