@@ -106,6 +106,9 @@ pub const PROGRAM_RADIAL: f32 = 3.0;
 /// the final composite is clipped to the shape's outline; [`EID_MATERIALIZE`] uses the dilated reach
 /// rect so an intermediate link writes its full field to scratch without clipping.
 pub const EID_MASKED: u32 = 100;
+/// A marker that only sequences the draws after it into its round: coarse writes no silhouette and
+/// fine runs no descriptor for it.
+pub const EID_BOUNDARY: u32 = 0;
 /// A materialize/dilated marker — an intermediate gather link, or a spread laid over the dilated reach.
 pub const EID_MATERIALIZE: u32 = 101;
 
