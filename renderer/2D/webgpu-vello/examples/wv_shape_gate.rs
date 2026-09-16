@@ -5,7 +5,9 @@
 //! shape (regions, draws, fine windows, rounds) grows past the ceilings written here.
 //!
 //! The ceilings are the CURRENT numbers, not targets: they only ever move down, and a phase that
-//! wants to move them must say why in its commit. Run:
+//! wants to move them must say why in its commit. R4's scale pairs moved them UP once: every soft
+//! chain now runs between a down-scale round and an up-scale round, so rounds and windows doubled
+//! while the pixels each round touches halved; S3's first-fit rounds are to bring them back. Run:
 //! `cargo run --release --example wv_shape_gate` (`WV_SHAPE_PRINT=1` prints the frame lines).
 
 use render_core::kurbo::Affine;
@@ -30,8 +32,8 @@ struct Ceiling {
 
 fn ceilings() -> Vec<Ceiling> {
     vec![
-        Ceiling { name: "glass-at-rest", pan: (0.0, 0.0), max: [8, 19, 7, 7] },
-        Ceiling { name: "glass-crossing-left", pan: (-450.0, -165.0), max: [8, 17, 7, 7] },
+        Ceiling { name: "glass-at-rest", pan: (0.0, 0.0), max: [12, 21, 14, 14] },
+        Ceiling { name: "glass-crossing-left", pan: (-450.0, -165.0), max: [12, 19, 14, 14] },
     ]
 }
 

@@ -1,74 +1,106 @@
-frame [0.0 0.0 1192.0 622.0] nodes 73 background [1.0, 1.0, 1.0, 1.0]
+frame [0.0 0.0 1192.0 622.0] nodes 105 background [1.0, 1.0, 1.0, 1.0]
   0 | draw · 1300 item(s)        in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
   1   s1 drop silhouette         in=[] Draw n=1 [89.4 46.6 208.6 108.8] 515:coverage[89.4 46.6 208.6 108.8]
-  2   s1 drop blur-X σ6.3        in=[1] Blur σ6.3 X srgb transparent
-  3   s1 drop blur-Y σ6.3        in=[2] Blur σ6.3 Y srgb transparent
-  4 | s1 drop → spine            in=[0, 3] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
-  5 | draw · 1 item(s)           in=[4] Draw n=1 [89.4 46.6 208.6 108.8] 515:body[89.4 46.6 208.6 108.8]
-  6   s2 gather blur-X σ14.4     in=[5] Blur σ14.4 X linear
-  7   s2 gather blur-Y σ14.4     in=[6] Blur σ14.4 Y linear
-  8   s2 gather mask             in=[] Draw n=1 [387.4 46.6 506.6 108.8] 516:coverage[387.4 46.6 506.6 108.8]
-  9 | s2 gather → spine          in=[5, 7, 8] Compose MaskedMix
- 10   s3 drop silhouette         in=[] Draw n=1 [685.4 46.6 804.6 108.8] 517:coverage[685.4 46.6 804.6 108.8]
- 11   s3 drop blur-X σ6.3        in=[10] Blur σ6.3 X srgb transparent
- 12   s3 drop blur-Y σ6.3        in=[11] Blur σ6.3 Y srgb transparent
- 13 | s3 drop → spine            in=[9, 12] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
- 14 | draw · 1 item(s)           in=[13] Draw n=1 [685.4 46.6 804.6 108.8] 517:body[685.4 46.6 804.6 108.8]
- 15   s4 gather blur-X σ14.4     in=[14] Blur σ14.4 X linear
- 16   s4 gather blur-Y σ14.4     in=[15] Blur σ14.4 Y linear
- 17   s4 gather mask             in=[] Draw n=1 [983.4 46.6 1102.6 108.8] 518:coverage[983.4 46.6 1102.6 108.8]
- 18 | s4 gather → spine          in=[14, 16, 17] Compose MaskedMix
- 19   s5 drop silhouette         in=[] Draw n=1 [89.4 202.2 208.6 264.4] 519:coverage[89.4 202.2 208.6 264.4]
- 20   s5 drop blur-X σ6.3        in=[19] Blur σ6.3 X srgb transparent
- 21   s5 drop blur-Y σ6.3        in=[20] Blur σ6.3 Y srgb transparent
- 22 | s5 drop → spine            in=[18, 21] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
- 23 | draw · 1 item(s)           in=[22] Draw n=1 [89.4 202.2 208.6 264.4] 519:body[89.4 202.2 208.6 264.4]
- 24   s6 gather blur-X σ14.4     in=[23] Blur σ14.4 X linear
- 25   s6 gather blur-Y σ14.4     in=[24] Blur σ14.4 Y linear
- 26   s6 gather mask             in=[] Draw n=1 [387.4 202.2 506.6 264.4] 51a:coverage[387.4 202.2 506.6 264.4]
- 27 | s6 gather → spine          in=[23, 25, 26] Compose MaskedMix
- 28   s7 drop silhouette         in=[] Draw n=1 [685.4 202.2 804.6 264.4] 51b:coverage[685.4 202.2 804.6 264.4]
- 29   s7 drop blur-X σ6.3        in=[28] Blur σ6.3 X srgb transparent
- 30   s7 drop blur-Y σ6.3        in=[29] Blur σ6.3 Y srgb transparent
- 31 | s7 drop → spine            in=[27, 30] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
- 32 | draw · 1 item(s)           in=[31] Draw n=1 [685.4 202.2 804.6 264.4] 51b:body[685.4 202.2 804.6 264.4]
- 33   s8 gather blur-X σ14.4     in=[32] Blur σ14.4 X linear
- 34   s8 gather blur-Y σ14.4     in=[33] Blur σ14.4 Y linear
- 35   s8 gather mask             in=[] Draw n=1 [983.4 202.2 1102.6 264.4] 51c:coverage[983.4 202.2 1102.6 264.4]
- 36 | s8 gather → spine          in=[32, 34, 35] Compose MaskedMix
- 37   s9 drop silhouette         in=[] Draw n=1 [89.4 357.6 208.6 419.8] 51d:coverage[89.4 357.6 208.6 419.8]
- 38   s9 drop blur-X σ6.3        in=[37] Blur σ6.3 X srgb transparent
- 39   s9 drop blur-Y σ6.3        in=[38] Blur σ6.3 Y srgb transparent
- 40 | s9 drop → spine            in=[36, 39] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
- 41 | draw · 1 item(s)           in=[40] Draw n=1 [89.4 357.6 208.6 419.8] 51d:body[89.4 357.6 208.6 419.8]
- 42   s10 gather blur-X σ14.4    in=[41] Blur σ14.4 X linear
- 43   s10 gather blur-Y σ14.4    in=[42] Blur σ14.4 Y linear
- 44   s10 gather mask            in=[] Draw n=1 [387.4 357.6 506.6 419.8] 51e:coverage[387.4 357.6 506.6 419.8]
- 45 | s10 gather → spine         in=[41, 43, 44] Compose MaskedMix
- 46   s11 drop silhouette        in=[] Draw n=1 [685.4 357.6 804.6 419.8] 51f:coverage[685.4 357.6 804.6 419.8]
- 47   s11 drop blur-X σ6.3       in=[46] Blur σ6.3 X srgb transparent
- 48   s11 drop blur-Y σ6.3       in=[47] Blur σ6.3 Y srgb transparent
- 49 | s11 drop → spine           in=[45, 48] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
- 50 | draw · 1 item(s)           in=[49] Draw n=1 [685.4 357.6 804.6 419.8] 51f:body[685.4 357.6 804.6 419.8]
- 51   s12 gather blur-X σ14.4    in=[50] Blur σ14.4 X linear
- 52   s12 gather blur-Y σ14.4    in=[51] Blur σ14.4 Y linear
- 53   s12 gather mask            in=[] Draw n=1 [983.4 357.6 1102.6 419.8] 520:coverage[983.4 357.6 1102.6 419.8]
- 54 | s12 gather → spine         in=[50, 52, 53] Compose MaskedMix
- 55   s13 drop silhouette        in=[] Draw n=1 [89.4 513.1 208.6 575.4] 521:coverage[89.4 513.1 208.6 575.4]
- 56   s13 drop blur-X σ6.3       in=[55] Blur σ6.3 X srgb transparent
- 57   s13 drop blur-Y σ6.3       in=[56] Blur σ6.3 Y srgb transparent
- 58 | s13 drop → spine           in=[54, 57] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
- 59 | draw · 1 item(s)           in=[58] Draw n=1 [89.4 513.1 208.6 575.4] 521:body[89.4 513.1 208.6 575.4]
- 60   s14 gather blur-X σ14.4    in=[59] Blur σ14.4 X linear
- 61   s14 gather blur-Y σ14.4    in=[60] Blur σ14.4 Y linear
- 62   s14 gather mask            in=[] Draw n=1 [387.4 513.1 506.6 575.4] 522:coverage[387.4 513.1 506.6 575.4]
- 63 | s14 gather → spine         in=[59, 61, 62] Compose MaskedMix
- 64   s15 drop silhouette        in=[] Draw n=1 [685.4 513.1 804.6 575.4] 523:coverage[685.4 513.1 804.6 575.4]
- 65   s15 drop blur-X σ6.3       in=[64] Blur σ6.3 X srgb transparent
- 66   s15 drop blur-Y σ6.3       in=[65] Blur σ6.3 Y srgb transparent
- 67 | s15 drop → spine           in=[63, 66] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
- 68 | draw · 1 item(s)           in=[67] Draw n=1 [685.4 513.1 804.6 575.4] 523:body[685.4 513.1 804.6 575.4]
- 69   s16 gather blur-X σ14.4    in=[68] Blur σ14.4 X linear
- 70   s16 gather blur-Y σ14.4    in=[69] Blur σ14.4 Y linear
- 71   s16 gather mask            in=[] Draw n=1 [983.4 513.1 1102.6 575.4] 524:coverage[983.4 513.1 1102.6 575.4]
- 72 | s16 gather → spine         in=[68, 70, 71] Compose MaskedMix
+  2   s1 down                    in=[1] Scale → 0.5
+  3   s1 drop blur-X σ6.3        in=[2] Blur σ6.3 X srgb transparent taps 193
+  4   s1 drop blur-Y σ6.3        in=[3] Blur σ6.3 Y srgb transparent taps 193
+  5   s1 up                      in=[4] Scale → 1
+  6 | s1 drop → spine            in=[0, 5] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+  7 | draw · 1 item(s)           in=[6] Draw n=1 [89.4 46.6 208.6 108.8] 515:body[89.4 46.6 208.6 108.8]
+  8   s2 down                    in=[7] Scale → 0.5
+  9   s2 gather blur-X σ14.4     in=[8] Blur σ14.4 X linear taps 193
+ 10   s2 gather blur-Y σ14.4     in=[9] Blur σ14.4 Y linear taps 193
+ 11   s2 up                      in=[10] Scale → 1
+ 12   s2 gather mask             in=[] Draw n=1 [387.4 46.6 506.6 108.8] 516:coverage[387.4 46.6 506.6 108.8]
+ 13 | s2 gather → spine          in=[7, 11, 12] Compose MaskedMix
+ 14   s3 drop silhouette         in=[] Draw n=1 [685.4 46.6 804.6 108.8] 517:coverage[685.4 46.6 804.6 108.8]
+ 15   s3 down                    in=[14] Scale → 0.5
+ 16   s3 drop blur-X σ6.3        in=[15] Blur σ6.3 X srgb transparent taps 193
+ 17   s3 drop blur-Y σ6.3        in=[16] Blur σ6.3 Y srgb transparent taps 193
+ 18   s3 up                      in=[17] Scale → 1
+ 19 | s3 drop → spine            in=[13, 18] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 20 | draw · 1 item(s)           in=[19] Draw n=1 [685.4 46.6 804.6 108.8] 517:body[685.4 46.6 804.6 108.8]
+ 21   s4 down                    in=[20] Scale → 0.5
+ 22   s4 gather blur-X σ14.4     in=[21] Blur σ14.4 X linear taps 193
+ 23   s4 gather blur-Y σ14.4     in=[22] Blur σ14.4 Y linear taps 193
+ 24   s4 up                      in=[23] Scale → 1
+ 25   s4 gather mask             in=[] Draw n=1 [983.4 46.6 1102.6 108.8] 518:coverage[983.4 46.6 1102.6 108.8]
+ 26 | s4 gather → spine          in=[20, 24, 25] Compose MaskedMix
+ 27   s5 drop silhouette         in=[] Draw n=1 [89.4 202.2 208.6 264.4] 519:coverage[89.4 202.2 208.6 264.4]
+ 28   s5 down                    in=[27] Scale → 0.5
+ 29   s5 drop blur-X σ6.3        in=[28] Blur σ6.3 X srgb transparent taps 193
+ 30   s5 drop blur-Y σ6.3        in=[29] Blur σ6.3 Y srgb transparent taps 193
+ 31   s5 up                      in=[30] Scale → 1
+ 32 | s5 drop → spine            in=[26, 31] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 33 | draw · 1 item(s)           in=[32] Draw n=1 [89.4 202.2 208.6 264.4] 519:body[89.4 202.2 208.6 264.4]
+ 34   s6 down                    in=[33] Scale → 0.5
+ 35   s6 gather blur-X σ14.4     in=[34] Blur σ14.4 X linear taps 193
+ 36   s6 gather blur-Y σ14.4     in=[35] Blur σ14.4 Y linear taps 193
+ 37   s6 up                      in=[36] Scale → 1
+ 38   s6 gather mask             in=[] Draw n=1 [387.4 202.2 506.6 264.4] 51a:coverage[387.4 202.2 506.6 264.4]
+ 39 | s6 gather → spine          in=[33, 37, 38] Compose MaskedMix
+ 40   s7 drop silhouette         in=[] Draw n=1 [685.4 202.2 804.6 264.4] 51b:coverage[685.4 202.2 804.6 264.4]
+ 41   s7 down                    in=[40] Scale → 0.5
+ 42   s7 drop blur-X σ6.3        in=[41] Blur σ6.3 X srgb transparent taps 193
+ 43   s7 drop blur-Y σ6.3        in=[42] Blur σ6.3 Y srgb transparent taps 193
+ 44   s7 up                      in=[43] Scale → 1
+ 45 | s7 drop → spine            in=[39, 44] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 46 | draw · 1 item(s)           in=[45] Draw n=1 [685.4 202.2 804.6 264.4] 51b:body[685.4 202.2 804.6 264.4]
+ 47   s8 down                    in=[46] Scale → 0.5
+ 48   s8 gather blur-X σ14.4     in=[47] Blur σ14.4 X linear taps 193
+ 49   s8 gather blur-Y σ14.4     in=[48] Blur σ14.4 Y linear taps 193
+ 50   s8 up                      in=[49] Scale → 1
+ 51   s8 gather mask             in=[] Draw n=1 [983.4 202.2 1102.6 264.4] 51c:coverage[983.4 202.2 1102.6 264.4]
+ 52 | s8 gather → spine          in=[46, 50, 51] Compose MaskedMix
+ 53   s9 drop silhouette         in=[] Draw n=1 [89.4 357.6 208.6 419.8] 51d:coverage[89.4 357.6 208.6 419.8]
+ 54   s9 down                    in=[53] Scale → 0.5
+ 55   s9 drop blur-X σ6.3        in=[54] Blur σ6.3 X srgb transparent taps 193
+ 56   s9 drop blur-Y σ6.3        in=[55] Blur σ6.3 Y srgb transparent taps 193
+ 57   s9 up                      in=[56] Scale → 1
+ 58 | s9 drop → spine            in=[52, 57] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 59 | draw · 1 item(s)           in=[58] Draw n=1 [89.4 357.6 208.6 419.8] 51d:body[89.4 357.6 208.6 419.8]
+ 60   s10 down                   in=[59] Scale → 0.5
+ 61   s10 gather blur-X σ14.4    in=[60] Blur σ14.4 X linear taps 193
+ 62   s10 gather blur-Y σ14.4    in=[61] Blur σ14.4 Y linear taps 193
+ 63   s10 up                     in=[62] Scale → 1
+ 64   s10 gather mask            in=[] Draw n=1 [387.4 357.6 506.6 419.8] 51e:coverage[387.4 357.6 506.6 419.8]
+ 65 | s10 gather → spine         in=[59, 63, 64] Compose MaskedMix
+ 66   s11 drop silhouette        in=[] Draw n=1 [685.4 357.6 804.6 419.8] 51f:coverage[685.4 357.6 804.6 419.8]
+ 67   s11 down                   in=[66] Scale → 0.5
+ 68   s11 drop blur-X σ6.3       in=[67] Blur σ6.3 X srgb transparent taps 193
+ 69   s11 drop blur-Y σ6.3       in=[68] Blur σ6.3 Y srgb transparent taps 193
+ 70   s11 up                     in=[69] Scale → 1
+ 71 | s11 drop → spine           in=[65, 70] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 72 | draw · 1 item(s)           in=[71] Draw n=1 [685.4 357.6 804.6 419.8] 51f:body[685.4 357.6 804.6 419.8]
+ 73   s12 down                   in=[72] Scale → 0.5
+ 74   s12 gather blur-X σ14.4    in=[73] Blur σ14.4 X linear taps 193
+ 75   s12 gather blur-Y σ14.4    in=[74] Blur σ14.4 Y linear taps 193
+ 76   s12 up                     in=[75] Scale → 1
+ 77   s12 gather mask            in=[] Draw n=1 [983.4 357.6 1102.6 419.8] 520:coverage[983.4 357.6 1102.6 419.8]
+ 78 | s12 gather → spine         in=[72, 76, 77] Compose MaskedMix
+ 79   s13 drop silhouette        in=[] Draw n=1 [89.4 513.1 208.6 575.4] 521:coverage[89.4 513.1 208.6 575.4]
+ 80   s13 down                   in=[79] Scale → 0.5
+ 81   s13 drop blur-X σ6.3       in=[80] Blur σ6.3 X srgb transparent taps 193
+ 82   s13 drop blur-Y σ6.3       in=[81] Blur σ6.3 Y srgb transparent taps 193
+ 83   s13 up                     in=[82] Scale → 1
+ 84 | s13 drop → spine           in=[78, 83] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 85 | draw · 1 item(s)           in=[84] Draw n=1 [89.4 513.1 208.6 575.4] 521:body[89.4 513.1 208.6 575.4]
+ 86   s14 down                   in=[85] Scale → 0.5
+ 87   s14 gather blur-X σ14.4    in=[86] Blur σ14.4 X linear taps 193
+ 88   s14 gather blur-Y σ14.4    in=[87] Blur σ14.4 Y linear taps 193
+ 89   s14 up                     in=[88] Scale → 1
+ 90   s14 gather mask            in=[] Draw n=1 [387.4 513.1 506.6 575.4] 522:coverage[387.4 513.1 506.6 575.4]
+ 91 | s14 gather → spine         in=[85, 89, 90] Compose MaskedMix
+ 92   s15 drop silhouette        in=[] Draw n=1 [685.4 513.1 804.6 575.4] 523:coverage[685.4 513.1 804.6 575.4]
+ 93   s15 down                   in=[92] Scale → 0.5
+ 94   s15 drop blur-X σ6.3       in=[93] Blur σ6.3 X srgb transparent taps 193
+ 95   s15 drop blur-Y σ6.3       in=[94] Blur σ6.3 Y srgb transparent taps 193
+ 96   s15 up                     in=[95] Scale → 1
+ 97 | s15 drop → spine           in=[91, 96] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
+ 98 | draw · 1 item(s)           in=[97] Draw n=1 [685.4 513.1 804.6 575.4] 523:body[685.4 513.1 804.6 575.4]
+ 99   s16 down                   in=[98] Scale → 0.5
+100   s16 gather blur-X σ14.4    in=[99] Blur σ14.4 X linear taps 193
+101   s16 gather blur-Y σ14.4    in=[100] Blur σ14.4 Y linear taps 193
+102   s16 up                     in=[101] Scale → 1
+103   s16 gather mask            in=[] Draw n=1 [983.4 513.1 1102.6 575.4] 524:coverage[983.4 513.1 1102.6 575.4]
+104 | s16 gather → spine         in=[98, 102, 103] Compose MaskedMix

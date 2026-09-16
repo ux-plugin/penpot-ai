@@ -273,12 +273,16 @@ impl<'a> Scheduler<'a> {
     }
 
     /// The extent a reader may see of node `i`: the frame for the spine (its rows hold the page
-    /// colour everywhere), a leaf's bounds plus the pixel its antialiased edge spills into, the
+    /// colour everywhere), everything for a scale of the spine (its ground holds the page colour
+    /// past the draws), a leaf's bounds plus the pixel its antialiased edge spills into, the
     /// node's own extent for any other chain value.
     fn visible_extent(&self, i: NodeId) -> Rect {
+        let node = &self.g.nodes[i];
         if self.g.is_spine(i) {
             self.frame
-        } else if matches!(self.g.nodes[i].op, Op::Draw(_)) {
+        } else if matches!(node.op, Op::Scale { .. }) && self.g.is_spine(node.inputs[0]) {
+            Rect::new(-1e9, -1e9, 1e9, 1e9)
+        } else if matches!(node.op, Op::Draw(_)) {
             self.ext[i].inflate(1.0, 1.0)
         } else {
             self.ext[i]
@@ -686,6 +690,7 @@ impl<'a> Scheduler<'a> {
                     if escapes {
                         let items = self.spine_items_below(j, region);
                         self.values[v].ground = Some(Ground { items, copy_round: None });
+                        self.values[v].birth = 0;
                     }
                 }
             }
@@ -777,7 +782,7 @@ impl<'a> Scheduler<'a> {
             Operand::Area => r[0] = SRC_AREA,
             Operand::Value { v, shift } => {
                 let s = self.store_rect(v);
-                let d = shift - self.values[v].place;
+                let d = shift * f64::from(self.k[self.values[v].node]) - self.values[v].place;
                 r = [SRC_STORE, s.x0 as f32, s.y0 as f32, s.x1 as f32, s.y1 as f32, d.x as f32, d.y as f32, decode];
             }
             Operand::Frame => {
@@ -790,7 +795,7 @@ impl<'a> Scheduler<'a> {
 
     fn unit_of(&self, i: NodeId) -> Option<UnitOp> {
         Some(match &self.g.nodes[i].op {
-            Op::Blur { sigma, axis, linear, edge_clamp_style } => UnitOp::Blur {
+            Op::Blur { sigma, axis, linear, edge_clamp_style, .. } => UnitOp::Blur {
                 sigma: *sigma,
                 linear: *linear,
                 axis: match axis {
@@ -802,10 +807,10 @@ impl<'a> Scheduler<'a> {
                     EdgeClampStyle::Transparent => BlurEdge::Coverage,
                 },
             },
-            Op::Warp(u) => UnitOp::Warp(u.clone()),
-            Op::Scatter(u) => UnitOp::Scatter(u.clone()),
-            Op::Shade(u) => UnitOp::Shade(u.clone()),
-            Op::MaskMix(u) => UnitOp::MaskMix(u.clone()),
+            Op::Warp(u) => UnitOp::Warp(bake::payload_at(u, self.k[i])),
+            Op::Scatter(u) => UnitOp::Scatter(bake::payload_at(u, self.k[i])),
+            Op::Shade(u) => UnitOp::Shade(bake::payload_at(u, self.k[i])),
+            Op::MaskMix(u) => UnitOp::MaskMix(bake::payload_at(u, self.k[i])),
             Op::ClipToSource(u) => UnitOp::ClipToSource(u.clone()),
             Op::EraseBy(_) => UnitOp::EraseBy(Vec::new()),
             Op::Colour(_) | Op::Draw(_) | Op::Compose { .. } | Op::Scale { .. } => return None,
@@ -824,19 +829,21 @@ impl<'a> Scheduler<'a> {
         let mut tint: Option<[f32; 4]> = None;
         let mut run: Vec<UnitOp> = Vec::new();
         let mut edge_coverage = false;
-        let mut blur: Option<(f32, bool, bool)> = None;
+        let mut blur: Option<(f32, u32, bool, bool)> = None;
         let mut program: Option<f32> = None;
-        let mut scale: Option<(f32, bool)> = None;
+        let mut scale: Option<(f32, f32)> = None;
         for (k, &i) in nodes.iter().enumerate() {
             let node = &self.g.nodes[i];
             match &node.op {
-                Op::Blur { sigma, linear, axis, edge_clamp_style } => {
-                    blur = Some((*sigma * self.k[i], *linear, *axis == BlurAxis::Y));
+                Op::Blur { sigma, linear, axis, edge_clamp_style, taps } => {
+                    blur = Some((*sigma * self.k[i], *taps, *linear, *axis == BlurAxis::Y));
                     edge_coverage = *edge_clamp_style == EdgeClampStyle::Transparent;
                 }
                 Op::Scale { .. } => {
                     let j = self.input(i, 0);
-                    scale = Some((self.k[j] / self.k[i], self.rooted_in_leaf(i)));
+                    let grounded = self.arms[a].out.is_some_and(|v| self.values[v].ground.is_some());
+                    let past = if grounded { bake::SCALE_KEEP } else if self.rooted_in_leaf(i) { bake::SCALE_TRANSPARENT } else { bake::SCALE_CLAMP };
+                    scale = Some((self.k[j] / self.k[i], past));
                 }
                 Op::Colour(c) => tint = Some([c[0], c[1], c[2], c[3]]),
                 Op::MaskMix(u) if u.get(bake::PAYLOAD_PROGRAM_SLOT).copied() == Some(bake::PROGRAM_RADIAL) => program = Some(bake::PROGRAM_RADIAL),
@@ -901,13 +908,13 @@ impl<'a> Scheduler<'a> {
             }
         }
         let mut desc = match blur {
-            Some((sigma, linear, axis_y)) => bake::blur_arm(sigma, linear, axis_y, policy, tint.filter(|_| policy.colour_over)),
+            Some((sigma, taps, linear, axis_y)) => bake::blur_arm(sigma, taps, linear, axis_y, policy, tint.filter(|_| policy.colour_over)),
             None => bake::arm_descriptor(&run, policy, program),
         };
-        if let Some((ratio, transparent)) = scale {
+        if let Some((ratio, past)) = scale {
             desc[0] = (desc[0] as u32 | bake::bits::SCALE) as f32;
             desc[2] = ratio;
-            desc[3] = f32::from(transparent);
+            desc[3] = past;
         }
         if let Some(t) = tint {
             if !policy.colour_over {
@@ -1073,7 +1080,7 @@ impl<'a> Scheduler<'a> {
 mod tests {
     use super::*;
     use crate::peniko::Color;
-    use crate::vello::frame_graph::{GNode, DrawStyle};
+    use crate::vello::frame_graph::{DrawStyle, GNode, BLUR_TAPS};
 
     fn body(shape: u128, r: Rect) -> DrawItem {
         DrawItem { shape, style: DrawStyle::Body, bounds: r }
@@ -1094,8 +1101,8 @@ mod tests {
             nodes: vec![
                 GNode { op: Op::Draw(vec![body(1, frame)]), inputs: vec![], label: "ground".into() },
                 GNode { op: Op::Draw(vec![cov(2, b)]), inputs: vec![], label: "sil".into() },
-                GNode { op: Op::Blur { sigma: 4.0, axis: BlurAxis::X, linear: false, edge_clamp_style: EdgeClampStyle::Transparent }, inputs: vec![1], label: "bx".into() },
-                GNode { op: Op::Blur { sigma: 4.0, axis: BlurAxis::Y, linear: false, edge_clamp_style: EdgeClampStyle::Transparent }, inputs: vec![2], label: "by".into() },
+                GNode { op: Op::Blur { sigma: 4.0, axis: BlurAxis::X, linear: false, edge_clamp_style: EdgeClampStyle::Transparent, taps: BLUR_TAPS }, inputs: vec![1], label: "bx".into() },
+                GNode { op: Op::Blur { sigma: 4.0, axis: BlurAxis::Y, linear: false, edge_clamp_style: EdgeClampStyle::Transparent, taps: BLUR_TAPS }, inputs: vec![2], label: "by".into() },
                 GNode { op: Op::Compose { mode: ComposeMode::Over, colour: Some([0.0, 0.0, 0.0, 0.5]), offset: [6.0, 8.0] }, inputs: vec![0, 3], label: "drop".into() },
                 GNode { op: Op::Draw(vec![body(2, b)]), inputs: vec![4], label: "body".into() },
                 GNode { op: Op::Warp(vec![0.0; 24]), inputs: vec![5], label: "warp".into() },
@@ -1154,7 +1161,7 @@ mod tests {
         let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
         let b = Rect::new(100.0, 100.0, 300.0, 260.0);
         let g = Rect::new(200.0, 200.0, 400.0, 380.0);
-        let blur = |axis, input| GNode { op: Op::Blur { sigma: 4.0, axis, linear: false, edge_clamp_style: EdgeClampStyle::Transparent }, inputs: vec![input], label: String::new() };
+        let blur = |axis, input| GNode { op: Op::Blur { sigma: 4.0, axis, linear: false, edge_clamp_style: EdgeClampStyle::Transparent, taps: BLUR_TAPS }, inputs: vec![input], label: String::new() };
         let scale = |target, input| GNode { op: Op::Scale { target }, inputs: vec![input], label: String::new() };
         let g = FrameGraph {
             frame,
@@ -1220,9 +1227,9 @@ mod tests {
         assert_eq!(s.values[by].rect, Rect::new(16.0, 16.0, 192.0, 160.0), "the blur at half, padded twice by the half-resolution pad");
         let desc = |a: usize| &params[s.arms[a].params_off as usize..][..4];
         let at = |a: usize| (desc(a)[0] as u32 & bake::bits::SCALE != 0, desc(a)[2], desc(a)[3]);
-        assert_eq!(at(2), (true, 0.5, 1.0), "up from a transparent chain");
-        assert_eq!(at(3), (true, 2.0, 0.0), "down from the spine");
-        assert_eq!(at(5), (true, 0.5, 0.0), "up from the backdrop chain");
+        assert_eq!(at(2), (true, 0.5, bake::SCALE_TRANSPARENT), "up from a transparent chain");
+        assert_eq!(at(3), (true, 2.0, bake::SCALE_CLAMP), "down from the spine, inside the frame");
+        assert_eq!(at(5), (true, 0.5, bake::SCALE_CLAMP), "up from the backdrop chain");
         assert!(!at(0).0);
         let p = plan(&g, 640, 480);
         p.validate().unwrap_or_else(|e| panic!("{e}"));

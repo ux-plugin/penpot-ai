@@ -1,6 +1,8 @@
-frame [0.0 0.0 1192.0 622.0] nodes 5 background [1.0, 1.0, 1.0, 1.0]
+frame [0.0 0.0 1192.0 622.0] nodes 7 background [1.0, 1.0, 1.0, 1.0]
   0 | draw · 64 item(s)          in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
-  1   s1 gather blur-X σ5.1      in=[0] Blur σ5.1 X linear
-  2   s1 gather blur-Y σ5.1      in=[1] Blur σ5.1 Y linear
-  3   s1 gather mask             in=[] Draw n=1 [0.0 0.0 1192.0 622.0] 41:coverage[0.0 0.0 1192.0 622.0]
-  4 | s1 gather → spine          in=[0, 2, 3] Compose MaskedMix
+  1   s1 down                    in=[0] Scale → 0.5
+  2   s1 gather blur-X σ5.1      in=[1] Blur σ5.1 X linear taps 193
+  3   s1 gather blur-Y σ5.1      in=[2] Blur σ5.1 Y linear taps 193
+  4   s1 up                      in=[3] Scale → 1
+  5   s1 gather mask             in=[] Draw n=1 [0.0 0.0 1192.0 622.0] 41:coverage[0.0 0.0 1192.0 622.0]
+  6 | s1 gather → spine          in=[0, 4, 5] Compose MaskedMix

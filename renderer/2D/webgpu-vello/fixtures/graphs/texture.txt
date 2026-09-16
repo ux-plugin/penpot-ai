@@ -1,31 +1,47 @@
-frame [0.0 0.0 1192.0 432.0] nodes 30 background [1.0, 1.0, 1.0, 1.0]
+frame [0.0 0.0 1192.0 432.0] nodes 46 background [1.0, 1.0, 1.0, 1.0]
   0 | draw · 1 item(s)           in=[] Draw n=1 [48.0 48.0 194.0 194.0] 1:body[48.0 48.0 194.0 194.0]
   1   s1 body leaf               in=[] Draw n=1 [238.0 48.0 384.0 194.0] 2:body[238.0 48.0 384.0 194.0]
-  2   s1 noise warp              in=[1] Warp program 2
-  3   s1 noise clip              in=[2, 1] ClipToSource
-  4 | s1 body → spine            in=[0, 3] Compose Over
-  5   s2 body leaf               in=[] Draw n=1 [428.0 48.0 574.0 194.0] 3:body[428.0 48.0 574.0 194.0]
-  6   s2 noise warp              in=[5] Warp program 2
-  7   s2 noise clip              in=[6, 5] ClipToSource
-  8 | s2 body → spine            in=[4, 7] Compose Over
-  9   s3 body leaf               in=[] Draw n=1 [618.0 48.0 764.0 194.0] 4:body[618.0 48.0 764.0 194.0]
- 10   s3 noise warp              in=[9] Warp program 2
- 11   s3 noise clip              in=[10, 9] ClipToSource
- 12 | s3 body → spine            in=[8, 11] Compose Over
- 13   s4 body leaf               in=[] Draw n=1 [808.0 48.0 954.0 194.0] 5:body[808.0 48.0 954.0 194.0]
- 14   s4 noise warp              in=[13] Warp program 2
- 15 | s4 body → spine            in=[12, 14] Compose Over
- 16   s5 body leaf               in=[] Draw n=1 [998.0 48.0 1144.0 194.0] 6:body[998.0 48.0 1144.0 194.0]
- 17   s5 noise warp              in=[16] Warp program 2
- 18   s5 noise clip              in=[17, 16] ClipToSource
- 19   s5 body blur-X σ2.8        in=[18] Blur σ2.8 X linear transparent
- 20   s5 body blur-Y σ2.8        in=[19] Blur σ2.8 Y linear transparent
- 21 | s5 body → spine            in=[15, 20] Compose Over
- 22   s6 body leaf               in=[] Draw n=1 [48.0 238.0 194.0 384.0] 7:body[48.0 238.0 194.0 384.0]
- 23   s6 noise warp              in=[22] Warp program 2
- 24   s6 noise clip              in=[23, 22] ClipToSource
- 25   s6 body blur-X σ2.8        in=[24] Blur σ2.8 X linear transparent
- 26   s6 body blur-Y σ2.8        in=[25] Blur σ2.8 Y linear transparent
- 27 | s6 body → spine            in=[21, 26] Compose Over offset 10.0,8.0
- 28   s7 body leaf               in=[] Draw n=1 [238.0 238.0 384.0 384.0] 8:body[238.0 238.0 384.0 384.0]
- 29 | s7 body → spine            in=[27, 28] Compose Over offset 10.0,8.0
+  2   s1 down                    in=[1] Scale → 1
+  3   s1 noise warp              in=[2] Warp program 2
+  4   s1 up                      in=[3] Scale → 1
+  5   s1 noise clip              in=[4, 1] ClipToSource
+  6 | s1 body → spine            in=[0, 5] Compose Over
+  7   s2 body leaf               in=[] Draw n=1 [428.0 48.0 574.0 194.0] 3:body[428.0 48.0 574.0 194.0]
+  8   s2 down                    in=[7] Scale → 1
+  9   s2 noise warp              in=[8] Warp program 2
+ 10   s2 up                      in=[9] Scale → 1
+ 11   s2 noise clip              in=[10, 7] ClipToSource
+ 12 | s2 body → spine            in=[6, 11] Compose Over
+ 13   s3 body leaf               in=[] Draw n=1 [618.0 48.0 764.0 194.0] 4:body[618.0 48.0 764.0 194.0]
+ 14   s3 down                    in=[13] Scale → 1
+ 15   s3 noise warp              in=[14] Warp program 2
+ 16   s3 up                      in=[15] Scale → 1
+ 17   s3 noise clip              in=[16, 13] ClipToSource
+ 18 | s3 body → spine            in=[12, 17] Compose Over
+ 19   s4 body leaf               in=[] Draw n=1 [808.0 48.0 954.0 194.0] 5:body[808.0 48.0 954.0 194.0]
+ 20   s4 down                    in=[19] Scale → 1
+ 21   s4 noise warp              in=[20] Warp program 2
+ 22   s4 up                      in=[21] Scale → 1
+ 23 | s4 body → spine            in=[18, 22] Compose Over
+ 24   s5 body leaf               in=[] Draw n=1 [998.0 48.0 1144.0 194.0] 6:body[998.0 48.0 1144.0 194.0]
+ 25   s5 down                    in=[24] Scale → 1
+ 26   s5 noise warp              in=[25] Warp program 2
+ 27   s5 up                      in=[26] Scale → 1
+ 28   s5 noise clip              in=[27, 24] ClipToSource
+ 29   s5 down                    in=[28] Scale → 0.5
+ 30   s5 body blur-X σ2.8        in=[29] Blur σ2.8 X linear transparent taps 193
+ 31   s5 body blur-Y σ2.8        in=[30] Blur σ2.8 Y linear transparent taps 193
+ 32   s5 up                      in=[31] Scale → 1
+ 33 | s5 body → spine            in=[23, 32] Compose Over
+ 34   s6 body leaf               in=[] Draw n=1 [48.0 238.0 194.0 384.0] 7:body[48.0 238.0 194.0 384.0]
+ 35   s6 down                    in=[34] Scale → 1
+ 36   s6 noise warp              in=[35] Warp program 2
+ 37   s6 up                      in=[36] Scale → 1
+ 38   s6 noise clip              in=[37, 34] ClipToSource
+ 39   s6 down                    in=[38] Scale → 0.5
+ 40   s6 body blur-X σ2.8        in=[39] Blur σ2.8 X linear transparent taps 193
+ 41   s6 body blur-Y σ2.8        in=[40] Blur σ2.8 Y linear transparent taps 193
+ 42   s6 up                      in=[41] Scale → 1
+ 43 | s6 body → spine            in=[33, 42] Compose Over offset 10.0,8.0
+ 44   s7 body leaf               in=[] Draw n=1 [238.0 238.0 384.0 384.0] 8:body[238.0 238.0 384.0 384.0]
+ 45 | s7 body → spine            in=[43, 44] Compose Over offset 10.0,8.0

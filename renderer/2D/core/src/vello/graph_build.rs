@@ -17,18 +17,27 @@
 //! - a drop shadow is `coverage → blur → Compose{Over, colour, offset}`; an inner shadow is
 //!   `coverage → (blur) → EraseBy(coverage) → Compose{Over, colour}` with the punch's displacement
 //!   an `EraseBy` payload fact; a gather is `below → units → Compose{MaskedMix}` masked by a
-//!   coverage leaf; a body replacement is `body leaf → units → Compose{Over, offset}`.
+//!   coverage leaf; a body replacement is `body leaf → units → Compose{Over, offset}`;
+//! - every run of sampling ops in a chain sits between a `Scale` pair: down at the run's start, up
+//!   before the pointwise tail that reads the state below. A run holding a blur of device σ ≥ 2
+//!   targets half resolution (a lens's authored `acceptable_downscale` lowers that further); any
+//!   other run targets 1, which the scheduler may still lower. A leaf read both inside and past a
+//!   half-resolution pair is drawn twice, once at each resolution.
 
 use crate::kurbo::{Affine, Rect, Vec2};
 use crate::model::{Node, Scene, ShapeKind};
 use crate::effect::{Compose, Effect, Op as EffectOp, Source};
 use crate::vello::bake::{PAYLOAD_PROGRAM_SLOT, PROGRAM_NOISE, PROGRAM_RADIAL};
 use crate::vello::frame_graph::{
-    BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, FrameGraph, GNode, NodeId, Op, ShapeId,
+    BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, FrameGraph, GNode, NodeId, Op, ShapeId, BLUR_TAPS,
 };
 
 /// A blur below this device sigma is invisible and is not emitted.
 const NEGLIGIBLE_SIGMA: f32 = 0.5;
+/// A blur at or above this device sigma makes the run it sits in soft.
+const SOFT_SIGMA: f32 = 2.0;
+/// The resolution a soft run targets.
+const SOFT_TARGET: f32 = 0.5;
 
 /// The frame graph of the installed document for a `width × height` viewport under `root`.
 #[must_use]
@@ -62,6 +71,7 @@ pub fn build(
         spine: 0,
         pending: Vec::new(),
         fx_no: 0,
+        pair: None,
     };
     for &root in scene.roots() {
         b.walk(root);
@@ -83,6 +93,8 @@ struct Builder<'a> {
     /// Plain items awaiting their spine `Draw`.
     pending: Vec<DrawItem>,
     fx_no: u32,
+    /// The open scale pair of the chain being lowered: its down node and the authored ceiling.
+    pair: Option<(NodeId, f32)>,
 }
 
 impl Builder<'_> {
@@ -209,21 +221,56 @@ impl Builder<'_> {
         self.push(Op::Draw(vec![item]), vec![], label)
     }
 
-    /// A separable Gaussian as its two axis nodes; a negligible sigma emits nothing.
+    /// A separable Gaussian as its two axis nodes inside the chain's scale pair; a negligible
+    /// sigma emits nothing.
     fn blur(&mut self, sigma: f32, linear: bool, edge: EdgeClampStyle, cur: NodeId, name: &str, tag: &str) -> NodeId {
         if sigma <= NEGLIGIBLE_SIGMA {
             return cur;
         }
+        let cur = self.open_pair(cur, name);
         let x = self.push(
-            Op::Blur { sigma, axis: BlurAxis::X, linear, edge_clamp_style: edge },
+            Op::Blur { sigma, axis: BlurAxis::X, linear, edge_clamp_style: edge, taps: BLUR_TAPS },
             vec![cur],
             format!("{name} {tag} blur-X σ{sigma:.1}"),
         );
         self.push(
-            Op::Blur { sigma, axis: BlurAxis::Y, linear, edge_clamp_style: edge },
+            Op::Blur { sigma, axis: BlurAxis::Y, linear, edge_clamp_style: edge, taps: BLUR_TAPS },
             vec![x],
             format!("{name} {tag} blur-Y σ{sigma:.1}"),
         )
+    }
+
+    /// The chain's scale pair, opened over `cur` if it is not open yet: the down node whose target
+    /// [`Self::close_pair`] decides once the run is known.
+    fn open_pair(&mut self, cur: NodeId, name: &str) -> NodeId {
+        match self.pair {
+            Some((down, _)) => {
+                debug_assert!(cur > down, "the run continues from inside its pair");
+                cur
+            }
+            None => {
+                let down = self.push(Op::Scale { target: 1.0 }, vec![cur], format!("{name} down"));
+                self.pair = Some((down, 1.0));
+                down
+            }
+        }
+    }
+
+    /// Close the chain's scale pair, if open, after `cur`: the down node's target becomes half
+    /// when the run holds a soft blur, lowered further by the authored ceiling, and the up node
+    /// returns to frame resolution. Returns the node the tail continues from and whether the run
+    /// runs below frame resolution.
+    fn close_pair(&mut self, cur: NodeId, name: &str) -> (NodeId, bool) {
+        let Some((down, ceiling)) = self.pair.take() else { return (cur, false) };
+        if cur == down {
+            let input = self.nodes[down].inputs[0];
+            self.nodes.pop();
+            return (input, false);
+        }
+        let soft = (down + 1..=cur).any(|i| matches!(self.nodes[i].op, Op::Blur { sigma, .. } if sigma >= SOFT_SIGMA));
+        let target = if soft { SOFT_TARGET } else { 1.0 }.min(ceiling);
+        self.nodes[down].op = Op::Scale { target };
+        (self.push(Op::Scale { target: 1.0 }, vec![cur], format!("{name} up")), target < 1.0)
     }
 
     fn compose(&mut self, mode: ComposeMode, colour: Option<[f32; 4]>, offset: [f32; 2], value: NodeId, coverage: Option<NodeId>, label: String) {
@@ -277,6 +324,7 @@ impl Builder<'_> {
         let sil = self.coverage(id, node, spread, format!("{name} drop silhouette"));
         let sigma = self.sigma(e.governing_blur().unwrap_or(0.0));
         let tail = self.blur(sigma, false, EdgeClampStyle::Transparent, sil, name, "drop");
+        let (tail, _) = self.close_pair(tail, name);
         let offset = e
             .ops
             .iter()
@@ -296,6 +344,8 @@ impl Builder<'_> {
             })
             .unwrap_or((Vec2::ZERO, 0.0));
         let punch = self.blur(self.sigma(blur), false, EdgeClampStyle::Transparent, flood, name, "punch");
+        let (punch, lowered) = self.close_pair(punch, name);
+        let flood = if lowered { self.coverage(id, node, spread, format!("{name} inner flood at 1")) } else { flood };
         let d = self.device_vec(offset);
         let band = self.push(Op::EraseBy(vec![d[0], d[1]]), vec![flood, punch], format!("{name} inner band"));
         self.compose(ComposeMode::Over, Self::tint_of(e), [0.0; 2], band, None, format!("{name} inner → spine"));
@@ -309,6 +359,7 @@ impl Builder<'_> {
                 EffectOp::Lens(_) => self.lens(id, node, cur, name),
                 EffectOp::Tint(c) => self.push(Op::Colour(c.components.to_vec()), vec![cur], format!("{name} gather tint")),
                 EffectOp::FieldTint(c) => {
+                    let (cur, _) = self.close_pair(cur, name);
                     let tinted = self.push(Op::Colour(c.components.to_vec()), vec![cur], format!("{name} field tint"));
                     let m = self.matrix(id, node);
                     let c0 = m * node.bounds.center();
@@ -325,6 +376,7 @@ impl Builder<'_> {
                 EffectOp::Offset(_) | EffectOp::EraseBy { .. } | EffectOp::NoiseWarp { .. } => cur,
             };
         }
+        let (cur, _) = self.close_pair(cur, name);
         if cur == self.spine {
             return;
         }
@@ -333,10 +385,14 @@ impl Builder<'_> {
     }
 
     /// The lens units over `cur`: warp (through a sampled distance for a path), the frost blur
-    /// and scatter, shade, and the mask-mix against the state below — each carrying the lens's
-    /// device field.
+    /// and scatter inside the chain's scale pair, then shade and the mask-mix against the state
+    /// below at frame resolution — each carrying the lens's device field.
     fn lens(&mut self, id: ShapeId, node: &Node, cur: NodeId, name: &str) -> NodeId {
         let Some((g, geom)) = crate::effect_graph::lens_geometry(node, (self.modifier)(id)) else { return cur };
+        let cur = self.open_pair(cur, name);
+        if let Some(pair) = &mut self.pair {
+            pair.1 = pair.1.min(g.acceptable_downscale);
+        }
         let (w, h) = (self.frame.width() as u32, self.frame.height() as u32);
         let base = crate::effect_graph::lens_device_field(&g, geom, (w, h), (0.0, 0.0), self.view, 1.0);
         let with = |slot: usize, v: f32| {
@@ -359,6 +415,7 @@ impl Builder<'_> {
         } else {
             warp
         };
+        let (head, _) = self.close_pair(head, name);
         let mut shade = with(19, g.specular_opacity);
         shade[20] = g.specular_saturation;
         let shaded = self.push(Op::Shade(shade), vec![head], format!("{name} lens shade"));
@@ -373,13 +430,14 @@ impl Builder<'_> {
     fn replacement(&mut self, id: ShapeId, node: &Node, e: &Effect, name: &str) {
         let bounds = self.device_bounds(id, node, 0.0);
         let item = DrawItem { shape: id, style: DrawStyle::Body, bounds };
-        let leaf = self.push(Op::Draw(vec![item]), vec![], format!("{name} body leaf"));
+        let leaf = self.push(Op::Draw(vec![item.clone()]), vec![], format!("{name} body leaf"));
         let mut cur = leaf;
         let mut offset = Vec2::ZERO;
         for op in &e.ops {
             cur = match op {
                 EffectOp::Blur { radius } => self.blur(self.sigma(*radius), true, EdgeClampStyle::Transparent, cur, name, "body"),
                 EffectOp::NoiseWarp { magnitude, grain, clip } => {
+                    let cur = self.open_pair(cur, name);
                     let reach = *magnitude * self.scale;
                     let mut u = vec![0.0f32; 24];
                     u[2] = reach;
@@ -391,6 +449,8 @@ impl Builder<'_> {
                     u[crate::vello::bake::PAYLOAD_WARP_EDGE_SLOT] = 1.0;
                     let warp = self.push(Op::Warp(u), vec![cur], format!("{name} noise warp"));
                     if *clip {
+                        let (warp, lowered) = self.close_pair(warp, name);
+                        let leaf = if lowered { self.push(Op::Draw(vec![item.clone()]), vec![], format!("{name} body leaf at 1")) } else { leaf };
                         self.push(Op::ClipToSource(Vec::new()), vec![warp, leaf], format!("{name} noise clip"))
                     } else {
                         warp
@@ -403,6 +463,7 @@ impl Builder<'_> {
                 EffectOp::Tint(_) | EffectOp::FieldTint(_) | EffectOp::Lens(_) | EffectOp::EraseBy { .. } => cur,
             };
         }
+        let (cur, _) = self.close_pair(cur, name);
         self.compose(ComposeMode::Over, None, self.device_vec(offset), cur, None, format!("{name} body → spine"));
     }
 }
@@ -443,8 +504,8 @@ fn op(o: &Op) -> String {
             let more = if items.len() > shown.len() { format!(" +{}", items.len() - shown.len()) } else { String::new() };
             format!("Draw n={} {} {}{more}", items.len(), rect(union), shown.join(" "))
         }
-        Op::Blur { sigma, axis, linear, edge_clamp_style } => {
-            format!("Blur σ{sigma:.1} {axis:?} {}{}", if *linear { "linear" } else { "srgb" }, match edge_clamp_style { EdgeClampStyle::Extend => "", EdgeClampStyle::Transparent => " transparent" })
+        Op::Blur { sigma, axis, linear, edge_clamp_style, taps } => {
+            format!("Blur σ{sigma:.1} {axis:?} {}{} taps {taps}", if *linear { "linear" } else { "srgb" }, match edge_clamp_style { EdgeClampStyle::Extend => "", EdgeClampStyle::Transparent => " transparent" })
         }
         Op::Warp(u) => format!("Warp program {:.0}", u.get(PAYLOAD_PROGRAM_SLOT).copied().unwrap_or(0.0)),
         Op::Scatter(_) => "Scatter".into(),
@@ -508,7 +569,9 @@ mod tests {
             assert!(chain.iter().any(|&j| matches!(g.nodes[j].op, Op::Warp(_))), "a warp heads the lens");
             assert!(chain.iter().any(|&j| matches!(g.nodes[j].op, Op::MaskMix(_))), "a mask-mix ends the lens");
             let warp = chain.iter().find(|&&j| matches!(g.nodes[j].op, Op::Warp(_))).copied().unwrap();
-            assert!(g.is_spine(g.nodes[warp].inputs[0]), "the warp reads the state below");
+            let down = g.nodes[warp].inputs[0];
+            assert!(matches!(g.nodes[down].op, Op::Scale { .. }), "the warp runs inside a scale pair");
+            assert!(g.is_spine(g.nodes[down].inputs[0]), "the pair reads the state below");
             let Op::Draw(items) = &g.nodes[n.inputs[2]].op else { panic!("coverage leaf") };
             assert!(matches!(items[0].style, DrawStyle::Coverage { analytic: true, spread } if spread == 0.0));
         }
@@ -550,10 +613,11 @@ mod tests {
         let [flood, punch] = g.nodes[band].inputs[..] else { panic!("two inputs") };
         assert!(matches!(g.nodes[flood].op, Op::Draw(_)));
         let mut r = punch;
-        while let Op::Blur { .. } = g.nodes[r].op {
+        while let Op::Blur { .. } | Op::Scale { .. } = g.nodes[r].op {
             r = g.nodes[r].inputs[0];
         }
-        assert_eq!(r, flood, "the punch is the flood itself, read displaced");
+        let (Op::Draw(a), Op::Draw(b)) = (&g.nodes[r].op, &g.nodes[flood].op) else { panic!("two floods") };
+        assert_eq!((a[0].shape, a[0].bounds), (b[0].shape, b[0].bounds), "the punch is the flood itself, read displaced");
     }
 
     #[test]

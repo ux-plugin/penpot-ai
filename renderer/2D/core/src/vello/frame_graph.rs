@@ -42,8 +42,9 @@ pub enum Op {
     /// Paint scene content over the state below. inputs = `[below]` (empty for the first draw,
     /// which paints over the cleared background).
     Draw(Vec<DrawItem>),
-    /// One separable Gaussian axis. inputs = `[value]`.
-    Blur { sigma: f32, axis: BlurAxis, linear: bool, edge_clamp_style: EdgeClampStyle },
+    /// One separable Gaussian axis. inputs = `[value]`. `taps` is the axis's tap budget: a sigma
+    /// whose exact kernel needs more taps is sampled at a stride that fits the budget.
+    Blur { sigma: f32, axis: BlurAxis, linear: bool, edge_clamp_style: EdgeClampStyle, taps: u32 },
     /// Lens units; the payload is the unit's uniform, field program included. inputs = `[value]`,
     /// or `[value, distance]` when the warp samples a drawn distance field.
     Warp(Vec<f32>),
@@ -87,6 +88,10 @@ pub enum DrawStyle {
     /// The signed distance of the outline, encoded over `decode` device px.
     Distance { decode: f32 },
 }
+
+/// The tap budget a blur is given unless its author says otherwise: the exact kernel up to a
+/// device sigma of 32, strided beyond.
+pub const BLUR_TAPS: u32 = 193;
 
 /// What a blur's out-of-bounds taps read: the clamped edge, or transparency.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -178,6 +183,11 @@ impl FrameGraph {
             if let Op::Scale { target } = n.op {
                 if !(target > 0.0 && target <= 1.0) {
                     return Err(format!("node {i} ({}): scale target {target} is not in (0, 1]", n.label));
+                }
+            }
+            if let Op::Blur { taps, .. } = n.op {
+                if taps < 3 {
+                    return Err(format!("node {i} ({}): a blur of {taps} taps", n.label));
                 }
             }
         }
@@ -305,8 +315,8 @@ mod tests {
                     inputs: vec![],
                     label: "cov".into(),
                 },
-                GNode { op: Op::Blur { sigma: 4.0, axis: BlurAxis::X, linear: true, edge_clamp_style: EdgeClampStyle::Transparent }, inputs: vec![1], label: "bx".into() },
-                GNode { op: Op::Blur { sigma: 4.0, axis: BlurAxis::Y, linear: true, edge_clamp_style: EdgeClampStyle::Transparent }, inputs: vec![2], label: "by".into() },
+                GNode { op: Op::Blur { sigma: 4.0, axis: BlurAxis::X, linear: true, edge_clamp_style: EdgeClampStyle::Transparent, taps: BLUR_TAPS }, inputs: vec![1], label: "bx".into() },
+                GNode { op: Op::Blur { sigma: 4.0, axis: BlurAxis::Y, linear: true, edge_clamp_style: EdgeClampStyle::Transparent, taps: BLUR_TAPS }, inputs: vec![2], label: "by".into() },
                 GNode { op: Op::Compose { mode: ComposeMode::Over, colour: Some([0.0, 0.0, 0.0, 0.5]), offset: [6.0, 8.0] }, inputs: vec![0, 3], label: "shadow".into() },
                 GNode { op: Op::Draw(vec![item(2, 120.0, 20.0, 200.0, 80.0)]), inputs: vec![4], label: "body".into() },
             ],

@@ -57,8 +57,8 @@ pub mod bits {
     /// Text inner flood: recover unoffset glyph coverage from the offset silhouette.
     pub const FLOOD_ERASE: u32 = 4096;
     /// Sampling head: resample the value between resolutions (`u[0].x` = input texels per
-    /// output texel: a box average when above 1, bilinear below; `u[0].y` = reads past the value
-    /// are transparent rather than kept).
+    /// output texel: a box average when whole, bilinear otherwise; `u[0].y` = what a read past the
+    /// value yields, one of [`SCALE_CLAMP`], [`SCALE_TRANSPARENT`], [`SCALE_KEEP`]).
     pub const SCALE: u32 = 8192;
     /// COMPOSE MODE — how the arm's result lands, a one-hot enum over three bits (all clear = the
     /// default field/coverage-masked mix). Mutually exclusive by construction: an arm composites one
@@ -175,6 +175,38 @@ pub fn arm_bits(run: &[UnitOp], p: Policy) -> u32 {
 /// field it measures without anything downstream classifying the chain.
 pub const PAYLOAD_PROGRAM_SLOT: usize = 22;
 
+/// A scale arm's read past its value: the value's clamped edge.
+pub const SCALE_CLAMP: f32 = 0.0;
+/// A scale arm's read past its value: transparent.
+pub const SCALE_TRANSPARENT: f32 = 1.0;
+/// A scale arm's read past its value: the output pixel as it is — a ground drawn there before.
+pub const SCALE_KEEP: f32 = 2.0;
+
+/// `u` with its device-pixel quantities scaled to resolution `k`, by the field program the payload
+/// declares: a lens's box, bezel and device scale; a noise warp's reach, grain and anchor; a
+/// radial mask's centre and radius.
+#[must_use]
+pub fn payload_at(u: &[f32], k: f32) -> Vec<f32> {
+    let mut out = u.to_vec();
+    if k == 1.0 {
+        return out;
+    }
+    let program = u.get(PAYLOAD_PROGRAM_SLOT).copied().unwrap_or(PROGRAM_NONE);
+    let slots: &[usize] = if program == PROGRAM_NOISE {
+        &[2, 3, 8, 9]
+    } else if program == PROGRAM_RADIAL {
+        &[2, 3, 4]
+    } else {
+        &[0, 1, 2, 3, 4, 5, 6, 8, 16]
+    };
+    for &s in slots {
+        if let Some(v) = out.get_mut(s) {
+            *v *= k;
+        }
+    }
+    out
+}
+
 #[must_use]
 pub fn arm_descriptor(run: &[UnitOp], policy: Policy, program: Option<f32>) -> [f32; 26] {
     let mut d = [0.0f32; 26];
@@ -189,27 +221,24 @@ pub fn arm_descriptor(run: &[UnitOp], policy: Policy, program: Option<f32>) -> [
     d
 }
 
-/// A blur whose device sigma stays at or below this samples every texel (stride 1) — the exact
-/// kernel, and the battery's regime. Above it the tap count would grow without bound (zoom scales
-/// sigma, taps are `2·ceil(3σ)+1`), so the kernel switches to strided quadrature.
-pub const BLUR_STRIDE_SIGMA: f32 = 32.0;
-/// Strided-kernel spacing divisor: `stride = ⌊σ / 12⌋`, keeping the tap count near `6·12 + 1` no
-/// matter how large sigma grows. The Gaussian is evaluated at the strided offsets and renormalized,
-/// which is the sampling-rate half of the render-scale `k` (a Riemann sum of the same kernel — the
-/// approximation a downscaled surface would make, with blur itself as the quality firewall).
-pub const BLUR_STRIDE_DIV: f32 = 12.0;
+/// The taps a blur axis of device `sigma` samples at stride 1: the exact kernel out to 3σ.
+#[must_use]
+pub fn blur_taps(sigma: f32) -> u32 {
+    2 * (3.0 * sigma).ceil() as u32 + 1
+}
 
 /// Serialize ONE separable-blur axis pass to the 26-float descriptor `fine` reads — the single place
 /// a `Blur` unit becomes bytes, shared by every path that emits one (the fx_fine background blur, a
 /// soft shadow's H/V). `units_uniform` deliberately skips `Blur` (a barrier carries no fused uniform),
 /// so its `u[0]` is written here: `axis` in slots 2/3 (X pass = `(1,0)`, Y pass = `(0,1)`), the
-/// device `sigma` in slot 4, and the planner-decided tap stride in slot 5 (1 = exact kernel; the
-/// executor never re-derives it). `bits` is `BLUR` plus the compose mode; the gamma-space mix and
+/// device `sigma` in slot 4, and the tap stride in slot 5: the smallest that brings the exact
+/// kernel's taps within the `taps` budget (1 = exact kernel; the executor never re-derives it).
+/// The Gaussian is evaluated at the strided offsets and renormalized. `bits` is `BLUR` plus the compose mode; the gamma-space mix and
 /// the out-of-bounds edge policy ride the blur's own payload (slots 12/13).
 /// `tint` rides `u[3]` (slots 14..18) for a `spread` arm that lays a straight colour — a shadow's V
 /// pass — and is `None` for a plain draft blur.
 #[must_use]
-pub fn blur_arm(sigma: f32, linear: bool, axis_y: bool, policy: Policy, tint: Option<[f32; 4]>) -> [f32; 26] {
+pub fn blur_arm(sigma: f32, taps: u32, linear: bool, axis_y: bool, policy: Policy, tint: Option<[f32; 4]>) -> [f32; 26] {
     let mut d = [0.0f32; 26];
     d[0] = (bits::BLUR
         | if policy.raw { bits::RAW } else { 0 }
@@ -218,7 +247,7 @@ pub fn blur_arm(sigma: f32, linear: bool, axis_y: bool, policy: Policy, tint: Op
     d[2] = f32::from(!axis_y);
     d[3] = f32::from(axis_y);
     d[4] = sigma;
-    d[5] = if sigma > BLUR_STRIDE_SIGMA { (sigma / BLUR_STRIDE_DIV).floor().max(1.0) } else { 1.0 };
+    d[5] = blur_taps(sigma).div_ceil(taps.max(3)) as f32;
     d[PAYLOAD_BLUR_SRGB_SLOT] = f32::from(!linear);
     d[PAYLOAD_BLUR_EDGE_SLOT] = f32::from(policy.edge_coverage);
     if let Some([r, g, b, a]) = tint {
@@ -255,7 +284,7 @@ pub fn spread_arm(coverage: u32, colour: [f32; 4]) -> [f32; 26] {
 pub fn bake_unit(op: &UnitOp, policy: Policy) -> [f32; 26] {
     match *op {
         UnitOp::Blur { sigma, linear, axis, .. } => {
-            blur_arm(sigma, linear, axis == crate::vello::units::BlurAxis::Y, policy, None)
+            blur_arm(sigma, crate::vello::frame_graph::BLUR_TAPS, linear, axis == crate::vello::units::BlurAxis::Y, policy, None)
         }
         _ => arm_descriptor(std::slice::from_ref(op), policy, None),
     }
@@ -334,7 +363,7 @@ mod tests {
     #[test]
     fn arm_bits_reproduces_the_frost_blur_link() {
         let p = Policy { raw: true, ..Policy::default() };
-        let d = blur_arm(4.0, false, false, p, None);
+        let d = blur_arm(4.0, 193, false, false, p, None);
         assert_eq!(d[0] as u32, bits::BLUR | bits::RAW);
         assert_eq!(d[PAYLOAD_BLUR_SRGB_SLOT], 1.0, "gamma-space mix rides the blur payload");
     }
@@ -344,8 +373,8 @@ mod tests {
     #[test]
     fn arm_bits_reproduces_the_shadow_blur_arms() {
         let p = |raw, colour_over| Policy { raw, colour_over, edge_coverage: true, ..Policy::default() };
-        let h = blur_arm(6.0, true, false, p(true, false), None);
-        let v = blur_arm(6.0, true, true, p(false, true), None);
+        let h = blur_arm(6.0, 193, true, false, p(true, false), None);
+        let v = blur_arm(6.0, 193, true, true, p(false, true), None);
         assert_eq!(h[0] as u32, bits::BLUR | bits::RAW);
         assert_eq!(v[0] as u32, bits::BLUR | bits::COLOUR_OVER);
         assert_eq!((h[PAYLOAD_BLUR_EDGE_SLOT], v[PAYLOAD_BLUR_EDGE_SLOT]), (1.0, 1.0));
@@ -375,14 +404,14 @@ mod tests {
     /// baked soft-drop shadow arms (`wv_shadow_plan`'s H = 2624, V = 2240 + straight colour).
     #[test]
     fn blur_arm_reproduces_both_conventions() {
-        let h = blur_arm(3.0, true, false, Policy::default(), None);
-        let v = blur_arm(3.0, true, true, Policy::default(), None);
+        let h = blur_arm(3.0, 193, true, false, Policy::default(), None);
+        let v = blur_arm(3.0, 193, true, true, Policy::default(), None);
         assert_eq!([h[0], h[2], h[3], h[4]], [64.0, 1.0, 0.0, 3.0], "H = BLUR, axis X, sigma");
         assert_eq!([v[0], v[2], v[3], v[4]], [64.0, 0.0, 1.0, 3.0], "V = BLUR, axis Y, sigma");
 
         let colour = [0.1, 0.2, 0.3, 0.8];
-        let sh = blur_arm(6.0, true, false, Policy { raw: true, edge_coverage: true, ..Policy::default() }, None);
-        let sv = blur_arm(6.0, true, true, Policy { colour_over: true, edge_coverage: true, ..Policy::default() }, Some(colour));
+        let sh = blur_arm(6.0, 193, true, false, Policy { raw: true, edge_coverage: true, ..Policy::default() }, None);
+        let sv = blur_arm(6.0, 193, true, true, Policy { colour_over: true, edge_coverage: true, ..Policy::default() }, Some(colour));
         assert_eq!(sh[0], (bits::BLUR | bits::RAW) as f32, "H = BLUR, RAW compose");
         assert_eq!([sh[2], sh[3], sh[4]], [1.0, 0.0, 6.0], "H axis + sigma");
         assert_eq!(sv[0], (bits::BLUR | bits::COLOUR_OVER) as f32, "V = BLUR, colour-over compose");
