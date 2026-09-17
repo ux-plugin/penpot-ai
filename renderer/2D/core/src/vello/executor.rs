@@ -312,17 +312,26 @@ impl Sink {
                 DrawCmd::Unclip => scene.pop_layer(),
                 DrawCmd::Shapes { items, transform } => {
                     for it in items {
+                        let t0 = crate::vello::prof::now();
                         match it.style {
-                            DrawStyle::Body => backend.draw_shape(scene, *transform, it.shape),
-                            DrawStyle::Coverage { spread, .. } => backend.draw_coverage(scene, *transform, it.shape, spread),
+                            DrawStyle::Body => {
+                                backend.draw_shape(scene, *transform, it.shape);
+                                crate::vello::prof::dbg_add(32, crate::vello::prof::now() - t0);
+                            }
+                            DrawStyle::Coverage { spread, .. } => {
+                                backend.draw_coverage(scene, *transform, it.shape, spread);
+                                crate::vello::prof::dbg_add(33, crate::vello::prof::now() - t0);
+                            }
                             DrawStyle::Distance { decode } => {
                                 self.bake_distance(device, enc, store_tex, it.shape, *transform, it.bounds, decode, backend);
                                 baked += 1;
+                                crate::vello::prof::dbg_add(34, crate::vello::prof::now() - t0);
                             }
                         }
                     }
                 }
                 DrawCmd::Marker { shape, transform, eid, seg_after, round, footprint, ctl, params_off } => {
+                    let t0 = crate::vello::prof::now();
                     let f = *footprint;
                     backend.draw_effect_marker(
                         scene,
@@ -335,6 +344,7 @@ impl Sink {
                         [f.x0 as f32, f.y0 as f32, f.x1 as f32, f.y1 as f32],
                         *ctl,
                     );
+                    crate::vello::prof::dbg_add(35, crate::vello::prof::now() - t0);
                 }
             }
         }

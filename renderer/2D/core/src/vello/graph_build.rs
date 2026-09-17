@@ -36,10 +36,21 @@ use crate::vello::frame_graph::{
 
 /// A blur below this device sigma is invisible and is not emitted.
 const NEGLIGIBLE_SIGMA: f32 = 0.5;
-/// A blur at or above this device sigma makes the run it sits in soft.
-const SOFT_SIGMA: f32 = 2.0;
-/// The resolution a soft run targets.
-const SOFT_TARGET: f32 = 0.5;
+/// A run whose widest blur is at or below this device sigma keeps the frame's resolution: on a
+/// coarser grid a blur this narrow visibly changes 2 px detail. Above it the run is computed on
+/// the grid where the blur is about this many texels wide (Skia's and WebRender's rule).
+const FULL_SIGMA: f32 = 4.0;
+/// The coarsest grid a run is ever computed on.
+const FLOOR_TARGET: f32 = 1.0 / 16.0;
+
+/// The resolution a run holding a blur of device `sigma` targets: the power of two nearest to
+/// `FULL_SIGMA / sigma` (Skia's rounding), 1 up to `FULL_SIGMA`, never below `FLOOR_TARGET`.
+fn soft_target(sigma: f32) -> f32 {
+    if sigma <= FULL_SIGMA {
+        return 1.0;
+    }
+    2.0f32.powf((FULL_SIGMA / sigma).log2().round()).clamp(FLOOR_TARGET, 1.0)
+}
 
 /// The frame graph of the installed document for a `width × height` viewport under `root`.
 #[must_use]
@@ -270,10 +281,11 @@ impl Builder<'_> {
         }
     }
 
-    /// Close the chain's scale pair, if open, after `cur`: the down node's target becomes half
-    /// when the run holds a soft blur, lowered further by the authored ceiling, scaled by the
-    /// preset and rounded down the ladder of halves; the up node returns to frame resolution.
-    /// Returns the node the tail continues from and whether the run runs below frame resolution.
+    /// Close the chain's scale pair, if open, after `cur`: the down node's target follows the
+    /// run's widest blur ([`soft_target`]), lowered further by the authored ceiling, scaled by
+    /// the preset and rounded down the ladder of halves; the up node returns to frame
+    /// resolution. Returns the node the tail continues from and whether the run runs below
+    /// frame resolution.
     fn close_pair(&mut self, cur: NodeId, name: &str) -> (NodeId, bool) {
         let Some((down, ceiling)) = self.pair.take() else { return (cur, false) };
         if cur == down {
@@ -281,8 +293,13 @@ impl Builder<'_> {
             self.nodes.pop();
             return (input, false);
         }
-        let soft = (down + 1..=cur).any(|i| matches!(self.nodes[i].op, Op::Blur { sigma, .. } if sigma >= SOFT_SIGMA));
-        let target = ladder(if soft { SOFT_TARGET } else { 1.0 }.min(ceiling) * self.effect_scale);
+        let widest = (down + 1..=cur)
+            .filter_map(|i| match self.nodes[i].op {
+                Op::Blur { sigma, .. } => Some(sigma),
+                _ => None,
+            })
+            .fold(0.0f32, f32::max);
+        let target = ladder(soft_target(widest).min(ceiling) * self.effect_scale);
         let Op::Scale { key, .. } = self.nodes[down].op else { unreachable!("the pair opened on a scale") };
         self.nodes[down].op = Op::Scale { target, key };
         (self.push(Op::Scale { target: 1.0, key }, vec![cur], format!("{name} up")), target < 1.0)
@@ -671,7 +688,7 @@ mod tests {
         };
         let at = graph_of(|| { crate::vello::abi::load_stack_glass_scene(2, 1); }, 1.0);
         let full = targets(&at);
-        assert!(full.iter().any(|&t| t == 0.5) && full.iter().all(|&t| t == 0.5 || t == 1.0), "frost lenses target half at the display's resolution: {full:?}");
+        assert!(!full.is_empty() && full.iter().all(|&t| t == ladder(t)), "every pair's target sits on the ladder: {full:?}");
         crate::vello::abi::set_effect_preset(200, 4000);
         let g = build_frame_graph(Affine::IDENTITY, 800, 600);
         crate::vello::abi::set_effect_preset(0, 4000);
@@ -680,7 +697,20 @@ mod tests {
         for (a, b) in full.iter().zip(&third) {
             assert_eq!(*b, ladder(a / 3.0), "a 200-row preset on 600 rows is a third, rounded down the ladder: {a} → {b}");
         }
-        assert!(third.iter().all(|&t| t == 0.25 || t == 0.125), "{third:?}");
+        assert!(third.iter().all(|&t| t <= 0.25), "{third:?}");
+    }
+
+    #[test]
+    fn a_run_is_computed_where_its_widest_blur_is_about_four_texels() {
+        assert_eq!(soft_target(0.0), 1.0);
+        assert_eq!(soft_target(4.0), 1.0);
+        assert_eq!(soft_target(5.0), 1.0);
+        assert_eq!(soft_target(6.0), 0.5);
+        assert_eq!(soft_target(10.0), 0.5);
+        assert_eq!(soft_target(16.0), 0.25);
+        assert_eq!(soft_target(30.0), 0.125);
+        assert_eq!(soft_target(60.0), 1.0 / 16.0);
+        assert_eq!(soft_target(1000.0), 1.0 / 16.0);
     }
 
     #[test]

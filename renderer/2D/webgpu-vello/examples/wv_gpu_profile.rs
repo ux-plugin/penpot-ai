@@ -227,7 +227,7 @@ fn main() {
     }
 
     let read = |b: u32| render_core::vello::abi::prof_read(b);
-    let cpu_base: Vec<f64> = [126u32, 130, 131, 127, 3, 118, 119, 120, 121, 116, 117, 122, 123, 128, 18, 19, 6, 8, 9, 20, 21]
+    let cpu_base: Vec<f64> = [126u32, 130, 131, 127, 3, 118, 119, 120, 121, 116, 117, 122, 123, 128, 18, 19, 6, 8, 9, 20, 21, 132, 133, 134, 135]
         .iter()
         .map(|&b| read(b))
         .collect();
@@ -241,7 +241,7 @@ fn main() {
     }
 
     let idx = |b: u32| -> usize {
-        [126u32, 130, 131, 127, 3, 118, 119, 120, 121, 116, 117, 122, 123, 128, 18, 19, 6, 8, 9, 20, 21]
+        [126u32, 130, 131, 127, 3, 118, 119, 120, 121, 116, 117, 122, 123, 128, 18, 19, 6, 8, 9, 20, 21, 132, 133, 134, 135]
             .iter()
             .position(|&x| x == b)
             .unwrap()
@@ -266,6 +266,10 @@ fn main() {
     println!("encode walk             {:8.3} ms", per_frame(130));
     println!("phased begin (resolve)  {:8.3} ms", per_frame(131));
     println!("phase loop record       {:8.3} ms", per_frame(127));
+    println!("  encode bodies         {:8.3} ms", per_frame(132));
+    println!("  encode coverages      {:8.3} ms", per_frame(133));
+    println!("  distance bakes        {:8.3} ms", per_frame(134));
+    println!("  markers               {:8.3} ms", per_frame(135));
     println!("queue.submit            {:8.3} ms", per_frame(3));
 
     println!("\n== GPU lane: vello dispatches (avg/frame over {profiled_frames} profiled frames) ==");

@@ -56,7 +56,7 @@ use std::collections::HashMap;
 use crate::kurbo::{Affine, Rect, Vec2};
 
 use crate::vello::bake::{self, Policy, REC_COUNT, REC_STRIDE};
-use crate::vello::frame_graph::{pad_at, scale_rect, BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, FrameGraph, NodeId, Op};
+use crate::vello::frame_graph::{pad_at, reach_px, scale_rect, BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, FrameGraph, NodeId, Op};
 use crate::vello::frame_plan::{self, DrawCmd, FramePlan, Pass, Tiles, Window};
 use crate::vello::store_pack::StorePacker;
 use crate::vello::units::{BlurEdge, UnitOp};
@@ -198,6 +198,11 @@ struct Scheduler<'a> {
     ext: Vec<Rect>,
     demand: Vec<Option<Rect>>,
     out: Vec<Rect>,
+    /// Each node's extent under a reach-only backward pass — the same as [`Self::out`] but with a
+    /// blur/warp/scatter growing its input by its frame reach, not by the sampling pad's texel
+    /// ring. A served ground is sized from this so it draws only the backdrop the effect actually
+    /// reads, not the `1/k`-wide ring the store-sampling pad adds at low resolution.
+    cout: Vec<Rect>,
     readers: Vec<Vec<NodeId>>,
     /// The arm each chain node belongs to.
     arm_of: HashMap<NodeId, usize>,
@@ -254,6 +259,7 @@ impl<'a> Scheduler<'a> {
             alias: Vec::new(),
             demand: Vec::new(),
             out: Vec::new(),
+            cout: Vec::new(),
             readers: Vec::new(),
             arm_of: HashMap::new(),
             value_of: HashMap::new(),
@@ -301,6 +307,7 @@ impl<'a> Scheduler<'a> {
         self.readers = readers;
         self.demand = vec![None; n];
         self.out = vec![Rect::ZERO; n];
+        self.cout = vec![Rect::ZERO; n];
         self.pruned.clear();
     }
 
@@ -310,6 +317,7 @@ impl<'a> Scheduler<'a> {
             self.set_resolutions();
             self.demand_pass();
         }
+        self.content_pass();
         self.build_arms();
         self.serve();
         self.fit_rounds();
@@ -801,6 +809,102 @@ impl<'a> Scheduler<'a> {
         self.in_space_of(r, i, j)
     }
 
+    /// The region of `j` that `i` reads for the purpose of sizing a served ground, taken from the
+    /// reach-only [`Self::cout`] instead of the padded [`Self::out`]: `i`'s content extent grown
+    /// by its op's frame reach ([`reach_px`]), not the sampling pad. The pad's texel ring is
+    /// store-sampling slack that becomes `1/k` frame pixels wide at a low resolution and pulls
+    /// extra scene content into the ground; a ground only needs the real backdrop out to the op's
+    /// reach. Every other term matches [`Self::read_of`].
+    fn read_content(&self, i: NodeId, j: NodeId) -> Rect {
+        let node = &self.g.nodes[i];
+        let r = match &node.op {
+            Op::EraseBy(u) if node.inputs.get(1).map(|&x| self.alias[x]) == Some(j) => {
+                let shift = Vec2::new(f64::from(u.first().copied().unwrap_or(0.0)), f64::from(u.get(1).copied().unwrap_or(0.0)));
+                self.cout[i] - shift
+            }
+            op if is_head(op) && self.input(i, 0) == j => {
+                let reach = f64::from(reach_px(&node.op)) * f64::from(self.k[i]);
+                self.cout[i].inflate(reach, reach)
+            }
+            _ => self.cout[i],
+        };
+        self.in_space_of(r, i, j)
+    }
+
+    /// A reach-only copy of [`Self::demand_pass`]: the same backward extents, but a blur, warp or
+    /// scatter grows its input by its frame reach in texels (`reach·k`) rather than by the padded
+    /// `pad_at`, and no pruning is recorded. Fills [`Self::cout`], which [`Self::read_content`]
+    /// reads when sizing a served ground. Runs after `demand_pass` has settled `out`.
+    fn content_pass(&mut self) {
+        let n = self.g.nodes.len();
+        let mut cdemand: Vec<Option<Rect>> = vec![None; n];
+        cdemand[n - 1] = Some(self.frame);
+        for i in (0..n).rev() {
+            let Some(d) = cdemand[i] else { continue };
+            let node = &self.g.nodes[i];
+            if self.elided[i] {
+                union_into(&mut cdemand[node.inputs[0]], d);
+                continue;
+            }
+            let out = match &node.op {
+                Op::Compose { offset, .. } => {
+                    let v = self.ext[node.inputs[1]] + Vec2::new(f64::from(offset[0]), f64::from(offset[1]));
+                    let v = node.inputs.get(2).map_or(v, |&c| v.intersect(self.ext[c]));
+                    d.intersect(v)
+                }
+                _ => d.intersect(self.visible_extent(i)),
+            };
+            let out = if self.g.is_spine(i) { tile_round(out).intersect(tile_round(self.frame)) } else { tile_round(out) };
+            self.cout[i] = out;
+            if matches!(node.op, Op::Draw(_) | Op::Compose { .. }) {
+                if let Some(&below) = node.inputs.first() {
+                    union_into(&mut cdemand[below], d);
+                }
+            }
+            if out.is_zero_area() {
+                continue;
+            }
+            let k = self.k[i];
+            let grown = |op: &Op| {
+                let p = f64::from(reach_px(op)) * f64::from(k);
+                out.inflate(p, p)
+            };
+            match &node.op {
+                Op::Draw(_) => {}
+                Op::Blur { edge_clamp_style, .. } => {
+                    let r = if *edge_clamp_style == EdgeClampStyle::Transparent { out } else { grown(&node.op) };
+                    union_into(&mut cdemand[node.inputs[0]], r);
+                }
+                Op::Scale { .. } => {
+                    let j = node.inputs[0];
+                    union_into(&mut cdemand[j], scale_rect(out, f64::from(self.k[j] / k)));
+                }
+                Op::Warp(_) | Op::Scatter(_) => {
+                    union_into(&mut cdemand[node.inputs[0]], grown(&node.op));
+                    if let Some(&sdf) = node.inputs.get(1) {
+                        union_into(&mut cdemand[sdf], out);
+                    }
+                }
+                Op::EraseBy(u) => {
+                    union_into(&mut cdemand[node.inputs[0]], out);
+                    let shift = Vec2::new(f64::from(u.first().copied().unwrap_or(0.0)), f64::from(u.get(1).copied().unwrap_or(0.0)));
+                    union_into(&mut cdemand[node.inputs[1]], out - shift);
+                }
+                Op::Shade(_) | Op::MaskMix(_) | Op::ClipToSource(_) | Op::Colour(_) => {
+                    for &j in &node.inputs {
+                        union_into(&mut cdemand[j], out);
+                    }
+                }
+                Op::Compose { offset, .. } => {
+                    union_into(&mut cdemand[node.inputs[1]], out - Vec2::new(f64::from(offset[0]), f64::from(offset[1])));
+                    if let Some(&cov) = node.inputs.get(2) {
+                        union_into(&mut cdemand[cov], out);
+                    }
+                }
+            }
+        }
+    }
+
     /// Every item the spine paints at or below node `j` that touches `r`, in z-order.
     fn spine_items_below(&self, j: NodeId, r: Rect) -> Vec<DrawItem> {
         let mut groups: Vec<Vec<DrawItem>> = Vec::new();
@@ -819,6 +923,7 @@ impl<'a> Scheduler<'a> {
     /// and overwritten by a copy of the frame rows where the two overlap.
     fn serve(&mut self) {
         let mut reads: HashMap<NodeId, Rect> = HashMap::new();
+        let mut content: HashMap<NodeId, Rect> = HashMap::new();
         let mut escapes: HashMap<NodeId, bool> = HashMap::new();
         for arm in &self.arms {
             if arm.compose.is_some() || arm.nodes.first().is_some_and(|&i| self.is_scale(i)) {
@@ -830,9 +935,11 @@ impl<'a> Scheduler<'a> {
                         continue;
                     }
                     let r = tile_round(self.read_of(i, j));
-                    let e = escapes.entry(j).or_default();
-                    *e |= !(self.frame.x0 <= r.x0 && r.x1 <= self.frame.x1 && self.frame.y0 <= r.y0 && r.y1 <= self.frame.y1);
                     reads.entry(j).and_modify(|u| *u = u.union(r)).or_insert(r);
+                    let c = tile_round(self.read_content(i, j));
+                    let e = escapes.entry(j).or_default();
+                    *e |= !(self.frame.x0 <= c.x0 && c.x1 <= self.frame.x1 && self.frame.y0 <= c.y0 && c.y1 <= self.frame.y1);
+                    content.entry(j).and_modify(|u| *u = u.union(c)).or_insert(c);
                 }
             }
         }
@@ -840,7 +947,7 @@ impl<'a> Scheduler<'a> {
         nodes.sort_unstable();
         for j in nodes {
             let rect = reads[&j];
-            let items = self.spine_items_below(j, rect);
+            let items = self.spine_items_below(j, content[&j]);
             let v = self.values.len();
             self.values.push(Value { node: j, rect, place: Vec2::ZERO, birth: 0, last_read: 0, page: 0, leaf: None, decode: 0.0, ground: Some(Ground { items, copied: true }) });
             self.ground_of.insert(j, v);
@@ -980,7 +1087,7 @@ impl<'a> Scheduler<'a> {
             if self.is_scale(head) {
                 let j = self.input(head, 0);
                 if self.g.is_spine(j) {
-                    let region = self.read_of(head, j);
+                    let region = tile_round(self.read_content(head, j));
                     let escapes = !(self.frame.x0 <= region.x0 && region.x1 <= self.frame.x1 && self.frame.y0 <= region.y0 && region.y1 <= self.frame.y1);
                     if escapes {
                         let items = self.spine_items_below(j, region);

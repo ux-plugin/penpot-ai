@@ -128,15 +128,27 @@ pub fn pad(op: &Op) -> f32 {
 /// the eight-texel guard does not.
 #[must_use]
 pub fn pad_at(op: &Op, k: f32) -> f32 {
-    let reach = match op {
+    match op {
+        Op::Blur { .. } | Op::Warp(_) | Op::Scatter(_) => (reach_px(op) * k).ceil() + 8.0,
+        _ => 0.0,
+    }
+}
+
+/// The distance, in frame pixels, that `op` reads past its output — the real content an input
+/// must hold, independent of the grid it is computed on (a blur reaches `3σ`, a lens `24`, a
+/// noise warp its own reach). This is [`pad_at`] without the texel sampling ring: a served
+/// ground needs only this many frame pixels of backdrop; the ring is a store-sampling concern,
+/// not a content one.
+#[must_use]
+pub fn reach_px(op: &Op) -> f32 {
+    match op {
         Op::Blur { sigma, .. } => 3.0 * sigma,
         Op::Warp(u) if u.get(crate::vello::bake::PAYLOAD_PROGRAM_SLOT).copied() == Some(crate::vello::bake::PROGRAM_NOISE) => {
             u.get(2).copied().unwrap_or(0.0)
         }
         Op::Warp(_) | Op::Scatter(_) => 24.0,
-        _ => return 0.0,
-    };
-    (reach * k).ceil() + 8.0
+        _ => 0.0,
+    }
 }
 
 /// `r` in the texels of a value at `k`: scaled about the frame's origin.

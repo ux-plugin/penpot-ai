@@ -19,7 +19,8 @@ fn solid_fill(color: u32) {
 /// `n` plain shapes on a grid, then `stacks` groups of `stack` nested glass shapes centred on a
 /// `w × h` frame, `between` small shapes under each glass, the outermost glass `half` px in
 /// half-extent. Reads the env the bench's URL parameters map to: `N`, `STACK`, `STACKS`,
-/// `BETWEEN`, `HALF`, `EFFECTS` (`shadow` | `blur` | `both`), `EVERY`.
+/// `BETWEEN`, `HALF`, `EFFECTS` (`shadow` | `blur` | `both`), `EVERY`, `SIGMA` (the layer
+/// blur's page sigma, default 6).
 pub fn build_from_env(w: u32, h: u32) -> (u32, u32, u32, u32) {
     let env = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
     let n = env("N", 2000.0) as u32;
@@ -29,6 +30,7 @@ pub fn build_from_env(w: u32, h: u32) -> (u32, u32, u32, u32) {
     let half0 = env("HALF", 400.0);
     let effects = std::env::var("EFFECTS").unwrap_or_default();
     let every = env("EVERY", 10.0).max(1.0) as u32;
+    let sigma = env("SIGMA", 6.0);
     abi::init_shapes_pool((n + stacks * stack * (1 + between) + 200 + 32) as usize);
     let cols = (n as f32).sqrt().ceil() as u32;
     for i in 0..n {
@@ -42,7 +44,7 @@ pub fn build_from_env(w: u32, h: u32) -> (u32, u32, u32, u32) {
                 abi::add_shape_shadow(0x8000_0000, 8.0, 0.0, 4.0, 4.0, 0, false);
             }
             if effects == "blur" || effects == "both" {
-                abi::set_shape_blur(0, false, 6.0);
+                abi::set_shape_blur(0, false, sigma);
             }
         }
         abi::use_shape(0, 0, 0, 0);
