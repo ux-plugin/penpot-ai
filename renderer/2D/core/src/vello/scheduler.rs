@@ -1600,6 +1600,65 @@ mod tests {
         assert_eq!(shape.rounds, 4);
     }
 
+    /// Two nested backdrop gathers: a background glass `A` over the ground, and a downscaled glass
+    /// `B` whose own backdrop is `A`'s output (a frost lens over another lens). `B`'s mask (`rb`)
+    /// crosses the right frame edge, so `B`'s downscale reads `A` past the frame — the off-frame
+    /// backdrop the scheduler must serve as a drawn ground.
+    fn nested_gathers() -> FrameGraph {
+        let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let ra = Rect::new(100.0, 100.0, 300.0, 260.0);
+        let rb = Rect::new(520.0, 150.0, 700.0, 360.0);
+        let key = 0x99;
+        let warp = |input| GNode { op: Op::Warp(vec![0.0; 24]), inputs: vec![input], label: "warp".into() };
+        let shade = |input| GNode { op: Op::Shade(vec![0.0; 24]), inputs: vec![input], label: "shade".into() };
+        FrameGraph {
+            frame,
+            background: Color::WHITE,
+            nodes: vec![
+                GNode { op: Op::Draw(vec![body(1, frame)]), inputs: vec![], label: "ground".into() },
+                warp(0),
+                shade(1),
+                GNode { op: Op::Draw(vec![cov(2, ra)]), inputs: vec![], label: "maskA".into() },
+                GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![0, 2, 3], label: "glassA".into() },
+                GNode { op: Op::Scale { target: 0.5, key }, inputs: vec![4], label: "down".into() },
+                warp(5),
+                shade(6),
+                GNode { op: Op::Scale { target: 1.0, key }, inputs: vec![7], label: "up".into() },
+                GNode { op: Op::Draw(vec![cov(3, rb)]), inputs: vec![], label: "maskB".into() },
+                GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![4, 8, 9], label: "glassB".into() },
+            ],
+        }
+    }
+
+    #[test]
+    fn a_gather_whose_backdrop_is_another_gather_serves_the_inner_as_plain_content() {
+        let g = nested_gathers();
+        g.validate().expect("valid");
+        let mut memory = HashMap::new();
+        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut memory);
+        s.demand_pass();
+        s.content_pass();
+        s.build_arms();
+        s.serve();
+        s.fit_rounds();
+        s.assign_pages();
+        // glassB's downscale reads glassA (node 4) past the right edge, so that backdrop is served
+        // as a drawn ground (attached to the downscale arm's value). Its items are only the plain
+        // scene below node 4 — the ground body (shape 1). glassA's own warp/shade are its value
+        // chain, not draws below it, so the inner refraction is absent off the frame (ruling 13);
+        // it survives only where the frame rows are copied.
+        let ground = s.values.iter().filter_map(|v| v.ground.as_ref()).next().expect("the outer's off-frame backdrop is served");
+        assert!(!ground.items.is_empty(), "the ground draws the plain backdrop");
+        assert!(ground.items.iter().all(|it| it.shape == 1), "only the ground body, not the inner glass's effect: {:?}", ground.items.iter().map(|it| it.shape).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn nested_gathers_plan_and_validate() {
+        let p = plan(&nested_gathers(), 640, 480, 8192, 4.0, &mut HashMap::new());
+        p.validate().unwrap_or_else(|e| panic!("{e}"));
+        assert!(p.shape().markers >= 2, "both glasses land their compose: {}", p.shape().markers);
+    }
+
     /// [`graph`] with a scale pair of `target` around the shadow's blurs and another around the
     /// lens's warp.
     fn scaled_graph(target: f32) -> FrameGraph {
