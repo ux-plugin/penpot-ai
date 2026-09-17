@@ -553,6 +553,7 @@ fn op(o: &Op) -> String {
         Op::Warp(u) => format!("Warp program {:.0}", u.get(PAYLOAD_PROGRAM_SLOT).copied().unwrap_or(0.0)),
         Op::Scatter(_) => "Scatter".into(),
         Op::Scale { target, .. } => format!("Scale → {target}"),
+        Op::Halo { of } => format!("Halo of {of}"),
         Op::Shade(_) => "Shade".into(),
         Op::MaskMix(u) => format!("MaskMix program {:.0}", u.get(PAYLOAD_PROGRAM_SLOT).copied().unwrap_or(0.0)),
         Op::EraseBy(u) => format!("EraseBy at {:.1},{:.1}", u.first().copied().unwrap_or(0.0), u.get(1).copied().unwrap_or(0.0)),

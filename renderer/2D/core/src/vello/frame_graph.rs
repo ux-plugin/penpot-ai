@@ -68,6 +68,12 @@ pub enum Op {
     /// `offset` translates the value as it is read — a shadow's displacement — so the value is
     /// never drawn displaced.
     Compose { mode: ComposeMode, colour: Option<[f32; 4]>, offset: [f32; 2] },
+    /// The spine's state at `of`, continued past the frame: where the frame holds it, this is `of`
+    /// itself; where it does not, this is the spine below, `inputs = [top]`, a spine of its own
+    /// rooted on an input-less `Draw` that paints only past the frame. Its extent is unbounded —
+    /// what it holds is what its reader demands — and it runs at its readers' resolution, as does
+    /// the spine under it. A reader of the spine past the frame reads a `Halo` instead of `of`.
+    Halo { of: NodeId },
 }
 
 /// One thing a [`Op::Draw`] paints, z-ordered within its draw.
@@ -108,7 +114,7 @@ impl Op {
     pub fn arity(&self) -> (usize, usize) {
         match self {
             Op::Draw(_) => (0, 1),
-            Op::Blur { .. } | Op::Scatter(_) | Op::Shade(_) | Op::Colour(_) | Op::Scale { .. } => (1, 1),
+            Op::Blur { .. } | Op::Scatter(_) | Op::Shade(_) | Op::Colour(_) | Op::Scale { .. } | Op::Halo { .. } => (1, 1),
             Op::Warp(_) => (1, 2),
             Op::MaskMix(_) | Op::EraseBy(_) | Op::ClipToSource(_) => (2, 2),
             Op::Compose { .. } => (2, 3),
@@ -158,15 +164,43 @@ pub fn scale_rect(r: Rect, k: f64) -> Rect {
 }
 
 impl FrameGraph {
-    /// Node `i` writes the state below: a compose, or a draw over a `below` input — or node 0,
-    /// the root the spine grows from. A later draw with no input is a chain leaf (a coverage).
+    /// Node `i` writes the state below: a compose, a halo, a draw over a `below` input — or a
+    /// root, the input-less draw a spine grows from: node 0 for the frame, and under every
+    /// [`Op::Halo`] the draw some spine op takes as its state below. Any other input-less draw
+    /// is a chain leaf (a coverage).
     #[must_use]
     pub fn is_spine(&self, i: NodeId) -> bool {
         match &self.nodes[i].op {
-            Op::Compose { .. } => true,
-            Op::Draw(_) => i == 0 || !self.nodes[i].inputs.is_empty(),
+            Op::Compose { .. } | Op::Halo { .. } => true,
+            Op::Draw(_) => i == 0 || !self.nodes[i].inputs.is_empty() || self.stood_on(i),
             _ => false,
         }
+    }
+
+    /// Whether a spine op takes node `i` as the state below: an input-less draw so stood on
+    /// roots a spine, a halo so stood on is a fill point inside one rather than its top.
+    fn stood_on(&self, i: NodeId) -> bool {
+        self.nodes.iter().any(|n| {
+            n.inputs.first() == Some(&i)
+                && match &n.op {
+                    Op::Compose { .. } | Op::Halo { .. } => true,
+                    Op::Draw(_) => true,
+                    _ => false,
+                }
+        })
+    }
+
+    /// The root of spine node `i`'s spine: node 0 for the frame, a halo's draw otherwise.
+    #[must_use]
+    pub fn spine_root(&self, i: NodeId) -> NodeId {
+        let mut s = i;
+        while let Some(&below) = self.nodes[s].inputs.first() {
+            if !self.is_spine(s) {
+                break;
+            }
+            s = below;
+        }
+        s
     }
 
     /// The structural invariants: topological order, arity per op, spine ops sitting on the spine
@@ -198,6 +232,14 @@ impl FrameGraph {
                     return Err(format!("node {i} ({}): scale target {target} is not in (0, 1]", n.label));
                 }
             }
+            if let Op::Halo { of } = n.op {
+                if of >= i || !self.is_spine(of) {
+                    return Err(format!("node {i} ({}): a halo of {of}, which is not a spine node below it", n.label));
+                }
+                if self.spine_root(of) != 0 {
+                    return Err(format!("node {i} ({}): a halo of {of}, which is not on the frame's spine", n.label));
+                }
+            }
             if let Op::Blur { taps, .. } = n.op {
                 if taps < 3 {
                     return Err(format!("node {i} ({}): a blur of {taps} taps", n.label));
@@ -207,8 +249,8 @@ impl FrameGraph {
         let k = self.resolutions();
         for (i, n) in self.nodes.iter().enumerate() {
             if let Op::Compose { .. } = n.op {
-                if let Some(&j) = n.inputs[1..].iter().find(|&&j| k[j] != 1.0) {
-                    return Err(format!("node {i} ({}): composes input {j} at {} of frame resolution", n.label, k[j]));
+                if let Some(&j) = n.inputs[1..].iter().find(|&&j| k[j] != k[i]) {
+                    return Err(format!("node {i} ({}): composes input {j} at {} of its spine's resolution {}", n.label, k[j], k[i]));
                 }
             }
             if matches!(n.op, Op::Draw(_)) && !self.is_spine(i) {
@@ -225,9 +267,10 @@ impl FrameGraph {
     }
 
     /// The resolution each node's value runs at, as a fraction of the frame's, when every
-    /// [`Op::Scale`] sits at its target: the spine is 1, a `Scale` is its target, a chain op runs
-    /// at its value's resolution, and a leaf runs at its readers' (a leaf is drawn straight into
-    /// the space that reads it).
+    /// [`Op::Scale`] sits at its target: the frame's spine is 1, a `Scale` is its target, a chain
+    /// op runs at its value's resolution, a leaf runs at its readers' (a leaf is drawn straight
+    /// into the space that reads it), and a [`Op::Halo`] with the spine under it runs at its
+    /// reader's (the halo is drawn straight into the resolution that reads it).
     #[must_use]
     pub fn resolutions(&self) -> Vec<f32> {
         self.resolutions_with(&|_, target| target)
@@ -238,11 +281,36 @@ impl FrameGraph {
     #[must_use]
     pub fn resolutions_with(&self, decide: &dyn Fn(NodeId, f32) -> f32) -> Vec<f32> {
         let n = self.nodes.len();
+        let mut spine = vec![1.0f32; n];
+        for (i, node) in self.nodes.iter().enumerate() {
+            let Op::Halo { .. } = node.op else { continue };
+            if self.stood_on(i) {
+                continue;
+            }
+            let kh = self
+                .nodes
+                .iter()
+                .enumerate()
+                .find(|(_, r)| r.inputs.contains(&i))
+                .map_or(1.0, |(r, rn)| match rn.op {
+                    Op::Scale { target, .. } => decide(r, target),
+                    _ => 1.0,
+                });
+            spine[i] = kh;
+            let mut s = node.inputs[0];
+            loop {
+                spine[s] = kh;
+                match self.nodes[s].inputs.first() {
+                    Some(&below) if self.is_spine(s) => s = below,
+                    _ => break,
+                }
+            }
+        }
         let mut k = vec![1.0f32; n];
         for (i, node) in self.nodes.iter().enumerate() {
             k[i] = match &node.op {
                 Op::Scale { target, .. } => decide(i, *target),
-                _ if self.is_spine(i) => 1.0,
+                _ if self.is_spine(i) => spine[i],
                 Op::Draw(_) => 1.0,
                 _ => k[node.inputs[0]],
             };
@@ -291,6 +359,7 @@ impl FrameGraph {
                     let v = of(n.inputs[1]) + crate::kurbo::Vec2::new(f64::from(offset[0]), f64::from(offset[1]));
                     of(n.inputs[0]).union(v)
                 }
+                Op::Halo { of: j } => scale_rect(of(*j), f64::from(k[i] / k[*j])).union(of(n.inputs[0])),
             };
             ext.push(r);
         }
