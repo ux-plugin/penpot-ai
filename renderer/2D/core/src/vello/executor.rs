@@ -52,12 +52,7 @@ fn packed_colour(c: [f32; 4]) -> u32 {
 
 impl Sink {
     /// Run `plan` for a `width × height` frame onto `target` (the swapchain texture). The plan's
-    /// store width must equal the frame width; its frame rows are `[0, height)`. `present` is the
-    /// sub-rect of the frame rows shown on the swapchain, `[off_x, off_y, view_w, view_h]`: the whole
-    /// frame `[0, 0, width, height]` for a 1:1 render, an interior window when the frame was expanded
-    /// past the viewport (option B) so an edge-crossing backdrop is computed in place, not served flat.
-    /// `[off_x, off_y]` is also the device offset the plan's graph was built at past the scene's own
-    /// view; every scene draw is shifted by it so shapes land where the plan's records expect them.
+    /// store width must equal the frame width; its frame rows are `[0, height)`.
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
     pub fn run_plan<B: RasterBackend>(
         &mut self,
@@ -69,7 +64,6 @@ impl Sink {
         root: Affine,
         width: u32,
         height: u32,
-        present: [u32; 4],
     ) {
         plan.validate().unwrap_or_else(|e| panic!("frame plan: {e}"));
         assert!(plan.store.0 >= width, "the store holds the frame's columns");
@@ -83,10 +77,7 @@ impl Sink {
         let full_view = crate::vello::abi::effective_view(root);
         self.last_view = Some(full_view);
         let sw_view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let [view_x, view_y, view_w, view_h] = present;
-        let sz = (view_w as f32, view_h as f32);
-        let src_off = (view_x as f32, view_y as f32);
-        let shift = Affine::translate((f64::from(view_x), f64::from(view_y)));
+        let sz = (width as f32, height as f32);
 
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame plan") });
         if !self.gpu_timer_tried {
@@ -146,7 +137,7 @@ impl Sink {
                     assert!(!in_session, "one Frontend per plan");
                     let t_scene = crate::vello::prof::now();
                     let mut scene = backend.new_scene(sw as u16, sh as u16);
-                    let sdf_jobs = self.encode_draws(&mut scene, draws, backend, device, &mut enc, &store_tex, shift);
+                    let sdf_jobs = self.encode_draws(&mut scene, draws, backend, device, &mut enc, &store_tex);
                     let _ = sdf_jobs;
                     let t_begin = crate::vello::prof::now();
                     backend.phased_begin(&scene, device, queue, &mut enc, sw, sh, crate::vello::abi::background(), &params);
@@ -197,12 +188,12 @@ impl Sink {
                         self.compositor.blit_packed(device, &mut enc, &sw_view, sz, &crate::vello::blend::Blit {
                             src: &store_l0,
                             dst: (0.0, 0.0, sz.0, sz.1),
-                            src_rect: (src_off.0, src_off.1 + y, sz.0, sz.1),
+                            src_rect: (0.0, y, sz.0, sz.1),
                             src_size: store_sz,
                             alpha: 1.0,
                         });
                     } else {
-                        self.present_final(&mut enc, device, &sw_view, &store_l0, view_w, view_h, wgpu::TextureFormat::Rgba8Unorm, sz, store_sz, src_off, full_view);
+                        self.present_final(&mut enc, device, &sw_view, &store_l0, width, height, wgpu::TextureFormat::Rgba8Unorm, sz, store_sz, full_view);
                     }
                 }
             }
@@ -261,7 +252,7 @@ impl Sink {
             if let Some(words) = self.bump_watch.as_mut().and_then(crate::vello::bump_watch::BumpWatch::take) {
                 if self.grow_pools(words, device) && self.reruns < MAX_RERUNS {
                     self.reruns += 1;
-                    self.run_plan(plan, backend, device, queue, target, root, width, height, present);
+                    self.run_plan(plan, backend, device, queue, target, root, width, height);
                     return;
                 }
             }
@@ -310,7 +301,6 @@ impl Sink {
         device: &wgpu::Device,
         enc: &mut wgpu::CommandEncoder,
         store_tex: &wgpu::Texture,
-        shift: Affine,
     ) -> usize {
         let mut baked = 0usize;
         for cmd in draws {
@@ -321,20 +311,19 @@ impl Sink {
                 }
                 DrawCmd::Unclip => scene.pop_layer(),
                 DrawCmd::Shapes { items, transform } => {
-                    let root = *transform * shift;
                     for it in items {
                         let t0 = crate::vello::prof::now();
                         match it.style {
                             DrawStyle::Body => {
-                                backend.draw_shape(scene, root, it.shape);
+                                backend.draw_shape(scene, *transform, it.shape);
                                 crate::vello::prof::dbg_add(32, crate::vello::prof::now() - t0);
                             }
                             DrawStyle::Coverage { spread, .. } => {
-                                backend.draw_coverage(scene, root, it.shape, spread);
+                                backend.draw_coverage(scene, *transform, it.shape, spread);
                                 crate::vello::prof::dbg_add(33, crate::vello::prof::now() - t0);
                             }
                             DrawStyle::Distance { decode } => {
-                                self.bake_distance(device, enc, store_tex, it.shape, *transform, shift, it.bounds, decode, backend);
+                                self.bake_distance(device, enc, store_tex, it.shape, *transform, it.bounds, decode, backend);
                                 baked += 1;
                                 crate::vello::prof::dbg_add(34, crate::vello::prof::now() - t0);
                             }
@@ -346,7 +335,7 @@ impl Sink {
                     let f = *footprint;
                     backend.draw_effect_marker(
                         scene,
-                        *transform * shift,
+                        *transform,
                         *shape,
                         *eid,
                         *seg_after,
@@ -363,9 +352,7 @@ impl Sink {
     }
 
     /// Bake `shape`'s outline distance into the store rect its item's bounds land on under
-    /// `transform`. `shift` is the frame's device offset past the scene's own view (option B):
-    /// the outline is flattened under it, the rect comes from `bounds`, which already carry it.
-    /// The rect must sit inside one store layer.
+    /// `transform`. The rect must sit inside one store layer.
     #[expect(clippy::too_many_arguments, reason = "one bake is device context + target + shape + placement")]
     fn bake_distance<B: RasterBackend>(
         &mut self,
@@ -374,7 +361,6 @@ impl Sink {
         store_tex: &wgpu::Texture,
         shape: u128,
         transform: Affine,
-        shift: Affine,
         bounds: Rect,
         decode: f32,
         backend: &mut B,
@@ -382,7 +368,7 @@ impl Sink {
         let segments = crate::vello::abi::with_scene(|live, viewport, modifiers| {
             let n = live.get(shape)?;
             let m = modifiers.get(&shape).copied().unwrap_or(Affine::IDENTITY);
-            Some(crate::vello::sdf::flatten_segments(&(transform * shift * viewport * m * crate::geometry::outline(n)), 0.3))
+            Some(crate::vello::sdf::flatten_segments(&(transform * viewport * m * crate::geometry::outline(n)), 0.3))
         });
         let Some(segments) = segments else { return };
         let r = texels(transform.transform_rect_bbox(bounds));

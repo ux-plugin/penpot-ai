@@ -162,7 +162,7 @@ fn main() {
         backend.sync_fonts();
         backend.upload_pending_images();
         let plan = plain_plan();
-        sink.run_plan(&plan, &mut backend, &device, &queue, &target, Affine::IDENTITY, W, H, [0, 0, W, H]);
+        sink.run_plan(&plan, &mut backend, &device, &queue, &target, Affine::IDENTITY, W, H);
         device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).expect("poll");
         let got = read_back(&device, &queue, &target);
 

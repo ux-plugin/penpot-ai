@@ -665,12 +665,6 @@ impl Sink {
     /// scheduler turns it into a [`crate::vello::frame_plan::FramePlan`], and [`Self::run_plan`]
     /// runs it. Present-on-demand and the zoom proxy short-circuit an unchanged or moving frame
     /// with the retained canvas before any of that.
-    ///
-    /// When an effect reads the scene past a viewport edge ([`crate::vello::scheduler::escape_margin`]),
-    /// the frame is EXPANDED by that reach: the graph is rebuilt at a view shifted by the margin, the
-    /// plan runs on the larger frame, and only the interior the viewport maps to is presented — so an
-    /// edge-crossing backdrop, nested effects included, is computed in place rather than served as
-    /// flat scene content. `WV_NO_EXPAND` forces the 1:1 frame (a debug A/B against flat serving).
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
     pub fn render_whole_viewport<B: RasterBackend>(
         &mut self,
@@ -747,21 +741,9 @@ impl Sink {
 
         let t0 = crate::vello::prof::now();
         let graph = crate::vello::graph_build::build_frame_graph(root, width, height);
-        let margin = crate::vello::scheduler::escape_margin(&graph, width, height);
-        let [ml, mt, mr, mb] = if std::env::var_os("WV_NO_EXPAND").is_some() { [0; 4] } else { margin.map(|m| m.round() as u32) };
         let t1 = crate::vello::prof::now();
         let (_, pages) = crate::vello::abi::effect_preset();
-        let max_dim = device.limits().max_texture_dimension_2d;
-        let (graph, fw, fh, present) = if (ml | mt | mr | mb) == 0 {
-            (graph, width, height, [0, 0, width, height])
-        } else {
-            let fw = width + ml + mr;
-            let fh = height + mt + mb;
-            let shifted = crate::kurbo::Affine::translate((f64::from(ml), f64::from(mt))) * root;
-            let g = crate::vello::graph_build::build_frame_graph(shifted, fw, fh);
-            (g, fw, fh, [ml, mt, width, height])
-        };
-        let plan = crate::vello::scheduler::plan(&graph, fw, fh, max_dim, pages, &mut self.scale_memory);
+        let plan = crate::vello::scheduler::plan(&graph, width, height, device.limits().max_texture_dimension_2d, pages, &mut self.scale_memory);
         let t2 = crate::vello::prof::now();
         crate::vello::prof::dbg_add(26, t1 - t0);
         crate::vello::prof::dbg_add(27, t2 - t1);
@@ -769,7 +751,7 @@ impl Sink {
         if std::env::var_os("WV_PLAN_DUMP").is_some() {
             eprintln!("{}{}", crate::vello::graph_build::dump(&graph), plan.dump());
         }
-        self.run_plan(&plan, backend, device, queue, target, root, fw, fh, present);
+        self.run_plan(&plan, backend, device, queue, target, root, width, height);
     }
 
     /// A full-viewport 1:1 src-over blit of `src` onto `target`.
@@ -808,9 +790,8 @@ impl Sink {
     /// byte-identical to the original path.
     ///
     /// `sz` is the viewport (what gets presented); `acc_sz` is the accumulator's own size, which is
-    /// taller than the viewport whenever a source strip rode along below it. `src_off` is the store
-    /// texel the viewport's top-left maps to: `(0, 0)` for a 1:1 frame, the escape margin when the
-    /// frame was expanded past the viewport to compute edge-crossing backdrops in place.
+    /// taller than the viewport whenever a source strip rode along below it. They differ only in the
+    /// sampling denominator — the presented region is always the viewport rectangle at the origin.
     #[expect(clippy::too_many_arguments, reason = "the GPU context + present bookkeeping travel together")]
     pub(crate) fn present_final(
         &mut self,
@@ -823,13 +804,12 @@ impl Sink {
         format: wgpu::TextureFormat,
         sz: (f32, f32),
         acc_sz: (f32, f32),
-        src_off: (f32, f32),
         full_view: Affine,
     ) {
         let viewport = Blit {
             src: final_view,
             dst: (0.0, 0.0, sz.0, sz.1),
-            src_rect: (src_off.0, src_off.1, sz.0, sz.1),
+            src_rect: (0.0, 0.0, sz.0, sz.1),
             src_size: acc_sz,
             alpha: 1.0,
         };

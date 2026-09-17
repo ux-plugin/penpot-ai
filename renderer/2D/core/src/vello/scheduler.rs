@@ -117,7 +117,7 @@ pub fn escape_margin(graph: &FrameGraph, width: u32, height: u32) -> [f64; 4] {
         for i in nodes {
             for j in s.inputs(i) {
                 if s.g.is_spine(j) {
-                    reach = reach.union(s.read_content_padded(i, j));
+                    reach = reach.union(s.read_content(i, j));
                 }
             }
         }
@@ -860,28 +860,6 @@ impl<'a> Scheduler<'a> {
             op if is_head(op) && self.input(i, 0) == j => {
                 let reach = f64::from(reach_px(&node.op)) * f64::from(self.k[i]);
                 self.cout[i].inflate(reach, reach)
-            }
-            _ => self.cout[i],
-        };
-        self.in_space_of(r, i, j)
-    }
-
-    /// The unclamped region of `j` that `i` samples, sized like [`Self::read_content`] but by the
-    /// op's full sampling pad ([`pad_at`], the reach plus the store-sampling ring) rather than the
-    /// bare frame reach. The frame Option B expands to must cover every texel the shader reads, ring
-    /// included — a short expansion leaves the reader's edge-extend clamp to smear the missing ring
-    /// into a constant band (a served ground, which never samples past its own drawn rect, needs
-    /// only the reach and so uses [`Self::read_content`]).
-    fn read_content_padded(&self, i: NodeId, j: NodeId) -> Rect {
-        let node = &self.g.nodes[i];
-        let r = match &node.op {
-            Op::EraseBy(u) if node.inputs.get(1).map(|&x| self.alias[x]) == Some(j) => {
-                let shift = Vec2::new(f64::from(u.first().copied().unwrap_or(0.0)), f64::from(u.get(1).copied().unwrap_or(0.0)));
-                self.cout[i] - shift
-            }
-            op if is_head(op) && self.input(i, 0) == j => {
-                let p = f64::from(pad_at(&node.op, self.k[i]));
-                self.cout[i].inflate(p, p)
             }
             _ => self.cout[i],
         };
