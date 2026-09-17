@@ -96,6 +96,41 @@ pub fn plan(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f6
     Scheduler::new(graph, width, height, max_dim, pages, memory).run()
 }
 
+/// How far past each frame edge an effect reaches, in device pixels, tile-rounded and never
+/// negative: `[left, top, right, bottom]`. This is the halo of off-frame content an effect near
+/// the edge pulls in — a blur's `3σ`, a lens's slack — measured over the reach-only extents, so
+/// it excludes the store-sampling ring. Rendering the viewport grown by this margin computes those
+/// haloes in-frame, so a backdrop that crosses the edge (and any effect nested in it) is correct
+/// rather than served flat. Zero on every edge when nothing reaches past the frame.
+#[must_use]
+pub fn escape_margin(graph: &FrameGraph, width: u32, height: u32) -> [f64; 4] {
+    let mut memory = HashMap::new();
+    let mut s = Scheduler::new(graph, width, height, u32::MAX, 0.0, &mut memory);
+    s.demand_pass();
+    s.content_pass();
+    s.build_arms();
+    let frame = s.frame;
+    let mut reach = frame;
+    for a in 0..s.arms.len() {
+        let mut nodes = s.arms[a].nodes.clone();
+        nodes.extend(s.arms[a].compose);
+        for i in nodes {
+            for j in s.inputs(i) {
+                if s.g.is_spine(j) {
+                    reach = reach.union(s.read_content(i, j));
+                }
+            }
+        }
+    }
+    [
+        (frame.x0 - reach.x0).max(0.0),
+        (frame.y0 - reach.y0).max(0.0),
+        (reach.x1 - frame.x1).max(0.0),
+        (reach.y1 - frame.y1).max(0.0),
+    ]
+    .map(|m| (m / TILE_H).ceil() * TILE_H)
+}
+
 /// The resolution a pair runs at this frame: `bound` is the highest its rules allow (the target
 /// when none binds, and above it when they have slack), `prev` what it ran at last frame. It steps
 /// down whenever the bound is below it, and climbs a rung only once the bound clears that rung by
@@ -1657,6 +1692,17 @@ mod tests {
         let p = plan(&nested_gathers(), 640, 480, 8192, 4.0, &mut HashMap::new());
         p.validate().unwrap_or_else(|e| panic!("{e}"));
         assert!(p.shape().markers >= 2, "both glasses land their compose: {}", p.shape().markers);
+    }
+
+    #[test]
+    fn escape_margin_is_zero_when_nothing_crosses_and_covers_the_edge_reach() {
+        // The single glass of `graph` sits inside the frame: no effect reaches past an edge.
+        assert_eq!(escape_margin(&graph(), 640, 480), [0.0; 4], "an in-frame scene has no halo");
+        // glassB's mask crosses the right edge, so its backdrop reaches past it and only there.
+        let m = escape_margin(&nested_gathers(), 640, 480);
+        assert!(m[2] > 0.0, "the right edge has a halo: {m:?}");
+        assert_eq!([m[0], m[1], m[3]], [0.0; 3], "the other three edges do not: {m:?}");
+        assert!(m[2] % 16.0 == 0.0, "the margin is tile-rounded: {m:?}");
     }
 
     /// [`graph`] with a scale pair of `target` around the shadow's blurs and another around the
