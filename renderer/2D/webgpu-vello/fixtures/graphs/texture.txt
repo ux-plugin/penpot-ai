@@ -28,7 +28,7 @@ frame [0.0 0.0 1192.0 432.0] nodes 46 background [1.0, 1.0, 1.0, 1.0]
  26   s5 noise warp              in=[25] Warp program 2
  27   s5 up                      in=[26] Scale → 1
  28   s5 noise clip              in=[27, 24] ClipToSource
- 29   s5 down                    in=[28] Scale → 0.5
+ 29   s5 down                    in=[28] Scale → 1
  30   s5 body blur-X σ2.8        in=[29] Blur σ2.8 X linear transparent taps 193
  31   s5 body blur-Y σ2.8        in=[30] Blur σ2.8 Y linear transparent taps 193
  32   s5 up                      in=[31] Scale → 1
@@ -38,7 +38,7 @@ frame [0.0 0.0 1192.0 432.0] nodes 46 background [1.0, 1.0, 1.0, 1.0]
  36   s6 noise warp              in=[35] Warp program 2
  37   s6 up                      in=[36] Scale → 1
  38   s6 noise clip              in=[37, 34] ClipToSource
- 39   s6 down                    in=[38] Scale → 0.5
+ 39   s6 down                    in=[38] Scale → 1
  40   s6 body blur-X σ2.8        in=[39] Blur σ2.8 X linear transparent taps 193
  41   s6 body blur-Y σ2.8        in=[40] Blur σ2.8 Y linear transparent taps 193
  42   s6 up                      in=[41] Scale → 1

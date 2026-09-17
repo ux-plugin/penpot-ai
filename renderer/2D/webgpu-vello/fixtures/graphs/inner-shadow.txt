@@ -1,4 +1,4 @@
-frame [0.0 0.0 1192.0 242.0] nodes 24 background [1.0, 1.0, 1.0, 1.0]
+frame [0.0 0.0 1192.0 242.0] nodes 23 background [1.0, 1.0, 1.0, 1.0]
   0 | draw · 0 item(s)           in=[] Draw n=0 [0.0 0.0 0.0 0.0] 
   1 | draw · 1 item(s)           in=[0] Draw n=1 [48.0 48.0 194.0 194.0] 1:body[48.0 48.0 194.0 194.0]
   2   s1 inner flood             in=[] Draw n=1 [48.0 48.0 194.0 194.0] 1:coverage[48.0 48.0 194.0 194.0]
@@ -11,15 +11,14 @@ frame [0.0 0.0 1192.0 242.0] nodes 24 background [1.0, 1.0, 1.0, 1.0]
   9 | s1 inner → spine           in=[1, 8] Compose Over colour [0.00, 0.00, 0.00, 0.78]
  10 | draw · 1 item(s)           in=[9] Draw n=1 [238.0 48.0 384.0 194.0] 2:body[238.0 48.0 384.0 194.0]
  11   s2 inner flood             in=[] Draw n=1 [238.0 48.0 384.0 194.0] 2:coverage/glyph[238.0 48.0 384.0 194.0]
- 12   s2 down                    in=[11] Scale → 0.5
+ 12   s2 down                    in=[11] Scale → 1
  13   s2 punch blur-X σ4.0       in=[12] Blur σ4.0 X srgb transparent taps 193
  14   s2 punch blur-Y σ4.0       in=[13] Blur σ4.0 Y srgb transparent taps 193
  15   s2 up                      in=[14] Scale → 1
- 16   s2 inner flood at 1        in=[] Draw n=1 [238.0 48.0 384.0 194.0] 2:coverage/glyph[238.0 48.0 384.0 194.0]
- 17   s2 inner band              in=[16, 15] EraseBy at 4.0,5.0
- 18 | s2 inner → spine           in=[10, 17] Compose Over colour [0.00, 0.00, 0.00, 0.82]
- 19 | draw · 1 item(s)           in=[18] Draw n=1 [428.0 48.0 574.0 194.0] 3:body[428.0 48.0 574.0 194.0]
- 20   s3 inner flood             in=[] Draw n=1 [428.0 48.0 574.0 194.0] 3:coverage[428.0 48.0 574.0 194.0]
- 21   s3 inner band              in=[20, 20] EraseBy at 9.0,11.0
- 22 | s3 inner → spine           in=[19, 21] Compose Over colour [0.00, 0.00, 0.00, 0.82]
- 23 | draw · 1 item(s)           in=[22] Draw n=1 [618.0 48.0 764.0 194.0] 4:body[618.0 48.0 764.0 194.0]
+ 16   s2 inner band              in=[11, 15] EraseBy at 4.0,5.0
+ 17 | s2 inner → spine           in=[10, 16] Compose Over colour [0.00, 0.00, 0.00, 0.82]
+ 18 | draw · 1 item(s)           in=[17] Draw n=1 [428.0 48.0 574.0 194.0] 3:body[428.0 48.0 574.0 194.0]
+ 19   s3 inner flood             in=[] Draw n=1 [428.0 48.0 574.0 194.0] 3:coverage[428.0 48.0 574.0 194.0]
+ 20   s3 inner band              in=[19, 19] EraseBy at 9.0,11.0
+ 21 | s3 inner → spine           in=[18, 20] Compose Over colour [0.00, 0.00, 0.00, 0.82]
+ 22 | draw · 1 item(s)           in=[21] Draw n=1 [618.0 48.0 764.0 194.0] 4:body[618.0 48.0 764.0 194.0]
