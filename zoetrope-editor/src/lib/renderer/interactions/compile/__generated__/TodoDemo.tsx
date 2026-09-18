@@ -11,13 +11,13 @@ export function TodoDemo() {
   }
 
   return (
-    <div data-node-id="page">
-      <button data-node-id="addBtn" disabled={isEmpty} onClick={handle_addBtn_press}>Add</button>
-      <ul data-node-id="list">
+    <div data-node-id="page" style={{ "boxSizing": "border-box" }}>
+      <div data-node-id="addBtn" disabled={isEmpty} onClick={handle_addBtn_press} style={{ "boxSizing": "border-box" }}>Add</div>
+      <div data-node-id="list" style={{ "boxSizing": "border-box" }}>
         {items.map((item) => (
-          <li data-node-id="row" key={item.id} data-instance-key={item.id}>{item.label}</li>
+          <div data-node-id="row" key={item.id} data-instance-key={item.id} style={{ "boxSizing": "border-box" }}>{item.label}</div>
         ))}
-      </ul>
+      </div>
     </div>
   )
 }

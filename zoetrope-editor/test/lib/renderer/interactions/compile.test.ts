@@ -12,7 +12,7 @@ const NODE_IDS = new Set(['page', 'addBtn', 'list', 'row'])
 /** The "todo" page: add to list, disable-when-empty, repeater rows showing labels. */
 function todoIR(): PageInteractions {
   const ir = emptyPageInteractions()
-  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [], source: 'local' })
+  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
   ir.derived.push({ id: 'isEmpty', expr: 'items.length == 0' })
   ir.interactions.push({
     on: { node: 'addBtn', trigger: { type: 'press' } },
@@ -26,10 +26,10 @@ function todoIR(): PageInteractions {
 
 const presentation: PNode = {
   nodeId: 'page',
-  tag: 'div',
+  role: 'container',
   children: [
-    { nodeId: 'addBtn', tag: 'button', text: 'Add' },
-    { nodeId: 'list', tag: 'ul', children: [{ nodeId: 'row', tag: 'li' }] },
+    { nodeId: 'addBtn', role: 'button', text: 'Add' },
+    { nodeId: 'list', role: 'list', children: [{ nodeId: 'row', role: 'item' }] },
   ],
 }
 

@@ -9,7 +9,7 @@
  * their index within an interaction's `do[]`.
  */
 
-import type { PageInteractions, Interaction, Action, Variable, ValueType, Json, Repeater, Binding } from '../ir'
+import type { PageInteractions, Interaction, Action, Variable, Store, ValueType, Json, Scope, Repeater, Binding, Editable } from '../ir'
 
 function mapInteraction(
   ir: PageInteractions,
@@ -76,19 +76,43 @@ export function setActionValue(ir: PageInteractions, id: string, index: number, 
   return mapAction(ir, id, index, (a) => ({ ...a, value: value || undefined }))
 }
 
-// ---- page variables (page-scoped state the actions read/write) ----
+/**
+ * Set (or, with an empty string, clear) one of an action's extra expression
+ * params — `where` on `collection.update`, `at` on `collection.insert`. Which
+ * keys an action accepts is declared by its catalog entry's `expects.params`.
+ * Clearing the last param drops `params` entirely so the IR stays minimal.
+ */
+export function setActionParam(
+  ir: PageInteractions,
+  id: string,
+  index: number,
+  key: string,
+  value: string,
+): PageInteractions {
+  return mapAction(ir, id, index, (a) => {
+    const params = { ...a.params }
+    if (value.trim()) params[key] = value
+    else delete params[key]
+    const next: Action = { ...a }
+    if (Object.keys(params).length) next.params = params
+    else delete next.params
+    return next
+  })
+}
+
+// ---- cells (the one kind of state the actions read/write) ----
 
 export function makeCollectionVariable(id: string): Variable {
-  return { id, type: { collection: 'object' }, scope: 'page', initial: [], source: 'local' }
+  return { id, type: { collection: 'object' }, scope: 'page', initial: [] }
 }
 
 export function makeScalarVariable(id: string, type: ValueType = 'any', initial: Json = null): Variable {
-  return { id, type, scope: 'page', initial, source: 'local' }
+  return { id, type, scope: 'page', initial }
 }
 
-/** Add a variable if its id is free (no-op otherwise). */
+/** Add a variable if its name is free across all cells (no-op otherwise). */
 export function addVariable(ir: PageInteractions, variable: Variable): PageInteractions {
-  if (ir.variables.some((v) => v.id === variable.id)) return ir
+  if (isNameTaken(ir, variable.id)) return ir
   return { ...ir, variables: [...ir.variables, variable] }
 }
 
@@ -130,6 +154,106 @@ export function setVariableType(ir: PageInteractions, id: string, type: ValueTyp
   return mapVariable(ir, id, (v) => ({ ...v, type, initial: defaultInitial(type) }))
 }
 
+/**
+ * Whether `id` is already taken. Stores, cells and formulas share one namespace
+ * (cells are referenced by bare name in expressions — see ./addressing
+ * buildScope), so any collision would make a reference ambiguous.
+ */
+export function isNameTaken(ir: PageInteractions, id: string): boolean {
+  return (
+    ir.variables.some((v) => v.id === id) ||
+    ir.derived.some((d) => d.id === id) ||
+    ir.stores.some((s) => s.id === id)
+  )
+}
+
+/**
+ * Where a cell lives. Set by the designer, changeable at any time — wiring a
+ * component's own flag to something document-wide is a legitimate thing to want,
+ * so this never second-guesses the choice.
+ */
+export function setVariableScope(ir: PageInteractions, id: string, scope: Scope): PageInteractions {
+  return mapVariable(ir, id, (v) => ({ ...v, scope }))
+}
+
+/**
+ * Set (or, with a blank string, clear) what a cell MEANS. Prose, aimed at whoever
+ * binds the real value at handover. Only meaningful on a store cell, but harmless
+ * on any cell — the emitter only reads it for store cells.
+ */
+export function setVariableDescription(ir: PageInteractions, id: string, description: string): PageInteractions {
+  return mapVariable(ir, id, (v) => {
+    const next: Variable = { ...v }
+    const text = description.trim()
+    if (text) next.description = text
+    else delete next.description
+    return next
+  })
+}
+
+// ---- stores (named containers the designer creates; the seam to real data) ----
+//
+// A store groups cells and marks them as supplied from outside. It shares the one
+// namespace with cells and formulas, so a store name can't collide with a value.
+
+function mapStore(ir: PageInteractions, id: string, fn: (s: Store) => Store): PageInteractions {
+  return { ...ir, stores: ir.stores.map((s) => (s.id === id ? fn(s) : s)) }
+}
+
+/** Create a store if its name is free (no-op otherwise). */
+export function addStore(ir: PageInteractions, id: string): PageInteractions {
+  if (!id || isNameTaken(ir, id)) return ir
+  return { ...ir, stores: [...ir.stores, { id }] }
+}
+
+/**
+ * Delete a store. Its cells are NOT deleted — they become component-local, which
+ * keeps every interaction already wired to them working. Removing the container
+ * is "this data isn't external after all", not "throw the wiring away".
+ */
+export function removeStore(ir: PageInteractions, id: string): PageInteractions {
+  return {
+    ...ir,
+    stores: ir.stores.filter((s) => s.id !== id),
+    variables: ir.variables.map((v) => {
+      if (v.store !== id) return v
+      const next = { ...v }
+      delete next.store
+      return next
+    }),
+  }
+}
+
+export function setStoreDescription(ir: PageInteractions, id: string, description: string): PageInteractions {
+  return mapStore(ir, id, (s) => {
+    const next: Store = { ...s }
+    const text = description.trim()
+    if (text) next.description = text
+    else delete next.description
+    return next
+  })
+}
+
+/** Add a cell to a store — a value the store supplies. `initial` is its sample. */
+export function addStoreField(ir: PageInteractions, store: string, id: string, type: ValueType = 'string'): PageInteractions {
+  if (!id || isNameTaken(ir, id) || !ir.stores.some((s) => s.id === store)) return ir
+  return { ...ir, variables: [...ir.variables, { id, type, scope: 'global', initial: defaultInitial(type), store }] }
+}
+
+/**
+ * Move a cell into a store (or, with undefined, back out to component-local). The
+ * cell keeps its id, type, value and wiring — membership is the only change,
+ * which is the whole point: "from the app" is where a value lives, not a flag.
+ */
+export function setVariableStore(ir: PageInteractions, id: string, store: string | undefined): PageInteractions {
+  return mapVariable(ir, id, (v) => {
+    const next: Variable = { ...v }
+    if (store && ir.stores.some((s) => s.id === store)) next.store = store
+    else delete next.store
+    return next
+  })
+}
+
 // ---- derived values (read-only formulas over other state) ----
 //
 // `Derived { id, expr }` already exists in the IR and is evaluated by both the
@@ -137,7 +261,7 @@ export function setVariableType(ir: PageInteractions, id: string, type: ValueTyp
 // reducers just make it authorable.
 
 export function addDerived(ir: PageInteractions, id: string, expr = ''): PageInteractions {
-  if (!id || ir.derived.some((d) => d.id === id) || ir.variables.some((v) => v.id === id)) return ir
+  if (!id || isNameTaken(ir, id)) return ir
   return { ...ir, derived: [...ir.derived, { id, expr }] }
 }
 
@@ -245,4 +369,28 @@ export function setBindingExpr(ir: PageInteractions, node: string, prop: string,
 
 export function removeBindingProp(ir: PageInteractions, node: string, prop: string): PageInteractions {
   return { ...ir, bindings: ir.bindings.filter((b) => !(b.node === node && b.prop === prop)) }
+}
+
+// ---- editable (two-way: the node edits a state cell) ----
+//
+// Kept in its own collection rather than as a flag on Binding: a Binding is
+// defined as a sink, and making some sinks secretly sources would muddy the one
+// thing that type guarantees. Addressed by `(node, prop)` — a node edits at most
+// one cell through any given property.
+
+export function getEditable(ir: PageInteractions, node: string, prop = 'value'): Editable | undefined {
+  return ir.editable.find((e) => e.node === node && e.prop === prop)
+}
+
+/** Upsert "this node edits `target`". An empty target clears it. */
+export function setEditable(ir: PageInteractions, node: string, target: string, prop = 'value'): PageInteractions {
+  if (!target.trim()) return clearEditable(ir, node, prop)
+  if (ir.editable.some((e) => e.node === node && e.prop === prop)) {
+    return { ...ir, editable: ir.editable.map((e) => (e.node === node && e.prop === prop ? { ...e, target } : e)) }
+  }
+  return { ...ir, editable: [...ir.editable, { node, prop, target }] }
+}
+
+export function clearEditable(ir: PageInteractions, node: string, prop = 'value'): PageInteractions {
+  return { ...ir, editable: ir.editable.filter((e) => !(e.node === node && e.prop === prop)) }
 }

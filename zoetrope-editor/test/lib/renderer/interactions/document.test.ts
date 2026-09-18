@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { PenpotPage } from 'penpot-exporter/types'
 import { flattenPageToIndexed, unflattenIndexedPageToPage } from '../../../../src/lib/worker/flatten'
 import { emptyPageInteractions, type PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
-import { nodesToPresentation } from '../../../../src/lib/renderer/interactions/document/nodes-to-presentation'
+import { nodesToPresentation, findPNode } from '../../../../src/lib/renderer/interactions/document/nodes-to-presentation'
 
 const ZERO = '00000000-0000-0000-0000-000000000000'
 
@@ -29,7 +29,7 @@ function makePage(interactions?: PageInteractions): PenpotPage {
 describe('serialization — interactions survive flatten/unflatten', () => {
   it('carries PageInteractions through the round-trip', () => {
     const ir = emptyPageInteractions()
-    ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [], source: 'local' })
+    ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
 
     const indexed = flattenPageToIndexed(makePage(ir))
     expect(indexed.interactions?.variables.map((v) => v.id)).toEqual(['items'])
@@ -45,23 +45,60 @@ describe('serialization — interactions survive flatten/unflatten', () => {
 })
 
 describe('nodesToPresentation — shapes -> PNode tree with anchors', () => {
-  it('maps the shape hierarchy to tags + anchors + text', () => {
+  it('maps the shape hierarchy to anchors + text', () => {
     const indexed = flattenPageToIndexed(makePage())
     const root = nodesToPresentation(indexed)
 
     expect(root?.nodeId).toBe(ZERO)
-    expect(root?.tag).toBe('div')
 
-    const kids = root?.children ?? []
-    const addBtn = kids.find((k) => k.nodeId === 'addBtn')
-    const list = kids.find((k) => k.nodeId === 'list')
-    expect(addBtn?.tag).toBe('button') // name "Add button" -> button heuristic
-    expect(list?.tag).toBe('ul') // name "Todo list" -> list heuristic
-
+    const list = (root?.children ?? []).find((k) => k.nodeId === 'list')
     const row = list?.children?.[0]
     expect(row?.nodeId).toBe('row')
-    expect(row?.tag).toBe('li') // name "Row" -> li heuristic
     expect(row?.text).toBe('Item') // text content extracted
+  })
+
+  it('gives a shape with no behaviour a plain role, whatever it is CALLED', () => {
+    // "Add button" and "Todo list" used to become <button> and <ul> purely by
+    // name. A layer name is not behaviour — rename it and the meaning changed.
+    const root = nodesToPresentation(flattenPageToIndexed(makePage()))
+    const kids = root?.children ?? []
+    expect(root?.role).toBe('container')
+    expect(kids.find((k) => k.nodeId === 'addBtn')?.role).toBe('container')
+    expect(kids.find((k) => k.nodeId === 'list')?.role).toBe('container')
+    // a text shape is still text — that comes from the shape, not the name
+    expect(kids.find((k) => k.nodeId === 'list')?.children?.[0]?.role).toBe('text')
+  })
+
+  it('derives roles from the behaviour authored on each node', () => {
+    const ir = emptyPageInteractions()
+    ir.variables.push({ id: 'draft', type: 'string', scope: 'page', initial: '' })
+    ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
+    ir.editable.push({ node: 'addBtn', prop: 'value', target: 'draft' })
+    ir.repeaters.push({ node: 'row', over: 'items' })
+
+    const root = nodesToPresentation(flattenPageToIndexed(makePage(ir)))
+    const kids = root?.children ?? []
+    expect(kids.find((k) => k.nodeId === 'addBtn')?.role).toBe('field') // it edits a cell
+    expect(kids.find((k) => k.nodeId === 'list')?.role).toBe('list') // its child is a template
+    expect(kids.find((k) => k.nodeId === 'list')?.children?.[0]?.role).toBe('item')
+  })
+
+  it('a press makes a node a button; open-url makes it a link', () => {
+    const ir = emptyPageInteractions()
+    ir.interactions.push({ id: 'i1', on: { node: 'addBtn', trigger: { type: 'press' } }, do: [] })
+    expect(
+      nodesToPresentation(flattenPageToIndexed(makePage(ir)))?.children?.find((k) => k.nodeId === 'addBtn')?.role,
+    ).toBe('button')
+
+    const linkIr = emptyPageInteractions()
+    linkIr.interactions.push({
+      id: 'i1',
+      on: { node: 'addBtn', trigger: { type: 'press' } },
+      do: [{ type: 'open-url', value: '"https://example.com"' }],
+    })
+    expect(
+      nodesToPresentation(flattenPageToIndexed(makePage(linkIr)))?.children?.find((k) => k.nodeId === 'addBtn')?.role,
+    ).toBe('link')
   })
 
   it('returns null for an empty page', () => {
@@ -131,5 +168,135 @@ describe('nodesToPresentation — slot projection', () => {
     // not Home (already in-flight), so it terminates.
     expect(slot?.slot?.views.home).toBeDefined()
     expect(Object.keys(slot?.slot?.views ?? {})).toEqual(['home', 'about'])
+  })
+})
+
+/** A page whose shapes carry real design properties, not just names. */
+function makeStyledPage(): PenpotPage {
+  return {
+    id: 'page-1',
+    name: 'Page 1',
+    background: '#ffffff',
+    children: [
+      { id: ZERO, type: 'frame', name: 'Root', selrect: { x: 0, y: 0, width: 1200, height: 900 } },
+      {
+        id: 'card',
+        type: 'frame',
+        name: 'Card',
+        selrect: { x: 10, y: 20, width: 320, height: 180 },
+        fills: [{ fillColor: '#ffffff', fillOpacity: 1 }],
+        strokes: [{ strokeColor: '#e5e7eb', strokeWidth: 1, strokeStyle: 'solid' }],
+        r1: 12,
+        r2: 12,
+        r3: 12,
+        r4: 12,
+        children: [
+          {
+            id: 'title',
+            type: 'text',
+            name: 'Title',
+            selrect: { x: 20, y: 30, width: 200, height: 24 },
+            fills: [{ fillColor: '#111827' }],
+            content: { children: [{ fontSize: 18, fontWeight: 600, textAlign: 'left', children: [{ text: 'Hello' }] }] },
+          },
+        ],
+      },
+      {
+        id: 'ghost',
+        type: 'rect',
+        name: 'Hidden box',
+        hidden: true,
+        selrect: { x: 0, y: 0, width: 50, height: 50 },
+      },
+      {
+        id: 'faded',
+        type: 'rect',
+        name: 'Faded',
+        opacity: 0.5,
+        selrect: { x: 0, y: 0, width: 40, height: 40 },
+        fills: [{ fillColor: '#3B82F6', fillOpacity: 0.5 }],
+      },
+    ],
+  } as unknown as PenpotPage
+}
+
+describe('nodesToPresentation — design properties become inline CSS', () => {
+  const build = () => nodesToPresentation(flattenPageToIndexed(makeStyledPage()))
+  const find = (id: string) => {
+    const walk = (n: NonNullable<ReturnType<typeof build>>): NonNullable<ReturnType<typeof build>> | null => {
+      if (n.nodeId === id) return n
+      for (const c of n.children ?? []) {
+        const hit = walk(c)
+        if (hit) return hit
+      }
+      return null
+    }
+    const root = build()
+    return root ? walk(root) : null
+  }
+
+  it('carries size from the selrect so a shape is not a zero-height div', () => {
+    expect(find('card')?.style).toMatchObject({ width: '320px', minHeight: '180px' })
+  })
+
+  it('exempts the page root from sizing — it adapts to its container', () => {
+    const root = build()
+    expect(root?.style?.width).toBeUndefined()
+    expect(root?.style?.minHeight).toBeUndefined()
+  })
+
+  it('carries fill, border and radius', () => {
+    expect(find('card')?.style).toMatchObject({
+      background: '#ffffff',
+      border: '1px solid #e5e7eb',
+      borderRadius: '12px',
+    })
+  })
+
+  it('makes containers stack their children as a column', () => {
+    expect(find('card')?.style).toMatchObject({ display: 'flex', flexDirection: 'column', gap: '8px' })
+    expect(find('title')?.style?.display).toBeUndefined() // leaf, not a container
+  })
+
+  it('maps a text fill to color plus typography, not background', () => {
+    const title = find('title')?.style
+    expect(title).toMatchObject({ color: '#111827', fontSize: '18px', fontWeight: '600', textAlign: 'left' })
+    expect(title?.background).toBeUndefined()
+  })
+
+  it('folds fill opacity into the colour and carries shape opacity', () => {
+    expect(find('faded')?.style).toMatchObject({ background: '#3B82F680', opacity: '0.5' })
+  })
+
+  it('hides a hidden shape but keeps its anchor element', () => {
+    expect(find('ghost')?.style?.display).toBe('none')
+    expect(find('ghost')?.nodeId).toBe('ghost') // still present: one node, one anchor
+  })
+})
+
+describe('findPNode — the scoping primitive for "show only the selection"', () => {
+  const tree = () => nodesToPresentation(flattenPageToIndexed(makeStyledPage()))!
+
+  it('finds a nested node and returns its whole subtree', () => {
+    const card = findPNode(tree(), 'card')
+    expect(card?.nodeId).toBe('card')
+    expect(card?.children?.map((c) => c.nodeId)).toEqual(['title'])
+  })
+
+  it('finds the root itself', () => {
+    expect(findPNode(tree(), ZERO)?.nodeId).toBe(ZERO)
+  })
+
+  it('returns null for an id that is not in the tree', () => {
+    expect(findPNode(tree(), 'nope')).toBeNull()
+  })
+
+  it('searches inside a slot’s candidate views, not just children', () => {
+    const root = {
+      nodeId: 'root',
+      role: 'container',
+      slot: { activeView: 'viewA', views: { viewA: { nodeId: 'viewA', role: 'container', children: [{ nodeId: 'deep', role: 'text' }] } } },
+    }
+    expect(findPNode(root, 'deep')?.nodeId).toBe('deep')
   })
 })

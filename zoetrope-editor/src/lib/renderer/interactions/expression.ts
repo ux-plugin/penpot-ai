@@ -453,6 +453,17 @@ export function toJs(node: ExprNode): string {
 const jsBinOp = (op: BinaryOp) => (op === '==' ? '===' : op === '!=' ? '!==' : op)
 const jsKey = (k: string) => (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k) ? k : JSON.stringify(k))
 
+/**
+ * The inner `k: v, …` body of an object literal, without its braces — so a
+ * caller can splice it into a spread merge and emit `{ ...item, done: true }`
+ * rather than the correct-but-ugly `{ ...item, ...{ done: true } }`.
+ * Returns undefined for any node that isn't an object literal.
+ */
+export function objectBodyJs(node: ExprNode): string | undefined {
+  if (node.type !== 'object') return undefined
+  return node.props.map((p) => `${jsKey(p.key)}: ${toJs(p.value)}`).join(', ')
+}
+
 function wrap(node: ExprNode): string {
   const s = toJs(node)
   return node.type === 'binary' || node.type === 'logical' || node.type === 'conditional' || node.type === 'lambda'

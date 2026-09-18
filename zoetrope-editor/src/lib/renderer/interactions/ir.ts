@@ -3,7 +3,7 @@
  *
  * Two layers live here:
  *   1. The stored ECA-sugar (what the panel edits, what serializes) — Variable,
- *      Derived, Interaction, AppRule, Binding, NodeStates, Repeater, Port,
+ *      Derived, Interaction, AppRule, Binding, NodeStates, Repeater,
  *      gathered per page in `PageInteractions`.
  *   2. The normalized reactive graph (`GraphNode`) the sugar compiles into —
  *      Signals + Events + a fixed combinator set. A compile artifact, not stored.
@@ -51,28 +51,73 @@ export type ValueType =
   | 'any'
   | { collection: ValueType }
 
-/** A piece of app state. Lowers to a `source` producing a Signal. */
+/**
+ * A named container the designer CREATES — a store, table, or "app state" — the
+ * same way they create a component. It holds cells (`Variable`s tagged with its
+ * id) filled with sample data.
+ *
+ * A store is the seam to real data: it is the thing a real database or API binds
+ * to at handover, and its cells are supplied from outside rather than decided by
+ * the design. That is why membership replaces the old per-cell `outside` flag —
+ * "comes from outside" is not a checkbox on a value, it is the value living in a
+ * container the designer built for exactly that.
+ *
+ * `description` says what real data the store maps to, for whoever binds it.
+ */
+export interface Store {
+  id: string
+  description?: string
+}
+
+/**
+ * A named cell — the ONE kind of addressable state. Lowers to a `source`
+ * producing a Signal.
+ *
+ * There is deliberately no second kind of value and no "is this external" flag.
+ * A cell either lives on its own (a component's private state) or in a `store`
+ * the designer created — and *that membership* is the whole "comes from outside"
+ * statement. Everything an interaction can read or write is one of these, so
+ * "wire this button to that value" never depends on which sort of value it is.
+ *
+ * `scope` is set by the DESIGNER and changeable at any time — never inferred,
+ * never auto-promoted. Wiring a component's own `open` flag to a store is a
+ * legitimate thing to want, not a mistake to prevent.
+ */
 export interface Variable {
   id: string
   type: ValueType
   scope: Scope
+  /**
+   * What the cell holds to begin with. On its own that is the initial value; in a
+   * store it is the SAMPLE — the same slot, because operationally they are the
+   * same thing: what the preview starts from.
+   */
   initial: Json
-  /** `'port'` => generated as a typed prop/callback at the business-logic seam. */
-  source: 'local' | 'port'
+  /**
+   * The `Store` this cell lives in, or absent for a component's own state.
+   * Present ⇔ the value is supplied from outside; what a write has to DO to reach
+   * the real source is derived at lowering, never authored (see `emitReactComponent`).
+   */
+  store?: string
+  /**
+   * Optional prose for a store cell: what real value this is, in the designer's
+   * words. What gets handed over is the design, so this is what tells whoever
+   * binds it that `productTitle: "Sample product"` is a database field and not
+   * deliberate copy. Meaningless on a component-local cell.
+   */
+  description?: string
   persist?: Persistence
+}
+
+/** Whether a cell is supplied from outside — i.e. lives in a store. */
+export function isBacked(v: Variable): boolean {
+  return v.store != null
 }
 
 /** A computed, read-only value. Lowers to a `derive` node. */
 export interface Derived {
   id: string
   expr: Expr
-}
-
-/** Typed boundary to frontend business logic. */
-export interface Port {
-  id: string
-  dir: 'in' | 'out'
-  type: ValueType
 }
 
 // ---- triggers & actions (open unions; schemas live in ./catalog) ----
@@ -100,6 +145,16 @@ export interface Action {
   /** Value expression (item to append, value to set, url, …). */
   value?: Expr
   params?: Record<string, Json>
+}
+
+/**
+ * Read an expression param off an action (`where`, `at`, …), normalizing absent,
+ * non-string, and blank to `undefined` so callers get one "not supplied" case.
+ * Which keys an action reads is declared by its catalog entry's `expects.params`.
+ */
+export function actionParam(a: Action, key: string): Expr | undefined {
+  const v = a.params?.[key]
+  return typeof v === 'string' && v.trim() ? v : undefined
 }
 
 // ---- ECA sugar (node-scoped & app-scoped) ----
@@ -147,6 +202,30 @@ export interface NodeStates {
 }
 
 /**
+ * A node that EDITS a state cell — the two-way sugar.
+ *
+ * Read: `node.prop ← target`. Write: the node's change event folds into
+ * `target`. It is stored as sugar rather than as the expanded graph on purpose:
+ * some targets have a NATIVE two-way primitive (SwiftUI `$x`, Vue `v-model`,
+ * Svelte `bind:`) and can only emit it if the emitter can still see that the
+ * author said "this edits that". Recovering that from an expanded
+ * sink+source+fold would mean pattern-matching the graph.
+ *
+ * `normalize` expands it into exactly those three existing primitives, so the
+ * reactive graph stays acyclic and one-directional — there is no bidirectional
+ * edge anywhere. The read is a Signal, the write is Event-driven; that split is
+ * why this is not a feedback loop, and is the same reason a React controlled
+ * input terminates.
+ */
+export interface Editable {
+  node: NodeId
+  /** Semantic property the node edits through — `value` for a text field. */
+  prop: string
+  /** The cell being edited. Writability is a property of the cell — see `editableError`. */
+  target: Ref
+}
+
+/**
  * Marks a node as a template repeated over a collection. The node id is a
  * TEMPLATE anchor; runtime instances carry data-node-id + data-instance-key.
  */
@@ -164,25 +243,44 @@ export interface Repeater {
 
 export interface PageInteractions {
   version: 1
+  /** Named containers the designer created; cells reference one via `Variable.store`. */
+  stores: Store[]
   variables: Variable[]
   derived: Derived[]
-  ports: Port[]
   interactions: Interaction[]
   appRules: AppRule[]
   bindings: Binding[]
+  editable: Editable[]
   states: NodeStates[]
   repeaters: Repeater[]
+}
+
+/**
+ * Why a cell cannot be edited, or null if it can.
+ *
+ * Only ONE thing is genuinely unwritable: a formula, which is a function of other
+ * cells, so writing to it is a category error rather than a missing feature. An
+ * `outside` cell is editable — the designer decides what wires to what, and what
+ * a write has to do to reach the real source is derived plumbing, not a reason to
+ * refuse the wiring.
+ */
+export function editableError(ir: PageInteractions, target: Ref): string | null {
+  if (!target.trim()) return 'Pick a value to edit'
+  if (ir.derived.some((d) => d.id === target)) return `${target} is a formula — computed, not editable`
+  if (!ir.variables.some((v) => v.id === target)) return `${target} is not a value on this page`
+  return null
 }
 
 export function emptyPageInteractions(): PageInteractions {
   return {
     version: 1,
+    stores: [],
     variables: [],
     derived: [],
-    ports: [],
     interactions: [],
     appRules: [],
     bindings: [],
+    editable: [],
     states: [],
     repeaters: [],
   }
@@ -192,7 +290,7 @@ export function emptyPageInteractions(): PageInteractions {
 
 export interface MergeReport {
   /** Behavior whose owning node no longer exists in the regenerated presentation. */
-  dangling: { kind: 'interaction' | 'binding' | 'state' | 'repeater'; node: NodeId }[]
+  dangling: { kind: 'interaction' | 'binding' | 'editable' | 'state' | 'repeater'; node: NodeId }[]
   ok: boolean
 }
 
@@ -201,6 +299,7 @@ export function referencedNodeIds(ir: PageInteractions): Set<NodeId> {
   const ids = new Set<NodeId>()
   for (const it of ir.interactions) ids.add(it.on.node)
   for (const b of ir.bindings) ids.add(b.node)
+  for (const e of ir.editable) ids.add(e.node)
   for (const s of ir.states) ids.add(s.node)
   for (const r of ir.repeaters) ids.add(r.node)
   return ids
@@ -215,6 +314,7 @@ export function reconcile(ir: PageInteractions, presentNodeIds: Set<NodeId>): Me
   const dangling: MergeReport['dangling'] = []
   for (const it of ir.interactions) if (!presentNodeIds.has(it.on.node)) dangling.push({ kind: 'interaction', node: it.on.node })
   for (const b of ir.bindings) if (!presentNodeIds.has(b.node)) dangling.push({ kind: 'binding', node: b.node })
+  for (const e of ir.editable) if (!presentNodeIds.has(e.node)) dangling.push({ kind: 'editable', node: e.node })
   for (const s of ir.states) if (!presentNodeIds.has(s.node)) dangling.push({ kind: 'state', node: s.node })
   for (const r of ir.repeaters) if (!presentNodeIds.has(r.node)) dangling.push({ kind: 'repeater', node: r.node })
   return { dangling, ok: dangling.length === 0 }
@@ -222,8 +322,14 @@ export function reconcile(ir: PageInteractions, presentNodeIds: Set<NodeId>): Me
 
 // ---- normalized reactive graph (compile artifact; built by ./compile/normalize) ----
 //
-// The semantic target the ECA-sugar compiles into. Shape may be refined when
-// ./compile/normalize lands (Task #4); kept here as the foundation contract.
+// The semantic target the ECA-sugar compiles into.
+//
+// NOTE the asymmetry with the stored sugar above: `port` survives HERE and only
+// here. That is the whole shape of the design — the designer authors one kind of
+// cell and never says "port", while the graph, which is where plumbing lives,
+// still needs to express "this value crosses the boundary". A cell with `outside`
+// set lowers to a port node; a write to it grows an edge out of one. Both are
+// derived, so neither is anything the designer has to name.
 
 export type GraphValueKind = 'signal' | 'event'
 

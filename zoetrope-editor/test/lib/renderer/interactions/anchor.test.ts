@@ -13,7 +13,7 @@ import { initDefaultCatalog } from '../../../../src/lib/renderer/interactions/ca
 
 function todoIR(): PageInteractions {
   const ir = emptyPageInteractions()
-  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [], source: 'local' })
+  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
   ir.derived.push({ id: 'isEmpty', expr: 'items.length == 0' })
   ir.interactions.push({
     on: { node: 'addBtn', trigger: { type: 'press' } },

@@ -17,8 +17,7 @@ describe('runtime clone — proxy-safe (DataCloneError regression)', () => {
       type: { collection: 'object' },
       scope: 'page',
       initial: new Proxy([{ a: 1 }], {}) as unknown as [],
-      source: 'local',
-    })
+          })
     const rt = initRuntime(ir)
     expect(rt.store.items).toEqual([{ a: 1 }])
   })
@@ -56,25 +55,51 @@ describe('nodesToPresentation — shape fill → inline style', () => {
 })
 
 describe('emit-react — style prop', () => {
-  it('emits an inline style when the PNode has one', () => {
-    const root: PNode = { nodeId: 'btn', tag: 'button', text: 'Add', style: { background: '#e11d48' } }
+  it("the design's value wins over the browser reset beneath it", () => {
+    const root: PNode = { nodeId: 'btn', role: 'button', text: 'Add', style: { background: '#e11d48' } }
     const code = emitReactComponent(emptyPageInteractions(), root, { componentName: 'Screen' })
-    expect(code).toContain('style={{ "background": "#e11d48" }}')
+    // reset lands first, the design overwrites the same key — one entry, design's
+    expect(code).toContain('"background": "#e11d48"')
+    expect(code).not.toContain('"background": "none"')
   })
 
-  it('omits style when there is none', () => {
-    const root: PNode = { nodeId: 'btn', tag: 'button', text: 'Add' }
+  it('emits a button as a plain box — no affordance added on top', () => {
+    const root: PNode = { nodeId: 'btn', role: 'button', text: 'Add' }
     const code = emitReactComponent(emptyPageInteractions(), root, { componentName: 'Screen' })
-    expect(code).not.toContain('style=')
+    expect(code).toContain('<div')
+    expect(code).not.toContain('<button')
+    // no user-agent styling arrives, so there is no reset to carry
+    expect(code).not.toContain('"appearance": "none"')
+    // and nothing the designer didn't author: no cursor, no role, no tab stop
+    expect(code).not.toContain('cursor')
+    expect(code).not.toContain('role=')
+    expect(code).not.toContain('tabIndex')
+  })
+
+  it('emits ONLY the authored click on a button — no keyboard or ARIA assumed', () => {
+    const ir = emptyPageInteractions()
+    ir.interactions.push({ id: 'i1', on: { node: 'btn', trigger: { type: 'press' } }, do: [] })
+    const code = emitReactComponent(ir, { nodeId: 'btn', role: 'button', text: 'Add' }, { componentName: 'Screen' })
+    expect(code).toContain('onClick={handle_btn_press}') // what the designer authored
+    expect(code).not.toContain('role=') // and nothing else on top
+    expect(code).not.toContain('tabIndex')
+    expect(code).not.toContain('onKeyDown')
+    expect(code).not.toContain('onActivate')
+  })
+
+  it('gives a plain container only the box-sizing base, no invented look', () => {
+    const root: PNode = { nodeId: 'box', role: 'container' }
+    const code = emitReactComponent(emptyPageInteractions(), root, { componentName: 'Screen' })
+    expect(code).toContain('style={{ "boxSizing": "border-box" }}')
   })
 })
 
 describe('emit-react — style-prop bindings (wire fill to state)', () => {
   it('routes a background binding into inline style, overriding the static fill', () => {
     const ir = emptyPageInteractions()
-    ir.variables.push({ id: 'accent', type: 'string', scope: 'page', initial: '#e11d48', source: 'local' })
+    ir.variables.push({ id: 'accent', type: 'string', scope: 'page', initial: '#e11d48' })
     ir.bindings.push({ node: 'btn', prop: 'background', from: 'accent' })
-    const root: PNode = { nodeId: 'btn', tag: 'button', text: 'Buy', style: { background: '#999999' } }
+    const root: PNode = { nodeId: 'btn', role: 'button', text: 'Buy', style: { background: '#999999' } }
     const code = emitReactComponent(ir, root, { componentName: 'Screen' })
     expect(code).toContain('"background": accent') // dynamic expression
     expect(code).not.toContain('"background": "#999999"') // static fill overridden, not duplicated
@@ -83,9 +108,10 @@ describe('emit-react — style-prop bindings (wire fill to state)', () => {
   it('a non-CSS binding stays a raw element prop', () => {
     const ir = emptyPageInteractions()
     ir.bindings.push({ node: 'inp', prop: 'value', from: 'query' })
-    const root: PNode = { nodeId: 'inp', tag: 'input' }
+    const root: PNode = { nodeId: 'inp', role: 'field' }
     const code = emitReactComponent(ir, root, { componentName: 'Screen' })
     expect(code).toContain('value={query}')
-    expect(code).not.toContain('style=')
+    // it is a prop, not a style entry — the only style present is the reset
+    expect(code).not.toContain('"value":')
   })
 })

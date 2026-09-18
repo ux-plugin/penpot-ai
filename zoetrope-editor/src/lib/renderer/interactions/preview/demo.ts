@@ -12,7 +12,7 @@ import type { PNode } from '../compile/emit-react'
 
 export function demoIR(): PageInteractions {
   const ir = emptyPageInteractions()
-  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [], source: 'local' })
+  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
   ir.derived.push({ id: 'isEmpty', expr: 'items.length == 0' })
   ir.interactions.push({
     on: { node: 'addBtn', trigger: { type: 'press' } },
@@ -30,16 +30,16 @@ export function demoIR(): PageInteractions {
 
 export const demoPresentation: PNode = {
   nodeId: 'page',
-  tag: 'div',
+  role: 'container',
   children: [
     {
       nodeId: 'controls',
-      tag: 'div',
+      role: 'container',
       children: [
-        { nodeId: 'addBtn', tag: 'button', text: 'Add' },
-        { nodeId: 'clearBtn', tag: 'button', text: 'Clear' },
+        { nodeId: 'addBtn', role: 'button', text: 'Add' },
+        { nodeId: 'clearBtn', role: 'button', text: 'Clear' },
       ],
     },
-    { nodeId: 'list', tag: 'ul', children: [{ nodeId: 'row', tag: 'li' }] },
+    { nodeId: 'list', role: 'list', children: [{ nodeId: 'row', role: 'item' }] },
   ],
 }
