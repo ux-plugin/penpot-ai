@@ -358,7 +358,9 @@ impl FrameGraph {
     /// Every node's extent, computed forward, in the texels of its own resolution (see
     /// [`Self::resolutions`]): a draw is its items' union over the state below; a neighbourhood
     /// op inflates its value by [`pad_at`]; a pointwise op keeps its value's extent; a scale
-    /// rescales it; a compose is the state below joined with the value, translated by its offset.
+    /// rescales it — a scale of the spine rescales the rows the spine holds, the frame or a
+    /// halo's, which carry the page colour past the draws; a compose is the state below joined
+    /// with the value, translated by its offset.
     #[must_use]
     pub fn extents(&self) -> Vec<Rect> {
         self.extents_at(&self.resolutions())
@@ -383,6 +385,10 @@ impl FrameGraph {
                 }
                 Op::Shade(_) | Op::Colour(_) | Op::MaskMix(_) | Op::EraseBy(_) | Op::ClipToSource(_) => {
                     of(n.inputs[0])
+                }
+                Op::Scale { .. } if self.is_spine(n.inputs[0]) => {
+                    let rows = if self.spine_root(n.inputs[0]) == 0 { self.frame } else { Rect::new(-1e9, -1e9, 1e9, 1e9) };
+                    scale_rect(rows, f64::from(k[i] / k[n.inputs[0]]))
                 }
                 Op::Scale { .. } => scale_rect(of(n.inputs[0]), f64::from(k[i] / k[n.inputs[0]])),
                 Op::Compose { offset, .. } => {
@@ -436,6 +442,24 @@ mod tests {
                 GNode { op: Op::Compose { mode: ComposeMode::Over, colour: Some([0.0, 0.0, 0.0, 0.5]), offset: [6.0, 8.0] }, inputs: vec![0, 3], label: "shadow".into() },
                 GNode { op: Op::Draw(vec![item(2, 120.0, 20.0, 200.0, 80.0)]), inputs: vec![4], label: "body".into() },
             ])
+    }
+
+    #[test]
+    fn a_scale_of_the_spine_extends_over_the_frame_not_the_draws() {
+        let frame = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let g = FrameGraph::new(frame, Color::WHITE, vec![
+            GNode { op: Op::Draw(vec![item(1, 0.0, 100.0, 400.0, 300.0)]), inputs: vec![], label: "page".into() },
+            GNode { op: Op::Scale { target: 0.5, key: 1 }, inputs: vec![0], label: "down".into() },
+            GNode { op: Op::Blur { sigma: 8.0, axis: BlurAxis::X, linear: true, edge_clamp_style: EdgeClampStyle::Extend, taps: BLUR_TAPS }, inputs: vec![1], label: "bx".into() },
+            GNode { op: Op::Scale { target: 0.5, key: 1 }, inputs: vec![2], label: "up".into() },
+            GNode { op: Op::Draw(vec![DrawItem { shape: 2, style: DrawStyle::Coverage { analytic: true, spread: 0.0 }, bounds: Rect::new(100.0, 50.0, 300.0, 200.0) }]), inputs: vec![], label: "cov".into() },
+            GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![0, 3, 4], label: "glass".into() },
+        ]);
+        g.validate().expect("valid");
+        let ext = g.extents();
+        assert_eq!(ext[1], Rect::new(0.0, 0.0, 200.0, 150.0), "the spine's rows hold the page colour above its first draw, so its scale covers the whole frame at half");
+        assert!(ext[2].y0 < 0.0, "the blur reaches past the frame, not past the draw: {:?}", ext[2]);
+        assert!(ext[3].contains(crate::kurbo::Point::new(50.0, 20.0)), "the value the glass reads exists above the page draw: {:?}", ext[3]);
     }
 
     #[test]
