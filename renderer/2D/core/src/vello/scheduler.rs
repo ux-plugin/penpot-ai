@@ -664,6 +664,12 @@ impl<'a> Scheduler<'a> {
         r.intersect(self.in_space_of(self.spine_rect(sb), sb, i))
     }
 
+    /// Whether halo `h` is filled: a live chain node reads it. A fill point under a clone that
+    /// nothing demands would be filled for nobody; the fill above it covers the same rows.
+    fn fill_read(&self, h: NodeId) -> bool {
+        self.readers[h].iter().any(|&r| !self.g.is_spine(r) && self.live(r))
+    }
+
     /// The nodes `i` reads: its inputs, and for a halo the spine node it continues.
     fn read_nodes(&self, i: NodeId) -> Vec<NodeId> {
         let mut nodes = self.inputs(i);
@@ -866,7 +872,7 @@ impl<'a> Scheduler<'a> {
             }
         };
         self.value_of.insert(h, v);
-        if self.k[of] == self.k[h] || self.inside_of(h, self.out[h]).is_zero_area() {
+        if self.k[of] == self.k[h] || !self.fill_read(h) || self.inside_of(h, self.out[h]).is_zero_area() {
             return;
         }
         let a = self.arms.len();
@@ -892,7 +898,7 @@ impl<'a> Scheduler<'a> {
     /// halo. One instance per spine node read and resolution read at: the spine from the frame's
     /// root up to that node cloned under a root draw of its items, every chain whose footprint
     /// reaches the region read past the frame cloned over a fill point of its level (its leaves
-    /// cloned, its pair closing at the instance's resolution and opening no higher), the other
+    /// cloned, its scales verbatim), the other
     /// composes passed over, and a halo of the node on top, placed before the first node that
     /// reads it. `None` when no read escapes. Runs after [`Self::resolve`].
     fn expanded(&self) -> Option<Expanded> {
@@ -1008,10 +1014,10 @@ impl<'a> Scheduler<'a> {
                     let below = g.nodes[s].inputs[0];
                     let fill = push(GNode { op: Op::Halo { of: map[below] }, inputs: vec![top.expect("a spine under a compose")], label: format!("fill of {} @{ix}", g.nodes[below].label) }, None);
                     let mut clones = HashMap::new();
-                    let value = self.clone_chain(g.nodes[s].inputs[1], fill, inst.k, ix, &mut clones, &mut push);
+                    let value = self.clone_chain(g.nodes[s].inputs[1], fill, ix, &mut clones, &mut push);
                     let mut inputs = vec![fill, value];
                     if let Some(&c) = g.nodes[s].inputs.get(2) {
-                        inputs.push(self.clone_chain(c, fill, inst.k, ix, &mut clones, &mut push));
+                        inputs.push(self.clone_chain(c, fill, ix, &mut clones, &mut push));
                     }
                     top = Some(push(GNode { op: g.nodes[s].op.clone(), inputs, label: label(s) }, Some(s)));
                 }
@@ -1022,9 +1028,9 @@ impl<'a> Scheduler<'a> {
     }
 
     /// Chain node `i` cloned into instance `ix` (memoised in `clones`): its spine reads go to the
-    /// instance's fill point `fill`, its pair opens no higher than `k` and closes at `k`, its
-    /// keys are the instance's own.
-    fn clone_chain(&self, i: NodeId, fill: NodeId, k: f32, ix: usize, clones: &mut HashMap<NodeId, NodeId>, push: &mut dyn FnMut(GNode, Option<NodeId>) -> NodeId) -> NodeId {
+    /// instance's fill point `fill`, its scales keep their targets (the resolution rules make a
+    /// clone's pair open no higher than its spine and close at it), its keys are the instance's own.
+    fn clone_chain(&self, i: NodeId, fill: NodeId, ix: usize, clones: &mut HashMap<NodeId, NodeId>, push: &mut dyn FnMut(GNode, Option<NodeId>) -> NodeId) -> NodeId {
         if self.g.is_spine(i) {
             return fill;
         }
@@ -1032,9 +1038,9 @@ impl<'a> Scheduler<'a> {
             return c;
         }
         let node = &self.g.nodes[i];
-        let inputs: Vec<NodeId> = node.inputs.iter().map(|&j| self.clone_chain(j, fill, k, ix, clones, push)).collect();
+        let inputs: Vec<NodeId> = node.inputs.iter().map(|&j| self.clone_chain(j, fill, ix, clones, push)).collect();
         let op = match &node.op {
-            Op::Scale { key, .. } => Op::Scale { target: if self.is_down(i) { self.k[i].min(k) } else { k }, key: key ^ ((ix as u128 + 1) << 64) },
+            Op::Scale { target, key } => Op::Scale { target: *target, key: key ^ ((ix as u128 + 1) << 64) },
             op => op.clone(),
         };
         let c = push(GNode { op, inputs, label: format!("{} @{ix}", node.label) }, Some(i));
@@ -1728,7 +1734,7 @@ impl<'a> Scheduler<'a> {
         }
         for h in 0..self.g.nodes.len() {
             let Op::Halo { of } = self.g.nodes[h].op else { continue };
-            if !self.live(h) || self.k[of] != self.k[h] {
+            if !self.live(h) || self.k[of] != self.k[h] || !self.fill_read(h) {
                 continue;
             }
             let inside = self.inside_of(h, self.out[h]);

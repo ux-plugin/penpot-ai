@@ -267,11 +267,13 @@ impl FrameGraph {
     }
 
     /// The resolution each node's value runs at, as a fraction of the frame's, when every
-    /// [`Op::Scale`] sits at its target: the frame's spine is 1, a `Scale` is its target, a chain
-    /// op runs at its value's resolution below a pair and at its reader's above one (so a chain
-    /// with no pair runs at its compose's), a leaf runs at its readers' (a leaf is drawn straight
-    /// into the space that reads it), and a [`Op::Halo`] with the spine under it runs at its
-    /// reader's (the halo is drawn straight into the resolution that reads it).
+    /// [`Op::Scale`] sits at its target: the frame's spine is 1; a scale opening a chain runs at
+    /// its target and no higher than the spine or leaf it opens from; a chain op runs at its
+    /// value's resolution below a pair and at its reader's above one, so a scale closing a chain
+    /// and the tail after it run at the compose's, and a chain with no pair does too; a leaf runs
+    /// at its readers' (a leaf is drawn straight into the space that reads it); and a
+    /// [`Op::Halo`] with the spine under it runs at its reader's (the halo is drawn straight into
+    /// the resolution that reads it), which every clone on that spine follows by the rules above.
     #[must_use]
     pub fn resolutions(&self) -> Vec<f32> {
         self.resolutions_with(&|_, target| target)
@@ -310,7 +312,7 @@ impl FrameGraph {
         let mut k = vec![1.0f32; n];
         for (i, node) in self.nodes.iter().enumerate() {
             k[i] = match &node.op {
-                Op::Scale { target, .. } => decide(i, *target),
+                Op::Scale { target, .. } => decide(i, *target).min(k[node.inputs[0]]),
                 _ if self.is_spine(i) => spine[i],
                 Op::Draw(_) => 1.0,
                 _ => k[node.inputs[0]],
@@ -322,8 +324,7 @@ impl FrameGraph {
                 if self.is_spine(j) {
                     continue;
                 }
-                let leaf = matches!(self.nodes[j].op, Op::Draw(_));
-                if leaf || (!scale && !matches!(self.nodes[j].op, Op::Scale { .. })) {
+                if !scale || matches!(self.nodes[j].op, Op::Draw(_)) {
                     k[j] = k[i];
                 }
             }
