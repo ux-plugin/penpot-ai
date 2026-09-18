@@ -1,71 +1,73 @@
 //! The scheduler: frame graph in, frame plan out. Every decision about where and when is made
-//! here, and the executor makes none.
+//! here, and the executor makes none. A pipeline of stages, each a value the next reads and none
+//! writes back:
 //!
-//! Eight steps, in order:
-//! 1. **Demand.** Backward from the frame: a compose owes its demand to the state below and, less
-//!    its offset, to its value; a neighbourhood op owes its input its own demand grown by its pad
-//!    (a `Transparent` blur grows nothing — the clamp supplies zeros); a pointwise op passes its
-//!    demand through; a scale owes its input its demand in the input's texels. A node's output
-//!    rect is its demand clipped to its extent — the frame for the spine, and for a chain node
-//!    whatever it reaches, past the frame included; a draw item that misses its draw's demand is
-//!    dropped.
-//! 2. **Capacity.** The store below the frame is the preset's pages, capped by the device. With
-//!    demand known at every pair's target, each pair's resolution is decided in closed form, then
-//!    demand runs again: the run between a pair may be no wider nor taller than the store's rows,
-//!    and no two adjacent links of it (the leaf or halo it starts from included) may together
-//!    exceed them: a chain is lowered only when it could not fit the store alone; chains that
-//!    cannot share a round run one after the other. Resolutions step down a ladder of halves, so a
-//!    resample is a whole box; there is no floor. Across frames a pair keeps its resolution until
-//!    the rule that set it has moved by a margin, so a zoom does not flicker.
-//! 3. **Expansion** (DAG++, [`Scheduler::expanded`]). Every read of the frame's spine that
-//!    escapes the frame is rerouted through a [`Op::Halo`]: an instance per spine node read and
+//! 1. **Demand** (`resolve::Demand`). Backward from the frame: a compose owes its demand to the
+//!    state below and, less its offset, to its value; a neighbourhood op owes its input its own
+//!    demand grown by its pad (a `Transparent` blur grows nothing — the clamp supplies zeros); a
+//!    pointwise op passes its demand through; a scale owes its input its demand in the input's
+//!    texels. A node's output rect is its demand clipped to its extent — the frame for the spine,
+//!    and for a chain node whatever it reaches, past the frame included; a draw item that misses
+//!    its draw's demand is dropped.
+//! 2. **Expansion** (DAG++, [`expanded`], `halo::expand`). With demand known at the pairs'
+//!    targets on the builder's graph, every read of the frame's spine that escapes the frame is
+//!    rerouted through a [`crate::vello::frame_graph::Op::Halo`]: an instance per spine node read and
 //!    resolution read at, whose spine draws the scene there at that resolution with the chains
 //!    composed below cloned over fill points of their level, so effects below a chain are present
-//!    past the frame. The graph is expanded at the decided resolutions, decided again with the
-//!    halos counted, and expanded again if that lowered anything. Steps 4–8 run on DAG++.
-//! 4. **Arms.** A chain is cut at its barriers: a head (a blur axis, a warp, a scatter, a scale)
-//!    or a pointwise op over a leaf or the spine starts an arm, and the pointwise ops after it
-//!    ride along while the value has no other reader. The compose folds into the arm that makes
-//!    its value, which then writes its spine's rows in place: the frame, or a halo's value.
-//!    A halo spine has one value, the rows its nodes demand joined; every halo on it is filled
-//!    from the frame where it overlaps it, by a copy at the frame's resolution or a keep-scale
-//!    arm below it, once the node it continues is ready there.
-//! 5. **Rounds.** An arm runs one round after everything it reads: the spine at a node is the
-//!    round of the last compose below it, a halo the later of its fill and its spine, an arm is
-//!    its own round, and a leaf or halo root is drawn the round before its first reader — then
-//!    each chain, in spine order, is shifted later by the least amount at which the packer fits
-//!    its values beside those placed before them (first fit: chains overlap in time only when
-//!    they fit beside each other; the packer is the one judge of what fits, so there is no fill
-//!    factor and no second pass). Nothing but the frame is drawn at round 0 by right: a value's
-//!    draw is sequenced into its round by a boundary marker in its tiles, the way spine draws
-//!    take the segment of the last compose below them. A tile runs every mark of a window in
-//!    list order, so nothing else separates rounds.
-//! 6. **Packing** (ruling 19, amended at R4). Every leaf, halo and arm output that is not a
-//!    compose is a rect placed in the rows below the frame by [`StorePacker`], which hands out whole
-//!    tiles and lets values whose lifetimes do not meet share them. Its origin splits back into the
-//!    page fine folds rows by and the placement that rides the records.
-//! 7. **Emission.** Clear (the frame to the background, the pages to transparent), one front-end
-//!    over the spine in z-order (clipped to the frame once pages
-//!    sit under it, so a shape reaching past the frame's bottom never paints a page) with a
-//!    marker at every compose, then the page work in round order: each leaf and halo root draw
-//!    behind its boundary marker (each clipped to its store rect), a halo spine's draws and
-//!    compose markers under the halo's transform, and a marker per page arm; before each round's
-//!    fine, the clears of the rects drawn in it (a leaf's to transparent, a halo's to the
-//!    background — the tiles may have held an earlier value) and the copies filling the halos
-//!    whose node became ready the round before; one fine per round over that round's tiles;
-//!    present. `params` holds one descriptor per arm and one tile list per round.
+//!    past the frame. Expanded once; everything after runs on DAG++.
+//! 3. **Capacity** (`resolve::Res::decide`). The store below the frame is the preset's pages,
+//!    capped by the device. Each pair's resolution is decided once, in closed form, then demand
+//!    runs again: the run between a pair may be no wider nor taller than the store's rows, and no
+//!    two adjacent links of it (the leaf or halo it starts from included) may together exceed
+//!    them: a chain is lowered only when it could not fit the store alone; chains that cannot
+//!    share a round run one after the other. Resolutions step down a ladder of halves, so a
+//!    resample is a whole box; there is no floor. Across frames a pair keeps its resolution until
+//!    the rule that set it has moved by a margin, so a zoom does not flicker.
+//! 4. **Arms** (`arms::Work`). A chain is cut at its barriers: a head (a blur axis, a warp, a
+//!    scatter, a scale) or a pointwise op over a leaf or the spine starts an arm, and the pointwise
+//!    ops after it ride along while the value has no other reader. The compose folds into the arm
+//!    that makes its value, which then writes its spine's rows in place: the frame (value 0), or
+//!    a halo's value. A halo spine has one value, the rows its nodes demand joined; every halo on
+//!    it is filled from the frame where it overlaps it, by a copy at the frame's resolution or a
+//!    keep-scale arm below it, once the node it continues is ready there.
+//! 5. **Rounds** (`schedule::Schedule`). An arm runs one round after everything it reads: the
+//!    spine at a node is the round of the last compose below it, a halo the later of its fill and
+//!    its spine, an arm is its own round, and a leaf or halo root is drawn the round before its
+//!    first reader — then each chain, in spine order, is shifted later by the least amount at
+//!    which the packer fits its values beside those placed before them (first fit: chains overlap
+//!    in time only when they fit beside each other; the packer is the one judge of what fits, so
+//!    there is no fill factor and no second pass). Nothing but the frame is drawn at round 0 by
+//!    right: a value's draw is sequenced into its round by a boundary marker in its tiles, the
+//!    way spine draws take the segment of the last compose below them. A tile runs every mark of
+//!    a window in list order, so nothing else separates rounds.
+//! 6. **Packing** (`schedule::Schedule`; ruling 19, amended at R4). Every leaf, halo and arm
+//!    output that is not a compose is a rect placed in the rows below the frame by
+//!    [`crate::vello::store_pack::StorePacker`], which hands out whole tiles and lets values whose lifetimes do
+//!    not meet share them. Its origin splits back into the page fine folds rows by and the
+//!    placement that rides the records.
+//! 7. **Parameters** (`params::Params`). Every arm's operands — the tile's registers, a value's
+//!    rows, a silhouette — and its descriptor, serialised once.
+//! 8. **Emission** (`emit::emit`). Clear (the frame to the background, the pages to
+//!    transparent), one front-end over the spine in z-order (clipped to the frame once pages sit
+//!    under it, so a shape reaching past the frame's bottom never paints a page) with a marker at
+//!    every compose, then the page work in round order: each leaf and halo root draw behind its
+//!    boundary marker (each clipped to its store rect), a halo spine's draws and compose markers
+//!    under the halo's transform, and a marker per page arm; before each round's fine, the clears
+//!    of the rects drawn in it (a leaf's to transparent, a halo's to the background — the tiles
+//!    may have held an earlier value) and the copies filling the halos whose node became ready
+//!    the round before; one fine per round over that round's tiles; present. `params` holds one
+//!    descriptor per arm and one tile list per round.
 
 use std::collections::HashMap;
 
-use crate::kurbo::{Affine, Rect, Vec2};
-
-use crate::vello::bake::{self, Policy, REC_COUNT, REC_STRIDE};
-use crate::vello::frame_graph::{scale_rect, BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, FrameGraph, NodeId, Op};
+use crate::vello::arms::Work;
+use crate::vello::emit::emit;
+use crate::vello::frame_graph::FrameGraph;
+use crate::vello::frame_plan::FramePlan;
 use crate::vello::halo;
-use crate::vello::resolve::{overlaps, tile_round, Demand, Res, Spines, Store};
-use crate::vello::frame_plan::{self, DrawCmd, FramePlan, Pass, Tiles, Window};
-use crate::vello::store_pack::StorePacker;
-use crate::vello::units::{BlurEdge, UnitOp};
+use crate::vello::params::Params;
+use crate::vello::resolve::Resolved;
+use crate::vello::schedule::{Dump, Schedule};
 
 /// Pixel columns per tile. Must equal vello's `TILE_WIDTH`; the backend checks it at compile time.
 pub const TILE_WIDTH: u32 = 16;
@@ -73,21 +75,6 @@ pub const TILE_WIDTH: u32 = 16;
 pub const TILE_HEIGHT: u32 = 16;
 pub(crate) const TILE_W: f64 = TILE_WIDTH as f64;
 pub(crate) const TILE_H: f64 = TILE_HEIGHT as f64;
-/// Descriptor floats per arm: the 26-float header and the operand records.
-const DESC_FLOATS: usize = 26 + REC_COUNT * REC_STRIDE;
-/// Operand record sources, as `fine.wgsl` reads them: absent, a store rect, the tile's registers,
-/// the marker's silhouette.
-const SRC_NONE: f32 = 0.0;
-const SRC_STORE: f32 = 1.0;
-const SRC_REGS: f32 = 2.0;
-const SRC_AREA: f32 = 3.0;
-/// Operand record roles.
-const REC_VALUE: usize = 0;
-const REC_REF: usize = 1;
-const REC_COVERAGE: usize = 2;
-const REC_DISTANCE: usize = 3;
-const REC_OUTPUT: usize = 4;
-
 /// The plan for `graph` on a `width × height` frame, on a device whose textures reach `max_dim`
 /// texels a side, with `pages` frame heights of store below the frame (the preset's; the device
 /// caps it). `memory` is what each pair ran at last frame, keyed by its `key`; the plan reads it
@@ -95,1083 +82,43 @@ const REC_OUTPUT: usize = 4;
 #[must_use]
 pub fn plan(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64, memory: &mut HashMap<u128, f32>) -> FramePlan {
     let expanded = expanded(graph, width, height, max_dim, pages);
-    let mut s = Scheduler::new(expanded.as_ref().unwrap_or(graph), width, height, max_dim, pages);
-    s.resolve(memory);
-    s.run()
+    plan_of(expanded.as_ref().unwrap_or(graph), width, height, max_dim, pages, memory)
+}
+
+/// The plan of `graph` as it is, unexpanded: resolve, then the arms, the schedule, the
+/// parameters, the passes.
+fn plan_of(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64, memory: &mut HashMap<u128, f32>) -> FramePlan {
+    let mut cx = Resolved::of(graph, width, height, max_dim, pages);
+    cx.resolve(memory);
+    let work = Work::of(&cx);
+    let sched = Schedule::fit(&cx, &work);
+    if std::env::var_os("WV_PLAN_DUMP").is_some() {
+        eprint!("{}", Dump(&cx, &work, &sched));
+    }
+    let params = Params::bake(&cx, &work, &sched);
+    emit(&cx, &work, &sched, params)
 }
 
 /// The graph `plan` schedules for `graph` on a `width × height` frame: DAG++, the graph with every
-/// read of the frame's spine past the frame rerouted through a [`Op::Halo`] (see
-/// [`halo::expand`]); `None` when no read escapes and the graph is planned as it is.
+/// read of the frame's spine past the frame rerouted through a [`crate::vello::frame_graph::Op::Halo`] (see
+/// `halo::expand`); `None` when no read escapes and the graph is planned as it is.
 #[must_use]
 pub fn expanded(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64) -> Option<FrameGraph> {
-    let store = Store::for_graph(graph, width, height, max_dim, pages);
-    let spines = Spines::of(graph);
-    let res = Res::targets(graph);
-    let dem = Demand::of(graph, store.frame, &res, &spines);
-    halo::expand(graph, store.frame, &res, &dem, &spines)
-}
-
-/// Where an arm reads one operand from.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Operand {
-    None,
-    /// The tile's own registers: the state the tile holds.
-    Regs,
-    /// The marker's own rasterised silhouette.
-    Area,
-    /// A value in the store, read displaced by `shift` (frame px).
-    Value { v: usize, shift: Vec2 },
-    /// The frame rows themselves.
-    Frame,
-}
-
-/// A value the frame materialises: a leaf, an arm's output, or a halo spine's rows.
-#[derive(Clone, Debug)]
-struct Value {
-    /// The graph node whose result this is; a halo spine's is its lowest halo.
-    node: NodeId,
-    /// Frame coordinates, tile-aligned; a chain value may reach past the frame.
-    rect: Rect,
-    /// Where the rect sits on its page: store `= rect + place + (0, page·pitch)`. A value is
-    /// slid to its page's top-left corner, so `place = -rect.origin`.
-    place: Vec2,
-    /// The first round whose rows the value occupies: the round the front-end's segment draws a
-    /// leaf or halo root in, or the round an arm's mark writes it.
-    birth: u32,
-    last_read: u32,
-    /// The first page the value's rows start on; a value taller than a page spans the next.
-    page: usize,
-    /// The leaf item this value draws, if it is a leaf.
-    leaf: Option<DrawItem>,
-    /// A distance leaf's decode, for its readers' records.
-    decode: f32,
-    /// A halo spine's value: the items its root draws, cleared to the background first.
-    root: Option<Vec<DrawItem>>,
-}
-
-#[derive(Clone, Debug)]
-struct Arm {
-    /// Chain nodes in run order; the last one is the value the arm makes.
-    nodes: Vec<NodeId>,
-    /// The compose this arm lands, if it does.
-    compose: Option<NodeId>,
-    /// The compose whose chain this arm belongs to.
-    chain: NodeId,
-    round: u32,
-    /// The store value this arm writes, unless it composes.
-    out: Option<usize>,
-    value: Operand,
-    reference: Operand,
-    coverage: Operand,
-    distance: Operand,
-    /// The shape whose silhouette masks the marker when any operand is `Regs`.
-    mask_shape: Option<u128>,
-    params_off: u32,
-}
-
-struct Scheduler<'a> {
-    g: &'a FrameGraph,
-    store: Store,
-    spines: Spines,
-    res: Res,
-    dem: Demand,
-    /// The arm each chain node belongs to.
-    arm_of: HashMap<NodeId, usize>,
-    /// The value each leaf or arm-tail node produces.
-    value_of: HashMap<NodeId, usize>,
-    /// Leaves served by the marker's own silhouette rather than a rect.
-    regs_leaf: HashMap<NodeId, u128>,
-    arms: Vec<Arm>,
-    values: Vec<Value>,
-    /// The chain being lowered: its compose.
-    chain: NodeId,
-}
-
-
-
-fn is_head(op: &Op) -> bool {
-    matches!(op, Op::Blur { .. } | Op::Warp(_) | Op::Scatter(_) | Op::Scale { .. })
-}
-
-fn is_pointwise(op: &Op) -> bool {
-    matches!(op, Op::Shade(_) | Op::MaskMix(_) | Op::EraseBy(_) | Op::ClipToSource(_) | Op::Colour(_))
-}
-
-impl<'a> Scheduler<'a> {
-    fn new(g: &'a FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64) -> Self {
-        let store = Store::for_graph(g, width, height, max_dim, pages);
-        let spines = Spines::of(g);
-        let res = Res::targets(g);
-        let dem = Demand::of(g, store.frame, &res, &spines);
-        Self { g, store, spines, res, dem, arm_of: HashMap::new(), value_of: HashMap::new(), regs_leaf: HashMap::new(), arms: Vec::new(), values: Vec::new(), chain: 0 }
-    }
-
-    /// The capacity decision on the demand at the pairs' targets, and demand again at what it
-    /// decided.
-    fn resolve(&mut self, memory: &mut HashMap<u128, f32>) {
-        if let Some(res) = self.res.decide(self.g, &self.dem, &self.store, memory) {
-            self.res = res;
-            self.dem = Demand::of(self.g, self.store.frame, &self.res, &self.spines);
-        }
-    }
-
-    fn live(&self, i: NodeId) -> bool {
-        self.dem.live(&self.res, i)
-    }
-
-    fn input(&self, i: NodeId, n: usize) -> NodeId {
-        self.res.input(self.g, i, n)
-    }
-
-    fn inputs(&self, i: NodeId) -> Vec<NodeId> {
-        self.res.inputs(self.g, i)
-    }
-
-    fn in_space_of(&self, r: Rect, from: NodeId, to: NodeId) -> Rect {
-        self.res.in_space_of(r, from, to)
-    }
-
-    fn inside_of(&self, i: NodeId, r: Rect) -> Rect {
-        self.res.inside_of(self.g, &self.spines, self.store.frame, i, r)
-    }
-
-    fn read_rect(&self, i: NodeId) -> Rect {
-        self.dem.read_rect(self.g, &self.res, i)
-    }
-
-    /// The plan, once [`Self::resolve`] has settled every resolution and demand.
-    fn run(mut self) -> FramePlan {
-        self.build_arms();
-        self.fit();
-        if std::env::var_os("WV_PLAN_DUMP").is_some() {
-            eprint!("{}", self.schedule_dump());
-        }
-        self.emit()
-    }
-
-    /// The schedule as text, one line per arm in round order: round, chain (its compose's label),
-    /// the resolution its nodes run at, the nodes, and the value's rect and texels — then one
-    /// line per round with the texels live in it.
-    fn schedule_dump(&self) -> String {
-        let mut arms: Vec<usize> = (0..self.arms.len()).collect();
-        arms.sort_by_key(|&a| (self.arms[a].round, a));
-        let mut s = String::from("schedule\n");
-        for a in arms {
-            let arm = &self.arms[a];
-            let k = arm.nodes.first().map_or(1.0, |&i| self.res.k[i]);
-            let labels: Vec<&str> = arm.nodes.iter().map(|&i| self.g.nodes[i].label.as_str()).collect();
-            let rect = arm.out.map(|v| self.values[v].rect);
-            s.push_str(&format!(
-                "  r{:<3} {:<26} k={:<5} [{}]{}{}\n",
-                arm.round,
-                self.g.nodes[arm.chain].label,
-                k,
-                labels.join(", "),
-                arm.compose.map_or(String::new(), |c| format!(" → {}", self.g.nodes[c].label)),
-                rect.map_or(String::new(), |r| format!(" out {}x{}", r.width(), r.height())),
-            ));
-        }
-        let rounds = self.arms.iter().map(|a| a.round + 1).max().unwrap_or(1);
-        for r in 0..rounds {
-            let live: f64 = self.values.iter().filter(|v| v.birth <= r && r <= v.last_read).map(|v| v.rect.area()).sum();
-            let n = self.values.iter().filter(|v| v.birth <= r && r <= v.last_read).count();
-            s.push_str(&format!("  round {r:<3} live {:>5.0}k texels in {n} values\n", live / 1000.0));
-        }
-        for (i, v) in self.values.iter().enumerate() {
-            let kind = match (&v.leaf, &v.root) {
-                (Some(_), _) => "leaf".to_string(),
-                (None, Some(items)) => format!("halo×{}", items.len()),
-                (None, None) => "arm".to_string(),
-            };
-            s.push_str(&format!(
-                "  v{i:<3} {:<26} {kind:<11} rounds {}..{} page {} at {:?} rect {:?}\n",
-                self.g.nodes[v.node].label, v.birth, v.last_read, v.page, v.place, v.rect
-            ));
-        }
-        s
-    }
-
-    /// The halo value spine node `j` is held in: a halo's own, the halo above a spine under one,
-    /// nothing on the frame's spine.
-    fn halo_value(&self, j: NodeId) -> Option<usize> {
-        let h = if matches!(self.g.nodes[j].op, Op::Halo { .. }) { Some(j) } else { self.spines.halo_of[j] };
-        h.and_then(|h| self.value_of.get(&h).copied())
-    }
-
-    /// Where an arm reads spine node `j` from: the frame rows, or the halo value it stands in.
-    fn spine_operand(&self, j: NodeId, shift: Vec2) -> Operand {
-        match self.halo_value(j) {
-            Some(v) => Operand::Value { v, shift },
-            None => Operand::Frame,
-        }
-    }
-
-    /// Where spine node `j`'s rows start in the store: the halo value's origin under a halo,
-    /// nothing on the frame's spine.
-    fn spine_origin(&self, j: NodeId) -> Vec2 {
-        match self.halo_value(j) {
-            Some(v) => self.values[v].place + Vec2::new(0.0, self.values[v].page as f64 * self.store.pitch),
-            None => Vec2::ZERO,
-        }
-    }
-
-    /// Whether halo `h` is filled: a live chain node reads it. A fill point under a clone that
-    /// nothing demands would be filled for nobody; the fill above it covers the same rows.
-    fn fill_read(&self, h: NodeId) -> bool {
-        self.res.readers[h].iter().any(|&r| !self.g.is_spine(r) && self.live(r))
-    }
-
-    /// The nodes `i` reads: its inputs, and for a halo the spine node it continues.
-    fn read_nodes(&self, i: NodeId) -> Vec<NodeId> {
-        let mut nodes = self.inputs(i);
-        if let Op::Halo { of } = self.g.nodes[i].op {
-            nodes.push(of);
-        }
-        nodes
-    }
-
-    /// Whether the chain holding node `i` is rooted in a drawn leaf rather than the spine, so
-    /// its values are transparent past their rects.
-    fn rooted_in_leaf(&self, i: NodeId) -> bool {
-        let mut cur = i;
-        loop {
-            let node = &self.g.nodes[cur];
-            if self.g.is_spine(cur) {
-                return false;
-            }
-            if matches!(node.op, Op::Draw(_)) {
-                return true;
-            }
-            match node.inputs.first() {
-                Some(&j) => cur = j,
-                None => return true,
-            }
-        }
-    }
-
-    /// Whether leaf `i` can ride the marker's own silhouette: analytic coverage, no spread, read
-    /// only by pointwise ops or composes that land on the frame, never displaced.
-    fn leaf_is_regs(&self, i: NodeId) -> Option<u128> {
-        let Op::Draw(items) = &self.g.nodes[i].op else { return None };
-        let [item] = items.as_slice() else { return None };
-        let DrawStyle::Coverage { analytic: true, spread } = item.style else { return None };
-        if spread != 0.0 {
-            return None;
-        }
-        let ok = self.res.readers[i].iter().all(|&r| match &self.g.nodes[r].op {
-            Op::Compose { offset, .. } => *offset == [0.0; 2] && self.g.nodes[r].inputs[1..].contains(&i),
-            Op::EraseBy(_) => self.g.nodes[r].inputs[0] == i && self.g.nodes[r].inputs[1] != i && self.reads_land_on_frame(r),
-            Op::Colour(_) | Op::ClipToSource(_) => self.g.nodes[r].inputs[0] == i && self.reads_land_on_frame(r),
-            _ => false,
-        });
-        ok.then_some(item.shape)
-    }
-
-    /// A pointwise chain from `i` whose only reader chain ends in a compose with no head in between:
-    /// its arm lands on the frame, where the marker's silhouette is available.
-    fn reads_land_on_frame(&self, i: NodeId) -> bool {
-        let mut cur = i;
-        loop {
-            let [r] = self.res.readers[cur].as_slice() else { return false };
-            match &self.g.nodes[*r].op {
-                Op::Compose { .. } => return self.g.nodes[*r].inputs[1] == cur,
-                op if is_pointwise(op) => cur = *r,
-                _ => return false,
-            }
-        }
-    }
-
-    fn build_arms(&mut self) {
-        let n = self.g.nodes.len();
-        for i in 0..n {
-            if !self.live(i) {
-                continue;
-            }
-            if let Some(shape) = self.leaf_is_regs(i) {
-                self.regs_leaf.insert(i, shape);
-            }
-        }
-        for i in 0..n {
-            if !self.live(i) || !self.g.is_spine(i) {
-                continue;
-            }
-            match self.g.nodes[i].op {
-                Op::Compose { .. } => {
-                    self.chain = i;
-                    let value = self.input(i, 1);
-                    let cov = self.g.nodes[i].inputs.get(2).map(|&c| self.res.alias[c]);
-                    self.lower_chain(value);
-                    if let Some(c) = cov {
-                        self.lower_chain(c);
-                    }
-                    self.compose(i, value);
-                }
-                Op::Halo { of } => self.halo(i, of),
-                _ => {}
-            }
-        }
-    }
-
-    /// Give halo `h` its value — one per spine, shared by every halo on it and by its root: the
-    /// rows the spine's nodes demand, joined, that the root draws into and the spine's composes
-    /// write. Where `h`'s rect overlaps the frame it is filled from `of`: by one copy when the
-    /// two run at one resolution, else by an arm of the halo's own that resamples `of` over the
-    /// drawn rows and keeps them where the source leaves the frame.
-    fn halo(&mut self, h: NodeId, of: NodeId) {
-        let root = self.g.spine_root(h);
-        let v = match self.value_of.get(&root) {
-            Some(&v) => v,
-            None => {
-                let items = self.dem.kept[root].clone();
-                let rect = (0..self.g.nodes.len())
-                    .filter(|&s| self.live(s) && self.g.is_spine(s) && self.g.spine_root(s) == root)
-                    .map(|s| self.dem.out[s])
-                    .reduce(|a, b| a.union(b))
-                    .unwrap_or(self.dem.out[h]);
-                let v = self.values.len();
-                self.values.push(Value { node: h, rect, place: Vec2::ZERO, birth: 0, last_read: 0, page: 0, leaf: None, decode: 0.0, root: Some(items) });
-                self.value_of.insert(root, v);
-                v
-            }
-        };
-        self.value_of.insert(h, v);
-        if self.res.k[of] == self.res.k[h] || !self.fill_read(h) || self.inside_of(h, self.dem.out[h]).is_zero_area() {
-            return;
-        }
-        let a = self.arms.len();
-        self.arms.push(Arm {
-            nodes: vec![h],
-            compose: None,
-            chain: h,
-            round: 0,
-            out: Some(v),
-            value: Operand::None,
-            reference: Operand::None,
-            coverage: Operand::None,
-            distance: Operand::None,
-            mask_shape: None,
-            params_off: 0,
-        });
-        self.arm_of.insert(h, a);
-        let r = self.arm_round(a);
-        self.arms[a].round = r;
-    }
-
-    /// The round after which node `i`'s result can be read over `r`: an arm's own round, a leaf's
-    /// round 0, and for the spine the round of the last live compose below `i` that touches `r`
-    /// (a pruned compose has no arm and is walked past). A spine draw has no round of its own:
-    /// a tile's segment advances only at the markers binned into it, so the draw's items are
-    /// painted over `r` in whatever round the last compose touching `r` gave those tiles — two
-    /// chains over disjoint ground run in the same rounds even with draws between them.
-    fn ready(&self, i: NodeId, r: Rect) -> u32 {
-        if let Op::Halo { of } = self.g.nodes[i].op {
-            if let Some(&a) = self.arm_of.get(&i) {
-                return self.arms[a].round;
-            }
-            let inside = self.inside_of(i, self.dem.out[i]);
-            let filled = self.ready(of, self.in_space_of(inside, i, of));
-            return filled.max(self.ready(self.g.nodes[i].inputs[0], r));
-        }
-        if self.g.is_spine(i) {
-            let mut s = i;
-            loop {
-                let node = &self.g.nodes[s];
-                if let Op::Compose { .. } = &node.op {
-                    if overlaps(self.dem.out[s], r) {
-                        if let Some(&a) = self.arm_of.get(&s) {
-                            return self.arms[a].round;
-                        }
-                    }
-                }
-                match node.inputs.first() {
-                    Some(&below) => s = below,
-                    None => return 0,
-                }
-            }
-        }
-        if let Some(&a) = self.arm_of.get(&i) {
-            return self.arms[a].round;
-        }
-        0
-    }
-
-    /// Lower every chain node reachable from `i` into arms and values, depth first.
-    fn lower_chain(&mut self, i: NodeId) {
-        if self.g.is_spine(i) || self.arm_of.contains_key(&i) || self.value_of.contains_key(&i) || !self.live(i) {
-            return;
-        }
-        for j in self.inputs(i) {
-            self.lower_chain(j);
-        }
-        let node = &self.g.nodes[i];
-        match &node.op {
-            Op::Draw(items) => {
-                if self.regs_leaf.contains_key(&i) {
-                    return;
-                }
-                let decode = match items.first().map(|it| it.style) {
-                    Some(DrawStyle::Distance { decode }) => decode * self.res.k[i],
-                    _ => 0.0,
-                };
-                let v = self.values.len();
-                self.values.push(Value { node: i, rect: self.dem.out[i], place: Vec2::ZERO, birth: 0, last_read: 0, page: 0, leaf: items.first().cloned(), decode, root: None });
-                self.value_of.insert(i, v);
-            }
-            op if is_head(op) || is_pointwise(op) => {
-                let in0 = self.input(i, 0);
-                let joins = is_pointwise(op)
-                    && self.arm_of.get(&in0).is_some_and(|&a| {
-                        self.arms[a].compose.is_none() && *self.arms[a].nodes.last().unwrap() == in0 && self.res.readers[in0].len() == 1
-                    });
-                if joins {
-                    let a = self.arm_of[&in0];
-                    self.arms[a].nodes.push(i);
-                    self.arm_of.insert(i, a);
-                    let r = self.arm_round(a);
-                    self.arms[a].round = r;
-                } else {
-                    let a = self.arms.len();
-                    self.arms.push(Arm {
-                        nodes: vec![i],
-                        compose: None,
-                        chain: self.chain,
-                        round: 0,
-                        out: None,
-                        value: Operand::None,
-                        reference: Operand::None,
-                        coverage: Operand::None,
-                        distance: Operand::None,
-                        mask_shape: None,
-                        params_off: 0,
-                    });
-                    self.arm_of.insert(i, a);
-                    let r = self.arm_round(a);
-                    self.arms[a].round = r;
-                }
-            }
-            _ => unreachable!("a compose is on the spine"),
-        }
-    }
-
-    /// One more than the latest round any node of arm `a`, its compose included, reads from
-    /// outside the arm over the region it reads.
-    fn arm_round(&self, a: usize) -> u32 {
-        let arm = &self.arms[a];
-        let mut r = 0;
-        for &i in &arm.nodes {
-            for j in self.inputs(i) {
-                if self.arm_of.get(&j) == Some(&a) {
-                    continue;
-                }
-                r = r.max(self.ready(j, self.in_space_of(self.read_rect(i), i, j)));
-            }
-            if let Op::Halo { of } = self.g.nodes[i].op {
-                let inside = self.inside_of(i, self.dem.out[i]);
-                r = r.max(self.ready(of, self.in_space_of(inside, i, of)));
-            }
-        }
-        if let Some(c) = arm.compose {
-            for j in self.inputs(c) {
-                if self.arm_of.get(&j) == Some(&a) {
-                    continue;
-                }
-                r = r.max(self.ready(j, self.dem.out[c]));
-            }
-        }
-        r + 1
-    }
-
-    /// Land compose `c`: fold it into its value's arm when that arm has no other reader, else give
-    /// it a headless arm of its own. Returns the compose's round.
-    fn compose(&mut self, c: NodeId, value: NodeId) -> u32 {
-        let foldable = self.arm_of.get(&value).is_some_and(|&a| {
-            self.arms[a].compose.is_none() && *self.arms[a].nodes.last().unwrap() == value && self.res.readers[value].len() == 1
-        });
-        let a = if foldable {
-            self.arm_of[&value]
-        } else {
-            let a = self.arms.len();
-            self.arms.push(Arm {
-                nodes: vec![],
-                compose: None,
-                chain: self.chain,
-                round: 0,
-                out: None,
-                value: Operand::None,
-                reference: Operand::None,
-                coverage: Operand::None,
-                distance: Operand::None,
-                mask_shape: None,
-                params_off: 0,
-            });
-            a
-        };
-        self.arms[a].compose = Some(c);
-        self.arm_of.insert(c, a);
-        let r = self.arm_round(a);
-        self.arms[a].round = r;
-        r
-    }
-
-    /// The values arm `a` reads: leaves, halo spines and other arms' outputs.
-    fn reads_of(&self, a: usize) -> Vec<usize> {
-        let arm = &self.arms[a];
-        let mut inputs: Vec<NodeId> = arm.nodes.iter().flat_map(|&i| self.read_nodes(i)).collect();
-        if let Some(c) = arm.compose {
-            inputs.extend(self.inputs(c));
-        }
-        let mut out = Vec::new();
-        for j in inputs {
-            for v in self.value_of.get(&j).copied().into_iter().chain(self.halo_value(j)) {
-                if !out.contains(&v) {
-                    out.push(v);
-                }
-            }
-        }
-        out
-    }
-
-    /// Every arm's round, every value's lifetime and every value's place in the store (steps 5
-    /// and 6): chain by chain in spine order, a chain's natural rounds — one after what each arm
-    /// reads; its leaves and halo roots drawn the round before their first reader, a distance
-    /// leaf baked by the executor ahead of every round and so born at 0 — then the whole chain
-    /// shifted later by the least amount at which the packer fits its values, beside every value
-    /// placed before them, within the store's rows: the packer is the one judge of what fits. A
-    /// value read by several chains is drawn for the first and kept for the rest. A chain that
-    /// fits nowhere within the rounds in use goes after them all, and the store grows to say so.
-    fn fit(&mut self) {
-        for a in 0..self.arms.len() {
-            if self.arms[a].compose.is_some() {
-                continue;
-            }
-            let tail = *self.arms[a].nodes.last().expect("an arm has nodes");
-            if let Some(&v) = self.value_of.get(&tail) {
-                self.arms[a].out = Some(v);
-                continue;
-            }
-            let v = self.values.len();
-            self.values.push(Value { node: tail, rect: self.dem.out[tail], place: Vec2::ZERO, birth: 0, last_read: 0, page: 0, leaf: None, decode: 0.0, root: None });
-            self.value_of.insert(tail, v);
-            self.arms[a].out = Some(v);
-        }
-        let drawn: Vec<bool> = self.values.iter().map(|v| v.leaf.is_some() || v.root.is_some()).collect();
-        let baked: Vec<bool> = self.values.iter().map(|v| matches!(v.leaf, Some(DrawItem { style: DrawStyle::Distance { .. }, .. }))).collect();
-        let rows = (self.store.rows / TILE_H).floor() as u32;
-        let mut placed: Vec<usize> = Vec::new();
-        let mut far = 0u32;
-        let mut chains: Vec<NodeId> = self.arms.iter().map(|a| a.chain).collect();
-        chains.dedup();
-        for c in chains {
-            let arms: Vec<usize> = (0..self.arms.len()).filter(|&a| self.arms[a].chain == c).collect();
-            for &a in &arms {
-                let r = self.arm_round(a);
-                self.arms[a].round = r;
-            }
-            let mut spans: Vec<(usize, u32, u32)> = Vec::new();
-            for &a in &arms {
-                let round = self.arms[a].round;
-                let touched = self.reads_of(a).into_iter().map(|v| (v, round)).chain(self.arms[a].out.filter(|&v| !drawn[v]).map(|v| (v, round + 1)));
-                for (v, first) in touched {
-                    match spans.iter_mut().find(|e| e.0 == v) {
-                        Some(e) => {
-                            e.1 = e.1.min(first);
-                            e.2 = e.2.max(round);
-                        }
-                        None => spans.push((v, first, round)),
-                    }
-                }
-            }
-            let first = arms.iter().map(|&a| self.arms[a].round).min().unwrap_or(0);
-            let mut shift = 0u32;
-            loop {
-                for &(v, b, d) in &spans {
-                    if !placed.contains(&v) {
-                        self.values[v].birth = if baked[v] { 0 } else { b + shift - 1 };
-                        self.values[v].last_read = d + shift;
-                    } else {
-                        self.values[v].last_read = self.values[v].last_read.max(d + shift);
-                    }
-                }
-                let trial: Vec<usize> = placed.iter().copied().chain(spans.iter().map(|e| e.0).filter(|v| !placed.contains(v))).collect();
-                if self.pack(&trial) <= rows || first + shift > far {
-                    break;
-                }
-                shift += 1;
-            }
-            for &a in &arms {
-                self.arms[a].round += shift;
-                far = far.max(self.arms[a].round + 1);
-            }
-            for &(v, _, _) in &spans {
-                if !placed.contains(&v) {
-                    placed.push(v);
-                }
-            }
-        }
-        let all: Vec<usize> = (0..self.values.len()).collect();
-        self.pack(&all);
-    }
-
-    /// Place `values` in the rows below the frame by [`StorePacker`], which hands out whole tiles
-    /// and lets values whose lifetimes do not meet share them; each value's origin splits into
-    /// the page fine folds rows by and the placement that rides the records. Returns the tile
-    /// rows the placement needs.
-    fn pack(&mut self, values: &[usize]) -> u32 {
-        let mut order = values.to_vec();
-        order.sort_by_key(|&v| (self.values[v].birth, v));
-        let pitch = self.store.pitch;
-        let mut packer = StorePacker::new((self.store.width / TILE_W) as u32);
-        for v in order {
-            let (rect, birth, death) = (self.values[v].rect, self.values[v].birth, self.values[v].last_read);
-            let [x, y] = packer.place((rect.width() / TILE_W).ceil() as u32, (rect.height() / TILE_H).ceil() as u32, birth, death);
-            let origin = Vec2::new(f64::from(x) * TILE_W, pitch + f64::from(y) * TILE_H);
-            let page = (origin.y / pitch).floor() as usize;
-            self.values[v].page = page;
-            self.values[v].place = origin - Vec2::new(0.0, page as f64 * pitch) - rect.origin().to_vec2();
-        }
-        packer.height()
-    }
-
-    /// How many pages the frame rents below its own rows: enough for the lowest value's rows.
-    fn pages(&self) -> usize {
-        let pitch = self.store.pitch;
-        (0..self.values.len()).map(|v| (self.store_rect(v).y1 / pitch).ceil() as usize - 1).max().unwrap_or(0)
-    }
-
-    /// A value's rect in store texels: its frame rect slid by its placement, down by its page.
-    fn store_rect(&self, v: usize) -> Rect {
-        let val = &self.values[v];
-        val.rect + val.place + Vec2::new(0.0, val.page as f64 * self.store.pitch)
-    }
-
-    /// Where arm `a` reads node `j`: the spine is the tile's own registers when a pointwise read
-    /// lands on the rows the arm writes, and the rows of the spine `j` stands in otherwise (the
-    /// frame, or a halo's value); a silhouette leaf is the marker's area; any other value is its
-    /// store rect.
-    fn operand_for(&self, a: usize, j: NodeId, shift: Vec2, pointwise: bool) -> Operand {
-        if self.g.is_spine(j) {
-            if pointwise && self.arms[a].compose.is_some() && shift == Vec2::ZERO {
-                return Operand::Regs;
-            }
-            return self.spine_operand(j, shift);
-        }
-        if self.regs_leaf.contains_key(&j) {
-            return Operand::Area;
-        }
-        match self.value_of.get(&j) {
-            Some(&v) => Operand::Value { v, shift },
-            None => Operand::None,
-        }
-    }
-
-    fn record(&self, op: Operand, decode: f32) -> [f32; REC_STRIDE] {
-        let mut r = [0.0f32; REC_STRIDE];
-        match op {
-            Operand::None => r[0] = SRC_NONE,
-            Operand::Regs => r[0] = SRC_REGS,
-            Operand::Area => r[0] = SRC_AREA,
-            Operand::Value { v, shift } => {
-                let s = self.store_rect(v);
-                let d = shift * f64::from(self.res.k[self.values[v].node]) - self.values[v].place;
-                r = [SRC_STORE, s.x0 as f32, s.y0 as f32, s.x1 as f32, s.y1 as f32, d.x as f32, d.y as f32, decode];
-            }
-            Operand::Frame => {
-                let f = self.store.frame;
-                r = [SRC_STORE, f.x0 as f32, f.y0 as f32, f.x1 as f32, f.y1 as f32, 0.0, 0.0, 0.0];
-            }
-        }
-        r
-    }
-
-    fn unit_of(&self, i: NodeId) -> Option<UnitOp> {
-        Some(match &self.g.nodes[i].op {
-            Op::Blur { sigma, axis, linear, edge_clamp_style, .. } => UnitOp::Blur {
-                sigma: *sigma,
-                linear: *linear,
-                axis: match axis {
-                    BlurAxis::X => crate::vello::units::BlurAxis::X,
-                    BlurAxis::Y => crate::vello::units::BlurAxis::Y,
-                },
-                edge: match edge_clamp_style {
-                    EdgeClampStyle::Extend => BlurEdge::Backdrop,
-                    EdgeClampStyle::Transparent => BlurEdge::Coverage,
-                },
-            },
-            Op::Warp(u) => UnitOp::Warp(bake::payload_at(u, self.res.k[i])),
-            Op::Scatter(u) => UnitOp::Scatter(bake::payload_at(u, self.res.k[i])),
-            Op::Shade(u) => UnitOp::Shade(bake::payload_at(u, self.res.k[i])),
-            Op::MaskMix(u) => UnitOp::MaskMix(bake::payload_at(u, self.res.k[i])),
-            Op::ClipToSource(u) => UnitOp::ClipToSource(u.clone()),
-            Op::EraseBy(_) => UnitOp::EraseBy(Vec::new()),
-            Op::Colour(_) | Op::Draw(_) | Op::Compose { .. } | Op::Scale { .. } | Op::Halo { .. } => return None,
-        })
-    }
-
-    /// Fill arm `a`'s operands and serialise its descriptor into `params`.
-    fn bake_arm(&mut self, a: usize, params: &mut Vec<f32>) {
-        let nodes = self.arms[a].nodes.clone();
-        let compose = self.arms[a].compose;
-        let mut value = Operand::None;
-        let mut reference = Operand::None;
-        let mut coverage = Operand::None;
-        let mut distance = Operand::None;
-        let mut mask_shape = None;
-        let mut tint: Option<[f32; 4]> = None;
-        let mut run: Vec<UnitOp> = Vec::new();
-        let mut edge_coverage = false;
-        let mut blur: Option<(f32, u32, bool, bool)> = None;
-        let mut program: Option<f32> = None;
-        let mut scale: Option<(f32, f32)> = None;
-        for (k, &i) in nodes.iter().enumerate() {
-            let node = &self.g.nodes[i];
-            match &node.op {
-                Op::Blur { sigma, linear, axis, edge_clamp_style, taps } => {
-                    blur = Some((*sigma * self.res.k[i], *taps, *linear, *axis == BlurAxis::Y));
-                    edge_coverage = *edge_clamp_style == EdgeClampStyle::Transparent;
-                }
-                Op::Scale { .. } => {
-                    let j = self.input(i, 0);
-                    let past = if self.rooted_in_leaf(i) { bake::SCALE_TRANSPARENT } else { bake::SCALE_CLAMP };
-                    scale = Some((self.res.k[j] / self.res.k[i], past));
-                }
-                Op::Colour(c) => tint = Some([c[0], c[1], c[2], c[3]]),
-                Op::MaskMix(u) if u.get(bake::PAYLOAD_PROGRAM_SLOT).copied() == Some(bake::PROGRAM_RADIAL) => program = Some(bake::PROGRAM_RADIAL),
-                Op::Halo { of } => scale = Some((self.res.k[*of] / self.res.k[i], bake::SCALE_KEEP)),
-                _ => {}
-            }
-            if let Some(u) = self.unit_of(i) {
-                run.push(u);
-            }
-            if k == 0 {
-                value = match node.op {
-                    Op::Halo { of } => self.spine_operand(of, Vec2::ZERO),
-                    _ => self.operand_for(a, self.input(i, 0), Vec2::ZERO, is_pointwise(&node.op)),
-                };
-                if let (Op::Warp(_), Some(&sdf)) = (&node.op, node.inputs.get(1)) {
-                    let sdf = self.res.alias[sdf];
-                    let dec = self.value_of.get(&sdf).map_or(0.0, |&v| self.values[v].decode);
-                    distance = self.operand_for(a, sdf, Vec2::ZERO, true);
-                    if let Operand::Value { .. } = distance {
-                        self.values[self.value_of[&sdf]].decode = dec;
-                    }
-                }
-            }
-            match &node.op {
-                Op::EraseBy(u) => {
-                    let shift = Vec2::new(f64::from(u.first().copied().unwrap_or(0.0)), f64::from(u.get(1).copied().unwrap_or(0.0)));
-                    reference = self.operand_for(a, self.input(i, 1), shift, true);
-                }
-                Op::MaskMix(_) | Op::ClipToSource(_) => {
-                    reference = self.operand_for(a, self.input(i, 1), Vec2::ZERO, true);
-                }
-                _ => {}
-            }
-        }
-        let mut policy = Policy { raw: compose.is_none(), edge_coverage, ..Policy::default() };
-        if let Some(c) = compose {
-            let Op::Compose { mode, colour, offset } = &self.g.nodes[c].op else { unreachable!() };
-            let cnode = &self.g.nodes[c];
-            if nodes.is_empty() {
-                value = self.operand_for(a, self.input(c, 1), Vec2::new(f64::from(offset[0]), f64::from(offset[1])), true);
-            } else if let Operand::Value { v, .. } = value {
-                value = Operand::Value { v, shift: Vec2::new(f64::from(offset[0]), f64::from(offset[1])) };
-            }
-            if cnode.inputs.len() > 2 {
-                coverage = self.operand_for(a, self.input(c, 2), Vec2::ZERO, true);
-            }
-            match (mode, colour) {
-                (ComposeMode::Over, Some(c)) => {
-                    policy.colour_over = true;
-                    tint = Some(*c);
-                }
-                (ComposeMode::Over, None) => policy.value_over = true,
-                (ComposeMode::MaskedMix, _) => {}
-            }
-            for j in self.inputs(c).into_iter().skip(1) {
-                if let Some(&shape) = self.regs_leaf.get(&j) {
-                    mask_shape = Some(shape);
-                }
-            }
-        }
-        for &i in &nodes {
-            for j in self.inputs(i) {
-                if let Some(&shape) = self.regs_leaf.get(&j) {
-                    mask_shape = Some(shape);
-                }
-            }
-        }
-        let mut desc = match blur {
-            Some((sigma, taps, linear, axis_y)) => bake::blur_arm(sigma, taps, linear, axis_y, policy, tint.filter(|_| policy.colour_over)),
-            None => bake::arm_descriptor(&run, policy, program),
-        };
-        if let Some((ratio, past)) = scale {
-            desc[0] = (desc[0] as u32 | bake::bits::SCALE) as f32;
-            desc[2] = ratio;
-            desc[3] = past;
-        }
-        if let Some(t) = tint {
-            if !policy.colour_over {
-                desc[0] = (desc[0] as u32 | bake::bits::TINT) as f32;
-            }
-            desc[14..18].copy_from_slice(&t);
-        }
-        let mut rec = [[0.0f32; 4]; 12];
-        bake::stamp_field_anchor(&desc, &mut rec);
-        let (out_rect, out_place) = match self.arms[a].out.or_else(|| compose.and_then(|c| self.halo_value(c))) {
-            Some(v) => (self.store_rect(v), self.values[v].place),
-            None => (self.dem.out[compose.expect("an arm composes or writes a value")], Vec2::ZERO),
-        };
-        let mut records = [[0.0f32; REC_STRIDE]; REC_COUNT];
-        records[REC_VALUE] = self.record(value, 0.0);
-        records[REC_REF] = self.record(reference, 0.0);
-        records[REC_COVERAGE] = self.record(coverage, 0.0);
-        let dec = match distance {
-            Operand::Value { v, .. } => self.values[v].decode,
-            _ => 0.0,
-        };
-        records[REC_DISTANCE] = self.record(distance, dec);
-        records[REC_OUTPUT] = [SRC_STORE, out_rect.x0 as f32, out_rect.y0 as f32, out_rect.x1 as f32, out_rect.y1 as f32, out_place.x as f32, out_place.y as f32, 0.0];
-        records[5][0] = rec[10][0];
-        records[5][1] = rec[10][1];
-        let off = params.len();
-        params.extend_from_slice(&desc);
-        for r in &records {
-            params.extend_from_slice(r);
-        }
-        debug_assert_eq!(params.len() - off, DESC_FLOATS);
-        let arm = &mut self.arms[a];
-        arm.value = value;
-        arm.reference = reference;
-        arm.coverage = coverage;
-        arm.distance = distance;
-        arm.mask_shape = mask_shape;
-        arm.params_off = off as u32;
-    }
-
-    fn tiles_of(r: Rect, out: &mut Vec<u32>) {
-        let r = tile_round(r);
-        let (x0, y0, x1, y1) = ((r.x0 / TILE_W) as u32, (r.y0 / TILE_H) as u32, (r.x1 / TILE_W) as u32, (r.y1 / TILE_H) as u32);
-        for y in y0..y1 {
-            for x in x0..x1 {
-                out.push(0x4000_0000 | (y << 16) | x);
-            }
-        }
-    }
-
-    fn emit(mut self) -> FramePlan {
-        let mut params: Vec<f32> = Vec::new();
-        for a in 0..self.arms.len() {
-            self.bake_arm(a, &mut params);
-        }
-        let pages = self.pages();
-        let pitch = self.store.pitch;
-        let store_h = pitch * (1 + pages) as f64;
-        let rounds = self.arms.iter().map(|a| a.round + 1).max().unwrap_or(1);
-
-        let mut draws: Vec<DrawCmd> = Vec::new();
-        let mut copies: Vec<Vec<Pass>> = vec![Vec::new(); rounds as usize + 1];
-        let mut tiles: Vec<Vec<u32>> = vec![Vec::new(); rounds as usize];
-        Self::tiles_of(self.store.frame, &mut tiles[0]);
-        let mut work: Vec<u32> = vec![0; rounds as usize];
-        work[0] |= frame_plan::work::PAINT;
-        for arm in &self.arms {
-            let w = &mut work[arm.round as usize];
-            for &i in &arm.nodes {
-                *w |= match &self.g.nodes[i].op {
-                    Op::Scale { .. } | Op::Halo { .. } => frame_plan::work::SCALE,
-                    Op::Warp(_) => frame_plan::work::WARP,
-                    Op::Blur { .. } => frame_plan::work::BLUR,
-                    Op::Scatter(_) => frame_plan::work::SCATTER,
-                    _ => frame_plan::work::POINTWISE,
-                };
-            }
-            if arm.compose.is_some() {
-                *w |= frame_plan::work::POINTWISE;
-            }
-        }
-        let mut page_work: Vec<(u32, u32, Vec<DrawCmd>)> = Vec::new();
-        for (vi, v) in self.values.iter().enumerate() {
-            let rect = self.store_rect(vi);
-            let k = f64::from(self.res.k[v.node]);
-            let origin = v.place + Vec2::new(0.0, v.page as f64 * pitch);
-            let transform = if k == 1.0 { Affine::translate(origin) } else { Affine::translate(origin) * Affine::scale(k) };
-            let items = match (&v.leaf, &v.root) {
-                (Some(item), _) => {
-                    if v.birth > 0 {
-                        copies[v.birth as usize].push(Pass::Clear { rect, colour: [0.0; 4] });
-                    }
-                    let mut it = item.clone();
-                    it.bounds = scale_rect(self.dem.out[v.node], 1.0 / k);
-                    vec![it]
-                }
-                (None, Some(items)) => {
-                    copies[v.birth as usize].push(Pass::Clear { rect, colour: self.g.background.components });
-                    items.clone()
-                }
-                (None, None) => continue,
-            };
-            Self::tiles_of(rect, &mut tiles[v.birth as usize]);
-            work[v.birth as usize] |= frame_plan::work::DRAW;
-            let mut cmds = Vec::new();
-            if v.birth > 0 {
-                cmds.push(DrawCmd::Marker {
-                    shape: 0,
-                    transform: Affine::IDENTITY,
-                    eid: bake::EID_BOUNDARY,
-                    seg_after: v.birth,
-                    round: v.birth,
-                    footprint: rect,
-                    ctl: 0,
-                    params_off: 0,
-                });
-            }
-            cmds.push(DrawCmd::Clip { rect });
-            cmds.push(DrawCmd::Shapes { items, transform });
-            cmds.push(DrawCmd::Unclip);
-            page_work.push((v.birth, 0, cmds));
-        }
-        for i in 0..self.g.nodes.len() {
-            let (Some(h), Op::Draw(_)) = (self.spines.halo_of[i], &self.g.nodes[i].op) else { continue };
-            if self.g.nodes[i].inputs.is_empty() || !self.live(i) {
-                continue;
-            }
-            let items = self.dem.kept[i].clone();
-            if items.is_empty() {
-                continue;
-            }
-            let v = self.value_of[&h];
-            let birth = self.values[v].birth;
-            let origin = self.values[v].place + Vec2::new(0.0, self.values[v].page as f64 * pitch);
-            let k = f64::from(self.res.k[i]);
-            let rect = self.dem.out[i] + origin;
-            let round = self.ready(i, self.dem.out[i]).max(birth);
-            Self::tiles_of(rect, &mut tiles[round as usize]);
-            work[round as usize] |= frame_plan::work::DRAW;
-            let transform = Affine::translate(origin) * Affine::scale(k);
-            page_work.push((round, if round > birth { 2 } else { 0 }, vec![DrawCmd::Clip { rect }, DrawCmd::Shapes { items, transform }, DrawCmd::Unclip]));
-        }
-        for h in 0..self.g.nodes.len() {
-            let Op::Halo { of } = self.g.nodes[h].op else { continue };
-            if !self.live(h) || self.res.k[of] != self.res.k[h] || !self.fill_read(h) {
-                continue;
-            }
-            let inside = self.inside_of(h, self.dem.out[h]);
-            if inside.is_zero_area() {
-                continue;
-            }
-            let v = self.value_of[&h];
-            let copy_round = self.ready(h, inside).max(self.values[v].birth);
-            if (copy_round as usize) < rounds as usize {
-                let origin = self.values[v].place + Vec2::new(0.0, self.values[v].page as f64 * pitch);
-                copies[copy_round as usize + 1].push(Pass::Copy { src: inside + self.spine_origin(of), dst: inside + origin });
-            }
-        }
-        if pages > 0 {
-            draws.push(DrawCmd::Clip { rect: Rect::new(0.0, 0.0, self.store.width, pitch) });
-        }
-        for i in 0..self.g.nodes.len() {
-            if !self.live(i) || !self.g.is_spine(i) || self.spines.halo_of[i].is_some() {
-                continue;
-            }
-            match &self.g.nodes[i].op {
-                Op::Draw(_) => {
-                    let items = self.dem.kept[i].clone();
-                    if items.is_empty() {
-                        continue;
-                    }
-                    draws.push(DrawCmd::Shapes { items, transform: Affine::IDENTITY });
-                }
-                Op::Compose { .. } => {
-                    let a = self.arm_of[&i];
-                    let arm = &self.arms[a];
-                    let footprint = self.dem.out[i];
-                    Self::tiles_of(footprint, &mut tiles[arm.round as usize]);
-                    draws.push(DrawCmd::Marker {
-                        shape: arm.mask_shape.unwrap_or(0),
-                        transform: Affine::IDENTITY,
-                        eid: if arm.mask_shape.is_some() { bake::EID_MASKED } else { bake::EID_MATERIALIZE },
-                        seg_after: arm.round,
-                        round: arm.round,
-                        footprint,
-                        ctl: 0,
-                        params_off: arm.params_off,
-                    });
-                }
-                _ => {}
-            }
-        }
-        if pages > 0 {
-            draws.push(DrawCmd::Unclip);
-        }
-        for i in 0..self.g.nodes.len() {
-            let (Some(h), Op::Compose { .. }) = (self.spines.halo_of[i], &self.g.nodes[i].op) else { continue };
-            if !self.live(i) {
-                continue;
-            }
-            let a = self.arm_of[&i];
-            let arm = &self.arms[a];
-            let vh = self.value_of[&h];
-            let origin = self.values[vh].place + Vec2::new(0.0, self.values[vh].page as f64 * pitch);
-            let k = f64::from(self.res.k[i]);
-            let footprint = self.dem.out[i] + origin;
-            Self::tiles_of(footprint, &mut tiles[arm.round as usize]);
-            let marker = DrawCmd::Marker {
-                shape: arm.mask_shape.unwrap_or(0),
-                transform: Affine::translate(origin) * Affine::scale(k),
-                eid: if arm.mask_shape.is_some() { bake::EID_MASKED } else { bake::EID_MATERIALIZE },
-                seg_after: arm.round,
-                round: arm.round,
-                footprint,
-                ctl: 0,
-                params_off: arm.params_off,
-            };
-            page_work.push((arm.round, 1, vec![marker]));
-        }
-        for a in (0..self.arms.len()).filter(|&a| self.arms[a].compose.is_none()) {
-            let arm = &self.arms[a];
-            let footprint = self.store_rect(arm.out.expect("a page arm writes a value"));
-            Self::tiles_of(footprint, &mut tiles[arm.round as usize]);
-            let marker = DrawCmd::Marker {
-                shape: 0,
-                transform: Affine::IDENTITY,
-                eid: bake::EID_MATERIALIZE,
-                seg_after: arm.round,
-                round: arm.round,
-                footprint,
-                ctl: 0,
-                params_off: arm.params_off,
-            };
-            page_work.push((arm.round, 1, vec![marker]));
-        }
-        page_work.sort_by_key(|w| (w.0, w.1));
-        draws.extend(page_work.into_iter().flat_map(|w| w.2));
-
-        let mut passes = vec![Pass::Clear { rect: self.store.frame, colour: self.g.background.components }];
-        if pages > 0 {
-            passes.push(Pass::Clear { rect: Rect::new(0.0, self.store.frame.y1, self.store.width, store_h), colour: [0.0; 4] });
-        }
-        passes.push(Pass::Frontend { draws });
-        for (r, list) in tiles.iter_mut().enumerate() {
-            passes.append(&mut copies[r]);
-            list.sort_unstable();
-            list.dedup();
-            let off = params.len() as u32;
-            params.extend(list.iter().map(|&w| f32::from_bits(w)));
-            let r = r as u32;
-            passes.push(Pass::Fine { window: Window { rounds: (r, r + 1), tiles: Tiles::List { off, n: list.len() as u32 } }, work: work[r as usize] });
-        }
-        passes.push(Pass::Present { from: self.store.frame });
-        FramePlan { store: (self.store.width as u32, store_h as u32), page: pitch as u32, params, passes }
-    }
+    let cx = Resolved::of(graph, width, height, max_dim, pages);
+    halo::expand(graph, cx.store.frame, &cx.res, &cx.dem, &cx.spines)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kurbo::{Affine, Rect, Vec2};
     use crate::peniko::Color;
-    use crate::vello::frame_graph::{DrawStyle, GNode, BLUR_TAPS};
-    use crate::vello::resolve::settle;
+    use crate::vello::arms::Kind;
+    use crate::vello::bake;
+    use crate::vello::frame_graph::{BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, GNode, NodeId, Op, BLUR_TAPS};
+    use crate::vello::frame_plan::{DrawCmd, Pass, Tiles};
+    use crate::vello::params::Operand;
+    use crate::vello::resolve::{overlaps, settle};
 
     fn body(shape: u128, r: Rect) -> DrawItem {
         DrawItem { shape, style: DrawStyle::Body, bounds: r }
@@ -1209,20 +156,20 @@ mod tests {
     fn rounds_are_dependency_depth_and_live_values_share_a_page_apart() {
         let g = graph();
         g.validate().expect("valid");
-        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0);
-        s.build_arms();
-        s.fit();
-        let arms: Vec<(Vec<NodeId>, Option<NodeId>, u32)> = s.arms.iter().map(|a| (a.nodes.clone(), a.compose, a.round)).collect();
+        let mut s = Resolved::of(&g, 640, 480, 8192, 4.0);
+        let w = Work::of(&s);
+        let sc = Schedule::fit(&s, &w);
+        let arms: Vec<(Vec<NodeId>, Option<NodeId>, u32)> = w.arms.iter().enumerate().map(|(a, arm)| (arm.nodes.clone(), arm.compose, sc.round[a])).collect();
         assert_eq!(arms[0], (vec![2], None, 1), "blur X reads the round-0 silhouette");
         assert_eq!(arms[1], (vec![3], Some(4), 2), "blur Y lands the drop shadow");
         assert_eq!(arms[2], (vec![6, 7, 8], Some(10), 3), "the lens is one arm landing the glass after the body draws");
-        assert_eq!(s.pages(), 1, "both values fit beside each other on the first page");
-        let sil = s.values.iter().position(|v| v.node == 1).unwrap();
-        let bx = s.values.iter().position(|v| v.node == 2).unwrap();
-        assert_eq!((s.values[sil].birth, s.values[sil].last_read), (0, 1));
-        assert_eq!((s.values[bx].birth, s.values[bx].last_read), (1, 2));
-        assert!(!overlaps(s.store_rect(sil), s.store_rect(bx)), "values alive in the same round never share a texel");
-        assert!(s.store_rect(sil).y0 >= s.store.pitch && s.store_rect(bx).y0 >= s.store.pitch, "values sit below the frame rows");
+        assert_eq!(sc.pages(&s, &w), 1, "both values fit beside each other on the first page");
+        let sil = w.values.iter().position(|v| v.node == 1).unwrap();
+        let bx = w.values.iter().position(|v| v.node == 2).unwrap();
+        assert_eq!((sc.slot[sil].birth, sc.slot[sil].last_read), (0, 1));
+        assert_eq!((sc.slot[bx].birth, sc.slot[bx].last_read), (1, 2));
+        assert!(!overlaps(sc.store_rect(&s, &w, sil), sc.store_rect(&s, &w, bx)), "values alive in the same round never share a texel");
+        assert!(sc.store_rect(&s, &w, sil).y0 >= s.store.pitch && sc.store_rect(&s, &w, bx).y0 >= s.store.pitch, "values sit below the frame rows");
     }
 
     #[test]
@@ -1328,40 +275,40 @@ mod tests {
         let k = g.resolutions();
         assert_eq!((k[11], k[10], k[6], k[5], k[7], k[9]), (0.5, 0.5, 0.5, 0.5, 0.5, 0.5), "the halo, its spine, its fill point, the clone chain and its leaf run at the reader's k");
         assert_eq!((k[4], k[0], k[3]), (1.0, 1.0, 1.0), "the frame's spine and A's own leaf stay at 1");
-        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0);
-        s.build_arms();
-        s.fit();
-        let halo = s.value_of[&11];
-        assert_eq!((s.value_of[&6], s.value_of[&5]), (halo, halo), "one value per spine: the fill point and the root share the halo's");
-        let items: Vec<u128> = s.values[halo].root.as_ref().expect("the halo value is drawn from its root").iter().map(|it| it.shape).collect();
+        let mut s = Resolved::of(&g, 640, 480, 8192, 4.0);
+        let w = Work::of(&s);
+        let sc = Schedule::fit(&s, &w);
+        let halo = w.value_of[11].unwrap();
+        assert_eq!((w.value_of[6], w.value_of[5]), (Some(halo), Some(halo)), "one value per spine: the fill point and the root share the halo's");
+        let Kind::Root(root) = &w.values[halo].kind else { panic!("the halo value is drawn from its root") };
+        let items: Vec<u128> = root.iter().map(|it| it.shape).collect();
         assert_eq!(items, vec![1], "the root's items, pruned to the halo");
         assert!(s.dem.out[11].x1 > 320.0 && s.dem.out[11].x0 < 320.0, "the halo straddles the frame's right edge in half texels: {:?}", s.dem.out[11]);
         assert!(s.dem.out[10].x0 >= 320.0, "the clone composes only past the frame: {:?}", s.dem.out[10]);
         assert!(s.dem.out[6].x0 < 320.0 && s.dem.out[6].x1 > 320.0, "the fill point holds the clone's sampling ring inside the frame: {:?}", s.dem.out[6]);
         assert!(s.dem.out[5].x0 >= 320.0, "the root draws only past the frame: {:?}", s.dem.out[5]);
-        assert_eq!(s.values[halo].rect, s.dem.out[6].union(s.dem.out[11]), "the value is what its spine demands, joined");
+        assert_eq!(w.values[halo].rect, s.dem.out[6].union(s.dem.out[11]), "the value is what its spine demands, joined");
         assert!(s.dem.wanted[4].is_some_and(|d| d.x0 < 640.0 && d.x1 <= 640.0), "A is demanded in-frame for the halo's fill: {:?}", s.dem.wanted[4]);
-        let (lower, clone, fill, outer) = (s.arm_of[&6], s.arm_of[&7], s.arm_of[&11], s.arm_of[&13]);
-        assert_eq!((s.arms[lower].round, s.arms[clone].round, s.arms[fill].round, s.arms[outer].round), (1, 2, 3, 4), "the ring's fill, the clone chain, the halo's fill over it, then B's chain");
-        assert_eq!((s.arms[lower].out, s.arms[fill].out), (Some(halo), Some(halo)), "both fills write the halo value");
-        assert_eq!((s.values[halo].birth, s.values[halo].last_read), (0, 4), "drawn at 0, alive until B's warp has read it");
-        let mut params = Vec::new();
-        for a in 0..s.arms.len() {
-            s.bake_arm(a, &mut params);
-        }
-        assert_eq!((s.arms[lower].value, s.arms[fill].value), (Operand::Frame, Operand::Frame), "the fills resample the frame rows");
-        assert_eq!(s.arms[clone].value, Operand::Value { v: halo, shift: Vec2::ZERO }, "the clone's warp reads the halo value as its spine");
-        assert_eq!(s.arms[outer].value, Operand::Value { v: halo, shift: Vec2::ZERO }, "B's warp reads the halo, not the frame");
-        let desc = &params[s.arms[fill].params_off as usize..];
+        let (lower, clone, fill, outer) = (w.arm_of[6].unwrap(), w.arm_of[7].unwrap(), w.arm_of[11].unwrap(), w.arm_of[13].unwrap());
+        assert_eq!((sc.round[lower], sc.round[clone], sc.round[fill], sc.round[outer]), (1, 2, 3, 4), "the ring's fill, the clone chain, the halo's fill over it, then B's chain");
+        assert_eq!((w.arms[lower].out, w.arms[fill].out), (halo, halo), "both fills write the halo value");
+        assert_eq!((sc.slot[halo].birth, sc.slot[halo].last_read), (0, 4), "drawn at 0, alive until B's warp has read it");
+        let ps = Params::bake(&s, &w, &sc);
+        let params = &ps.floats;
+        let frame = Operand::Value { v: 0, shift: Vec2::ZERO };
+        assert_eq!((ps.arms[lower].value, ps.arms[fill].value), (frame, frame), "the fills resample the frame rows");
+        assert_eq!(ps.arms[clone].value, Operand::Value { v: halo, shift: Vec2::ZERO }, "the clone's warp reads the halo value as its spine");
+        assert_eq!(ps.arms[outer].value, Operand::Value { v: halo, shift: Vec2::ZERO }, "B's warp reads the halo, not the frame");
+        let desc = &params[ps.arms[fill].off as usize..];
         assert_eq!((desc[0] as u32 & bake::bits::SCALE, desc[2], desc[3]), (bake::bits::SCALE, 2.0, bake::SCALE_KEEP), "a keep-scale by two");
     }
 
     #[test]
     fn a_halo_at_the_spines_resolution_is_one_copy() {
         let g = halo_graph(1.0);
-        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0);
-        s.build_arms();
-        assert!(!s.arm_of.contains_key(&6) && !s.arm_of.contains_key(&11), "no fill arms at k 1");
+        let s = Resolved::of(&g, 640, 480, 8192, 4.0);
+        let w = Work::of(&s);
+        assert!(w.arm_of[6].is_none() && w.arm_of[11].is_none(), "no fill arms at k 1");
         let p = plan_as_is(&g);
         p.validate().unwrap_or_else(|e| panic!("{e}"));
         let mut fines = 0;
@@ -1395,10 +342,7 @@ mod tests {
 
     /// The plan of `g` as it is: no expansion.
     fn plan_as_is(g: &FrameGraph) -> FramePlan {
-        let mut memory = HashMap::new();
-        let mut s = Scheduler::new(g, 640, 480, 8192, 4.0);
-        s.resolve(&mut memory);
-        s.run()
+        plan_of(g, 640, 480, 8192, 4.0, &mut HashMap::new())
     }
 
     fn halos(g: &FrameGraph) -> Vec<(NodeId, NodeId)> {
@@ -1491,29 +435,27 @@ mod tests {
     #[test]
     fn a_half_pair_runs_its_run_at_half_and_resamples_at_its_ends() {
         let g = scaled_graph(0.5);
-        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0);
+        let mut s = Resolved::of(&g, 640, 480, 8192, 4.0);
         assert!(s.res.elided[2], "a leaf's downscale is the leaf drawn at half");
         assert!(!s.res.elided[5] && !s.res.elided[8] && !s.res.elided[10]);
         assert_eq!((s.res.k[1], s.res.k[3], s.res.k[4], s.res.k[5], s.res.k[9], s.res.k[10]), (0.5, 0.5, 0.5, 1.0, 0.5, 1.0));
-        s.build_arms();
-        s.fit();
-        let mut params = Vec::new();
-        for a in 0..s.arms.len() {
-            s.bake_arm(a, &mut params);
-        }
-        let arms: Vec<(Vec<NodeId>, Option<NodeId>)> = s.arms.iter().map(|a| (a.nodes.clone(), a.compose)).collect();
+        let w = Work::of(&s);
+        let sc = Schedule::fit(&s, &w);
+        let ps = Params::bake(&s, &w, &sc);
+        let params = &ps.floats;
+        let arms: Vec<(Vec<NodeId>, Option<NodeId>)> = w.arms.iter().map(|a| (a.nodes.clone(), a.compose)).collect();
         assert_eq!(arms[0], (vec![3], None), "blur X at half");
         assert_eq!(arms[1], (vec![4], None), "blur Y at half");
         assert_eq!(arms[2], (vec![5], Some(6)), "the upscale lands the shadow");
         assert_eq!(arms[3], (vec![8], None), "the downscale of the body's backdrop is its own arm");
         assert_eq!(arms[4], (vec![9], None), "the warp at half");
         assert_eq!(arms[5], (vec![10, 11, 12], Some(14)), "the upscale heads the lens's tail");
-        assert!(matches!(s.arms[3].value, Operand::Frame), "a downscale of the spine reads the frame rows");
-        let sil = s.values.iter().position(|v| v.node == 1).unwrap();
-        let by = s.values.iter().position(|v| v.node == 4).unwrap();
-        assert_eq!(s.values[sil].rect, Rect::new(48.0, 48.0, 160.0, 144.0), "the silhouette at half, with its AA, in tiles");
-        assert_eq!(s.values[by].rect, Rect::new(16.0, 16.0, 192.0, 160.0), "the blur at half, padded twice by the half-resolution pad");
-        let desc = |a: usize| &params[s.arms[a].params_off as usize..][..4];
+        assert!(matches!(ps.arms[3].value, Operand::Value { v: 0, .. }), "a downscale of the spine reads the frame rows");
+        let sil = w.values.iter().position(|v| v.node == 1).unwrap();
+        let by = w.values.iter().position(|v| v.node == 4).unwrap();
+        assert_eq!(w.values[sil].rect, Rect::new(48.0, 48.0, 160.0, 144.0), "the silhouette at half, with its AA, in tiles");
+        assert_eq!(w.values[by].rect, Rect::new(16.0, 16.0, 192.0, 160.0), "the blur at half, padded twice by the half-resolution pad");
+        let desc = |a: usize| &params[ps.arms[a].off as usize..][..4];
         let at = |a: usize| (desc(a)[0] as u32 & bake::bits::SCALE != 0, desc(a)[2], desc(a)[3]);
         assert_eq!(at(2), (true, 0.5, bake::SCALE_TRANSPARENT), "up from a transparent chain");
         assert_eq!(at(3), (true, 2.0, bake::SCALE_CLAMP), "down from the spine, inside the frame");
@@ -1578,7 +520,7 @@ mod tests {
         };
         g.validate().expect("valid");
         let mut memory = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 8192, 3.0);
+        let mut s = Resolved::of(&g, 640, 480, 8192, 3.0);
         assert_eq!(s.store.width, 640.0 + 2.0 * 672.0, "two σ100 blurs read 308 px past their output each, plus a tile of rounding per read: the store grows by that ring on both sides");
         assert!(s.dem.out[2].width() > 640.0 && s.dem.out[2].width() <= s.store.width, "at target 1 the backdrop the blur needs is wider than the frame and no wider than the store: {:?}", s.dem.out[2]);
         s.resolve(&mut memory);
@@ -1587,10 +529,10 @@ mod tests {
         assert!(!s.res.elided[1], "the pair is now real");
         assert_eq!(memory.get(&7), Some(&0.5), "the pair remembers what it ran at");
         let mut memory = HashMap::from([(7u128, 0.5f32)]);
-        let mut s2 = Scheduler::new(&g, 640, 480, 8192, 3.0);
+        let mut s2 = Resolved::of(&g, 640, 480, 8192, 3.0);
         s2.resolve(&mut memory);
         assert_eq!(memory.get(&7), Some(&0.5), "the same frame keeps last frame's resolution");
-        let c = Scheduler::new(&g, 640, 480, 640, 4.0);
+        let c = Resolved::of(&g, 640, 480, 640, 4.0);
         assert_eq!(c.store.width, 640.0, "a device that cannot hold the ring caps the store at the frame's width, never below it");
     }
 
@@ -1598,26 +540,26 @@ mod tests {
     fn chains_are_placed_first_fit_within_the_store() {
         let g = shadows(3, 4.0, EdgeClampStyle::Transparent);
         let mut roomy = HashMap::new();
-        let mut wide = Scheduler::new(&g, 640, 480, 8192, 4.0);
+        let mut wide = Resolved::of(&g, 640, 480, 8192, 4.0);
         let targets = wide.res.k.clone();
         wide.resolve(&mut roomy);
         assert_eq!(wide.res.k, targets, "three small shadows need no lowering with room to spare");
-        wide.build_arms();
-        wide.fit();
-        let natural: Vec<u32> = wide.arms.iter().map(|a| a.round).collect();
+        let w = Work::of(&wide);
+        let sc = Schedule::fit(&wide, &w);
+        let natural: Vec<u32> = sc.round.clone();
         assert_eq!(natural, vec![1, 2, 1, 2, 1, 2], "disjoint chains run side by side: {natural:?}");
 
         let mut tight = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 480 + 256, 4.0);
+        let mut s = Resolved::of(&g, 640, 480, 480 + 256, 4.0);
         s.resolve(&mut tight);
         assert_eq!(s.res.k, targets, "every chain fits the store alone, so none is lowered");
-        s.build_arms();
-        s.fit();
-        let rounds: Vec<(NodeId, u32)> = s.arms.iter().map(|a| (a.chain, a.round)).collect();
+        let w = Work::of(&s);
+        let sc = Schedule::fit(&s, &w);
+        let rounds: Vec<(NodeId, u32)> = w.arms.iter().enumerate().map(|(a, arm)| (arm.chain, sc.round[a])).collect();
         let last = rounds.iter().map(|r| r.1).max().unwrap();
         assert!(last > 2, "a store too small for three chains side by side runs one of them later: {rounds:?}");
-        for v in 0..s.values.len() {
-            assert!(s.store_rect(v).y1 <= s.store.pitch + s.store.rows, "value {v} sits within the store's rows: {:?}", s.store_rect(v));
+        for v in 1..w.values.len() {
+            assert!(sc.store_rect(&s, &w, v).y1 <= s.store.pitch + s.store.rows, "value {v} sits within the store's rows: {:?}", sc.store_rect(&s, &w, v));
         }
         assert!(rounds.windows(2).all(|w| w[0].0 != w[1].0 || w[0].1 < w[1].1), "each chain still runs in order: {rounds:?}");
     }

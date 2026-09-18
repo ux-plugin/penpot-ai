@@ -1,6 +1,7 @@
 //! The plan's first stages, each a value the next borrows: the [`Store`] a frame is built for,
 //! the [`Spines`] of a graph, the [`Res`]olution every node runs at, and the [`Demand`] on every
-//! node at that resolution. Nothing here decides when or where anything runs.
+//! node at that resolution — bundled as the [`Resolved`] graph every later stage reads. Nothing
+//! here decides when or where anything runs.
 
 use std::collections::HashMap;
 
@@ -465,5 +466,85 @@ impl Demand {
             _ => self.out[i],
         };
         res.in_space_of(r, i, j)
+    }
+}
+
+/// A graph with its store, spines, resolutions and demand settled: what every later stage reads
+/// and none writes.
+pub(crate) struct Resolved<'a> {
+    pub g: &'a FrameGraph,
+    pub store: Store,
+    pub spines: Spines,
+    pub res: Res,
+    pub dem: Demand,
+}
+
+impl<'a> Resolved<'a> {
+    /// `g` at the pairs' targets, on a `width × height` frame with `pages` frame heights of store
+    /// below it on a device whose textures reach `max_dim`.
+    pub fn of(g: &'a FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64) -> Self {
+        let store = Store::for_graph(g, width, height, max_dim, pages);
+        let spines = Spines::of(g);
+        let res = Res::targets(g);
+        let dem = Demand::of(g, store.frame, &res, &spines);
+        Resolved { g, store, spines, res, dem }
+    }
+
+    /// The capacity decision on the demand at the pairs' targets, and demand again at what it
+    /// decided.
+    pub fn resolve(&mut self, memory: &mut HashMap<u128, f32>) {
+        if let Some(res) = self.res.decide(self.g, &self.dem, &self.store, memory) {
+            self.res = res;
+            self.dem = Demand::of(self.g, self.store.frame, &self.res, &self.spines);
+        }
+    }
+
+    pub fn live(&self, i: NodeId) -> bool {
+        self.dem.live(&self.res, i)
+    }
+
+    pub fn input(&self, i: NodeId, n: usize) -> NodeId {
+        self.res.input(self.g, i, n)
+    }
+
+    pub fn inputs(&self, i: NodeId) -> Vec<NodeId> {
+        self.res.inputs(self.g, i)
+    }
+
+    pub fn in_space_of(&self, r: Rect, from: NodeId, to: NodeId) -> Rect {
+        self.res.in_space_of(r, from, to)
+    }
+
+    pub fn inside_of(&self, i: NodeId, r: Rect) -> Rect {
+        self.res.inside_of(self.g, &self.spines, self.store.frame, i, r)
+    }
+
+    pub fn read_rect(&self, i: NodeId) -> Rect {
+        self.dem.read_rect(self.g, &self.res, i)
+    }
+
+    /// The nodes `i` reads: its inputs, and for a halo the spine node it continues.
+    pub fn read_nodes(&self, i: NodeId) -> Vec<NodeId> {
+        let mut nodes = self.inputs(i);
+        if let Op::Halo { of } = self.g.nodes[i].op {
+            nodes.push(of);
+        }
+        nodes
+    }
+
+    /// The halo whose spine node `j` stands on: `j` itself for a halo, the nearest halo above
+    /// under one, none on the frame's spine.
+    pub fn halo_of(&self, j: NodeId) -> Option<NodeId> {
+        if matches!(self.g.nodes[j].op, Op::Halo { .. }) {
+            Some(j)
+        } else {
+            self.spines.halo_of[j]
+        }
+    }
+
+    /// Whether halo `h` is filled: a live chain node reads it. A fill point under a clone that
+    /// nothing demands would be filled for nobody; the fill above it covers the same rows.
+    pub fn fill_read(&self, h: NodeId) -> bool {
+        self.res.readers[h].iter().any(|&r| !self.g.is_spine(r) && self.live(r))
     }
 }
