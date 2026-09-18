@@ -281,6 +281,12 @@ pub(crate) struct RenderState {
     // Frames contained in groups must reset this nested_fills stack pushing a new empty vector.
     pub nested_fills: Vec<Vec<Fill>>,
     pub show_grid: Option<Uuid>,
+    /// Transient hover chrome: `(shape id, ARGB colour)`. `render::ui` traces a
+    /// dashed stroke over that shape's own outline on the UI surface, above the
+    /// design. It is pure chrome — never part of the document, so it survives
+    /// resyncs, never reaches history, and never affects export. Currently
+    /// driven by the editor's empty-slot hover.
+    pub shape_highlight: Option<(Uuid, u32)>,
     pub focus_mode: FocusMode,
     pub touched_ids: HashSet<Uuid>,
     /// Preview render mode - when true, uses simplified rendering for progressive loading
@@ -350,6 +356,7 @@ impl RenderState {
             tile_grid: crate::tile_grid::TileGrid::new(),
             nested_fills: vec![],
             show_grid: None,
+            shape_highlight: None,
             focus_mode: FocusMode::new(),
             touched_ids: HashSet::default(),
             preview_mode: false,

@@ -37,6 +37,25 @@ export interface SlotPresentation {
   views: Record<string, PNode>
 }
 
+/**
+ * Present iff this node is a component copy. The copy emits as a call —
+ * `<Button label="Save" />` — instead of its subtree being inlined, and
+ * `definition` carries the main's projected subtree so the component function
+ * can be emitted once alongside the page.
+ *
+ * This is the whole reason properties are *declared*: an undeclared override
+ * would have to compile to an inline style on this one instance, whereas a
+ * declared one compiles to a named prop.
+ */
+export interface ComponentPresentation {
+  name: string
+  /** Resolved values keyed by prop name (declared defaults already filled in). */
+  props: Record<string, unknown>
+  definition?: PNode
+  /** Prop names in declaration order — the component function's parameters. */
+  propNames?: string[]
+}
+
 /** Minimal presentation node (stand-in for parsed AI JSX). */
 export interface PNode {
   nodeId: NodeId
@@ -47,6 +66,16 @@ export interface PNode {
   style?: Record<string, string>
   /** Present iff this node is a slot; carries its projected candidate views. */
   slot?: SlotPresentation
+  /** Present iff this node is a component copy; see {@link ComponentPresentation}. */
+  component?: ComponentPresentation
+  /**
+   * Raw expression to emit as this node's content, instead of `text`. Used inside
+   * a component definition so a text prop's target reads `{label}` rather than the
+   * main's literal string.
+   */
+  textExpr?: string
+  /** Raw condition guarding this node — a boolean prop's target renders behind it. */
+  whenExpr?: string
 }
 
 export interface EmitOptions {
@@ -141,6 +170,12 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
   const bodyLines: string[] = [...hooks, ...derived]
   if (handlers.length) bodyLines.push('', ...handlers)
 
+  // Component definitions are emitted once each, ahead of the page, and every
+  // copy in the tree becomes a call to one.
+  const defs = new Map<string, ComponentPresentation>()
+  collectComponentDefs(root, defs)
+  const componentFns = [...defs.values()].map(emitComponentFn)
+
   const jsx = emitNode(root, ir)
   const indentedBody = bodyLines
     .map((l) => (l === '' ? '' : l.split('\n').map((x) => '  ' + x).join('\n')))
@@ -150,12 +185,64 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
     .map((l) => '    ' + l)
     .join('\n')
 
-  return `${imports}export function ${name}() {\n${indentedBody}\n\n  return (\n${indentedJsx}\n  )\n}\n`
+  const prelude = componentFns.length ? `${componentFns.join('\n\n')}\n\n` : ''
+  return `${imports}${prelude}export function ${name}() {\n${indentedBody}\n\n  return (\n${indentedJsx}\n  )\n}\n`
+}
+
+/** Walk the tree gathering one definition per component name (first wins). */
+function collectComponentDefs(node: PNode, into: Map<string, ComponentPresentation>): void {
+  const component = node.component
+  if (component?.definition && !into.has(component.name)) {
+    into.set(component.name, component)
+    collectComponentDefs(component.definition, into)
+  }
+  for (const child of node.children ?? []) collectComponentDefs(child, into)
+  for (const view of Object.values(node.slot?.views ?? {})) collectComponentDefs(view, into)
+}
+
+/**
+ * A component function. Its body is emitted with an empty interaction set:
+ * bindings and handlers are authored per page today, and weaving them through a
+ * component boundary is its own problem.
+ */
+function emitComponentFn(component: ComponentPresentation): string {
+  const empty: PageInteractions = {
+    variables: [],
+    derived: [],
+    states: [],
+    interactions: [],
+    bindings: [],
+    repeaters: [],
+  } as unknown as PageInteractions
+  const params = component.propNames?.length ? `{ ${component.propNames.map(ident).join(', ')} }` : ''
+  const body = emitNode(component.definition!, empty)
+    .split('\n')
+    .map((l) => '    ' + l)
+    .join('\n')
+  return `function ${component.name}(${params}) {\n  return (\n${body}\n  )\n}`
+}
+
+/** `<Button data-node-id="…" label={"Save"} />` — a copy calls its component. */
+function emitComponentCall(node: PNode, component: ComponentPresentation): string {
+  const props = [anchorAttr(node.nodeId)]
+  for (const [key, value] of Object.entries(component.props)) {
+    props.push(`${ident(key)}={${JSON.stringify(value)}}`)
+  }
+  return `<${component.name} ${props.join(' ')} />`
 }
 
 function emitNode(node: PNode, ir: PageInteractions): string {
   const rep = ir.repeaters.find((r) => r.node === node.nodeId)
   const el = emitElement(node, ir, rep)
+  // A boolean prop's target renders behind its condition.
+  if (node.whenExpr) {
+    const inner = el
+      .split('\n')
+      .map((l) => '  ' + l)
+      .join('\n')
+    const guarded = `{${node.whenExpr} && (\n${inner}\n)}`
+    if (!rep) return guarded
+  }
   if (!rep) return el
   const as = rep.as ?? 'item'
   const inner = el
@@ -166,6 +253,9 @@ function emitNode(node: PNode, ir: PageInteractions): string {
 }
 
 function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string {
+  // A copy emits as a call to its component, not as its own subtree.
+  if (node.component) return emitComponentCall(node, node.component)
+
   const props: string[] = [anchorAttr(node.nodeId)]
   if (rep) {
     const as = rep.as ?? 'item'
@@ -207,6 +297,9 @@ function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string 
 
   let inner: string
   if (textChild !== undefined) inner = `{${textChild}}`
+  // Inside a component definition, a text prop's target reads from the prop
+  // rather than carrying the main's literal string.
+  else if (node.textExpr) inner = `{${node.textExpr}}`
   else if (childNodes.length) inner = childNodes.join('\n')
   else inner = node.text ?? ''
 

@@ -13,8 +13,9 @@
  */
 
 import type { IndexedPage, IndexedShape } from '../../../worker/types'
-import type { PNode, SlotPresentation } from '../compile/emit-react'
-import { isSlotShape } from '../../../worker/geometry/shapes'
+import type { ComponentPresentation, PNode, SlotPresentation } from '../compile/emit-react'
+import { isComponentCopyRoot, isComponentMain, isSlotShape } from '../../../worker/geometry/shapes'
+import type { LocalComponent } from '../../../common/component'
 
 const NAME_TAG: Array<[RegExp, string]> = [
   [/button|btn/, 'button'],
@@ -96,14 +97,94 @@ function slotPresentation(
   return { activeView: slot.activeView, views }
 }
 
+/** PascalCase identifier for a component's function name. */
+function componentIdent(name: string): string {
+  const cleaned = name.replace(/[^A-Za-z0-9]+(.)?/g, (_, chr: string | undefined) =>
+    chr ? chr.toUpperCase() : '',
+  )
+  const pascal = cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+  return /^[A-Za-z]/.test(pascal) ? pascal : `Component${pascal}`
+}
+
+/** Index a projected subtree by the node ids it came from. */
+function indexByNodeId(node: PNode, into: Map<string, PNode>): void {
+  into.set(node.nodeId, node)
+  for (const child of node.children ?? []) indexByNodeId(child, into)
+}
+
+/**
+ * Describe a component copy: the call site's resolved prop values, plus the
+ * main's subtree as the component's body with prop-driven nodes rewritten to
+ * read from their prop.
+ *
+ * Returns null when the main can't be reached from this page — a component whose
+ * main lives on another page still renders, it just inlines the copy's own
+ * subtree the way it did before this existed.
+ */
+function componentPresentation(
+  copy: IndexedShape,
+  component: LocalComponent,
+  objects: Record<string, IndexedShape>,
+  projecting: Set<string>,
+): ComponentPresentation | null {
+  const main = objects[component.mainInstanceId]
+  if (!main || projecting.has(main.id)) return null
+
+  projecting.add(main.id)
+  const definition = toPNode(main, objects, projecting)
+  projecting.delete(main.id)
+
+  const byId = new Map<string, PNode>()
+  indexByNodeId(definition, byId)
+
+  const set = (copy as { propValues?: Record<string, unknown> }).propValues ?? {}
+  const props: Record<string, unknown> = {}
+  for (const prop of component.props) {
+    props[prop.name] = prop.id in set ? set[prop.id] : prop.defaultValue
+    for (const target of prop.targets) {
+      const targetNode = byId.get(target.nodeId)
+      if (!targetNode) continue
+      if (prop.type === 'text') targetNode.textExpr = prop.name
+      else if (prop.type === 'boolean') targetNode.whenExpr = prop.name
+    }
+  }
+
+  return {
+    name: componentIdent(component.name),
+    props,
+    definition,
+    propNames: component.props.map((p) => p.name),
+  }
+}
+
 function toPNode(
   shape: IndexedShape,
   objects: Record<string, IndexedShape>,
   projecting: Set<string> = new Set(),
+  components?: Record<string, LocalComponent>,
 ): PNode {
   const node: PNode = { nodeId: shape.id, tag: tagFor(shape) }
   const style = styleFor(shape)
   if (style) node.style = style
+
+  // A component copy emits as a call to its component instead of inlining its
+  // subtree — which is the whole point of declaring props.
+  //
+  // The main emits as a call too. It sits on the canvas like any other frame, so
+  // inlining it would put a literal duplicate of the component's own body in the
+  // page. The recursion terminates on its own: projecting the main's subtree for
+  // the definition re-enters this branch, finds the main already in `projecting`,
+  // and inlines it there — which is exactly where the literal body belongs.
+  if (components && (isComponentCopyRoot(shape) || isComponentMain(shape))) {
+    const component = components[(shape as { componentId?: string }).componentId ?? '']
+    const presentation = component
+      ? componentPresentation(shape, component, objects, projecting)
+      : null
+    if (presentation) {
+      node.component = presentation
+      return node
+    }
+  }
   // A slot owns no children — it references view frames. Emit a slot descriptor
   // carrying each candidate's projected subtree instead of walking `shapes`.
   if (isSlotShape(shape)) {
@@ -115,7 +196,7 @@ function toPNode(
   const children = (shape.shapes ?? [])
     .map((id) => objects[id])
     .filter((c): c is IndexedShape => Boolean(c))
-    .map((c) => toPNode(c, objects, projecting))
+    .map((c) => toPNode(c, objects, projecting, components))
   if (children.length) {
     node.children = children
   } else {
@@ -125,9 +206,18 @@ function toPNode(
   return node
 }
 
-/** Find the page root (the shape with no parent) and walk it into a `PNode` tree. */
-export function nodesToPresentation(page: IndexedPage): PNode | null {
+/**
+ * Find the page root (the shape with no parent) and walk it into a `PNode` tree.
+ *
+ * Pass `components` (the document's library) to have copies emit as component
+ * calls; without it they inline their own subtrees, which is what every caller
+ * did before components existed.
+ */
+export function nodesToPresentation(
+  page: IndexedPage,
+  components?: Record<string, LocalComponent>,
+): PNode | null {
   const objects = page.objects
   const root = Object.values(objects).find((o) => o.parentId == null)
-  return root ? toPNode(root, objects) : null
+  return root ? toPNode(root, objects, new Set(), components) : null
 }

@@ -13,13 +13,14 @@
  * (history is global, not per-page).
  */
 
-import type { Change } from 'penpot-exporter/types'
+import type { LocalChange } from '../changes/bulk-changes'
 import type { DocMetaChange } from '../changes/doc-meta-change'
 import { useHistoryStore } from './history-store'
 
 export function recordHistoryFrame(params: {
-  redoChanges: Change[]
-  undoChanges: Change[]
+  /** As written by the caller — bulk changes stay compressed in the frame. */
+  redoChanges: LocalChange[]
+  undoChanges: LocalChange[]
   docMetaRedoChanges?: readonly DocMetaChange[]
   docMetaUndoChanges?: readonly DocMetaChange[]
   fromHistory: boolean
