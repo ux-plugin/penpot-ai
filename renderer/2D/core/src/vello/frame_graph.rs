@@ -198,7 +198,7 @@ impl FrameGraph {
 
     /// Whether a spine op takes node `i` as the state below: an input-less draw so stood on
     /// roots a spine, a halo so stood on is a fill point inside one rather than its top.
-    fn stood_on(&self, i: NodeId) -> bool {
+    pub(crate) fn stood_on(&self, i: NodeId) -> bool {
         self.stood[i]
     }
 

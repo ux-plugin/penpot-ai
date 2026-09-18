@@ -20,6 +20,7 @@ const SKIP: &[&str] = &[
     "clear_shape_layout",
     "clear_shape_material",
     "store_font",
+    "render_from_cache",
 ];
 
 /// What a replay observed on the way through: the applied call count plus the recording's own
@@ -179,9 +180,7 @@ pub fn replay(path: &str) -> Replayed {
             "render_sync" => abi::render_sync(),
             "render" => abi::render(i32a(0)),
             "clean_up" => abi::clean_up(),
-            // The browser facade stubs any entry point this backend lacks, so a recording carries
-            // calls the live session also turned into no-ops. Skip them the same way, but say so.
-            other => eprintln!("replay: skipping unmapped ABI entry point {other:?}"),
+            other => panic!("replay: unmapped ABI entry point {other:?} — add it to util/replay.rs"),
         }
         applied += 1;
     }

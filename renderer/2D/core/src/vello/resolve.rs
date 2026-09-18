@@ -307,13 +307,30 @@ impl Res {
         links
     }
 
+    /// The rows of the halo spine down node `d` reads, when `d` reads the top halo of one: the
+    /// spine's live nodes' outputs, joined — the value its root draws into (see `Work::halo`),
+    /// in the texels of the resolution `d` gives it.
+    fn halo_rows(&self, g: &FrameGraph, dem: &Demand, spines: &Spines, d: NodeId) -> Option<Rect> {
+        let h = g.nodes[d].inputs[0];
+        if !matches!(g.nodes[h].op, Op::Halo { .. }) || g.stood_on(h) {
+            return None;
+        }
+        let root = spines.root[h];
+        (0..g.nodes.len())
+            .filter(|&s| g.is_spine(s) && spines.root[s] == root && dem.live(self, s))
+            .map(|s| dem.out[s])
+            .reduce(|a, b| a.union(b))
+    }
+
     /// The capacity decision, made once, from the demand at the pairs' targets: each pair no
     /// higher than its target, lowered only by the size rules — the run between it no wider nor
     /// taller than the store's rows, no two adjacent links of it together larger than them — with
-    /// hysteresis from `memory`, which is updated. Never looks at what runs beside what: that is
+    /// hysteresis from `memory`, which is updated. A pair opening on the top halo of a spine
+    /// counts that spine's rows among its run: the top halo's reader sets the spine's resolution,
+    /// so lowering the pair is what shrinks them. Never looks at what runs beside what: that is
     /// the packer's, in rounds. Returns the lowered resolutions, or `None` when every pair keeps
     /// its target.
-    pub fn decide(&self, g: &FrameGraph, dem: &Demand, store: &Store, memory: &mut HashMap<u128, f32>) -> Option<Res> {
+    pub fn decide(&self, g: &FrameGraph, dem: &Demand, spines: &Spines, store: &Store, memory: &mut HashMap<u128, f32>) -> Option<Res> {
         let pool = store.rows * store.width;
         let mut lowered: HashMap<NodeId, f32> = HashMap::new();
         let mut seen: Vec<u128> = Vec::new();
@@ -337,6 +354,14 @@ impl Res {
                     tallest = tallest.max(r.height());
                     peak = peak.max(r.area() + dem.out[l].area());
                 }
+            }
+            if let Some(rows) = self.halo_rows(g, dem, spines, d) {
+                widest = widest.max(rows.width());
+                tallest = tallest.max(rows.height());
+                // The rows are alive while the first links read them: through the down node when
+                // it is nothing, the down node itself when it is a real scale.
+                let reading = links.iter().filter(|&&l| l == d || g.nodes[l].inputs.contains(&d)).map(|&l| dem.out[l].area()).fold(0.0, f64::max);
+                peak = peak.max(rows.area() + reading);
             }
             for &l in &links {
                 let a = dem.out[l].area();
@@ -515,7 +540,7 @@ impl<'a> Resolved<'a> {
     /// The capacity decision on the demand at the pairs' targets, and demand again at what it
     /// decided.
     pub fn resolve(&mut self, memory: &mut HashMap<u128, f32>) {
-        if let Some(res) = self.res.decide(self.g, &self.dem, &self.store, memory) {
+        if let Some(res) = self.res.decide(self.g, &self.dem, &self.spines, &self.store, memory) {
             self.res = res;
             self.dem = Demand::of(self.g, self.store.frame, &self.res, &self.spines);
         }
