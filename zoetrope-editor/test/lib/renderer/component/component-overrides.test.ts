@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IndexedPage, IndexedShape } from '../../../../src/lib/worker/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
 import { docProxy, type DocumentMeta } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useHistoryStore } from '../../../../src/lib/history/history-store'
+import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { commitChanges } from '../../../../src/lib/renderer/store/commit'
 import { undo } from '../../../../src/lib/page-crud'
 import {
@@ -94,7 +94,7 @@ describe('component overrides', () => {
   let labelCopy: string
 
   beforeEach(async () => {
-    useHistoryStore.setState({ undoStack: [], redoStack: [], transaction: null })
+    useJournalStore.getState().clear()
     docProxy.pageMap.clear()
     docProxy.pageMap.set(PAGE_ID, makePage())
     docProxy.currentPageId = PAGE_ID

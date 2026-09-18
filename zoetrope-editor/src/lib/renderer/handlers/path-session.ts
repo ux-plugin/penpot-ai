@@ -15,7 +15,7 @@ import { getSelectedIdsSet, setSelectedIds } from '../store/document-selection'
 import { getCommittedNodeOnActivePage } from '../properties/commit-node-properties'
 import { vnFromContent } from '../geom/vn-from-content'
 import { applyChanges } from '../../page-crud'
-import { useHistoryStore } from '../../history/history-store'
+import { discardJournalTransaction } from '../../history/journal/journal-store'
 
 /**
  * Remove the just-edited path if it ended the session with no edges. Reads the
@@ -33,7 +33,7 @@ export function dropDegeneratePathOnExit(shapeId: string | null): void {
   if (!pid) return
   // A pen-create dot abandoned before any edge still holds its open undo
   // transaction — drop it so the deleted shape leaves no orphan undo frame.
-  useHistoryStore.getState().discardTransactions()
+  discardJournalTransaction()
   const sel = getSelectedIdsSet()
   if (sel.has(shapeId)) {
     const next = new Set(sel)

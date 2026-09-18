@@ -30,7 +30,7 @@
  * [[project_undo_model]] for the full focus-mode undo design.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PenpotNode } from 'penpot-exporter/types'
 import type { EditorView } from '@codemirror/view'
 import { Pause, Play, Repeat, RotateCcw } from 'lucide-react'
@@ -57,9 +57,9 @@ import {
 import { MaterialEditor } from '../RightSidePanel/MaterialEditor'
 import { ShaderGraphEditor } from './ShaderGraphEditor'
 import { shaderLanguage } from '../../renderer/shader-lang'
-import { compileGraphToSksl } from '../../renderer/shader-lang/graph/compile'
-import { starterGraph } from '../../renderer/shader-lang/graph/starter'
-import type { ShaderGraph } from '../../renderer/shader-lang/graph/types'
+import { compileGraph } from '../../renderer/shader-lang/nodegraph/compile'
+import { graphFromSource } from '../../renderer/shader-lang/nodegraph/import'
+import type { ShaderGraph } from '../../renderer/shader-lang/nodegraph/model'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { shaderUniformsBridge } from '../../renderer/signals/shader-uniforms-bridge'
 import { shaderConsoleBridge } from '../../renderer/signals/shader-console-bridge'
@@ -94,16 +94,9 @@ export interface ShaderMaterialStageProps {
   nodeId: string
   /** The material as it was when focus mode opened. */
   initialMaterial: Material
-  /**
-   * The session's undo `groupId` (owned by the opener). Every idle-coalesced
-   * commit carries it; the commits land in the focus sub-history buffer while
-   * the stage is open, and on exit fold into one canvas undo entry labelled with
-   * it. See [[project_undo_model]].
-   */
-  groupId: string
 }
 
-export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: ShaderMaterialStageProps) {
+export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialStageProps) {
   const [draft, setDraft] = useState<Material>(initialMaterial)
   const draftRef = useRef<Material>(initialMaterial)
   const dirtyRef = useRef(false)
@@ -212,9 +205,8 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
       before,
       { material: draftRef.current } as Partial<PenpotNode>,
       pid,
-      groupId,
     )
-  }, [nodeId, groupId])
+  }, [nodeId])
 
   const applyChange = useCallback(
     (partial: Partial<Material>) => {
@@ -277,10 +269,19 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
   )
 
   // ---- Graph authoring -----------------------------------------------------
-  // A material either carries a graph (visual authoring; `source` is generated)
-  // or not (hand-written code). Both feed the exact same draft/commit/preview
-  // machinery above — the graph only changes how `source` is produced.
+  // Every shader IS a graph. A material that carries one uses it; one authored
+  // as code is read into an equivalent graph whose single node holds `main`'s
+  // body, with its declarations kept in the preamble. There is no "no graph"
+  // state, because the alternative was an empty pane offering to replace your
+  // source, which is backwards — the graph is the model.
+  //
+  // Derived, not committed: opening the Graph tab does not rewrite the material.
+  // The conversion lands only when you actually edit something.
   const hasGraph = draft.graph != null
+  const graph = useMemo(
+    () => draft.graph ?? graphFromSource(draft.source ?? ''),
+    [draft.graph, draft.source],
+  )
   const [mode, setMode] = useState<'code' | 'graph'>(initialMaterial.graph ? 'graph' : 'code')
 
   /**
@@ -291,17 +292,23 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
   const applyGraph = useCallback(
     (next: ShaderGraph, opts?: { layoutOnly?: boolean }) => {
       if (opts?.layoutOnly) applyChange({ graph: next })
-      else applyChange({ graph: next, source: compileGraphToSksl(next).source })
+      else applyChange({ graph: next, source: compileGraph(next).source })
     },
     [applyChange],
   )
 
-  const startGraph = useCallback(() => {
-    const g = starterGraph()
-    applyChange({ graph: g, source: compileGraphToSksl(g).source })
-  }, [applyChange])
-
-  /** Keep the generated source, drop the graph — it becomes hand-authored code. */
+  /**
+   * Flatten: drop the stored graph and hand the whole file back to the editor.
+   *
+   * This used to be "detach", meaning the graph was discarded and you escaped
+   * it. It cannot mean that any more — a shader is always a graph, so reopening
+   * the tab reads the source back as a single node. What you actually lose is
+   * the structure: the nodes and wiring collapse into one body.
+   *
+   * It stays because editing the file as a whole is sometimes what you want —
+   * restructuring, pasting a shader in wholesale. Reaching the declarations no
+   * longer requires it, since the graph edits those directly.
+   */
   const detachGraph = useCallback(() => {
     applyChange({ graph: undefined })
     setMode('code')
@@ -455,32 +462,18 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
                 size="sm"
                 className="ml-auto h-6 px-2 text-[11px]"
                 onClick={detachGraph}
-                title="Keep this source and edit it by hand — the graph is discarded"
+                title="Edit the whole file by hand. Reopening the graph shows it as a single node — the wiring is not kept."
               >
-                Detach
+                Flatten
               </Button>
             </>
           )}
         </div>
 
         {mode === 'graph' ? (
-          hasGraph && draft.graph ? (
-            <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border/60">
-              <ShaderGraphEditor graph={draft.graph} onChange={applyGraph} />
-            </div>
-          ) : (
-            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border/60 p-6 text-center">
-              <p className="text-xs text-muted-foreground">
-                Build this shader visually by wiring nodes together.
-              </p>
-              <Button type="button" size="sm" onClick={startGraph}>
-                Start a graph
-              </Button>
-              <p className="max-w-[16rem] text-[10px] text-muted-foreground/70">
-                Replaces the current source, which is then generated from the graph.
-              </p>
-            </div>
-          )
+          <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border/60">
+            <ShaderGraphEditor graph={graph} onChange={applyGraph} />
+          </div>
         ) : hasGraph ? (
           // Read-only: the graph owns this source. Detach to take it over.
           <pre className="min-h-0 flex-1 overflow-auto rounded-lg border border-border/60 bg-muted/30 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">

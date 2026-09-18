@@ -16,7 +16,7 @@ import type { AddObjChange, Change } from 'penpot-exporter/types'
 import type { IndexedPage, IndexedShape } from '../../../../src/lib/worker/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
 import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useHistoryStore } from '../../../../src/lib/history/history-store'
+import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { commitChanges } from '../../../../src/lib/renderer/store/commit'
 import { undo } from '../../../../src/lib/page-crud'
 import {
@@ -109,7 +109,7 @@ function seedScene3d(id: string, doc: Scene3DDocument): void {
 
 describe('scene3d persistence', () => {
   beforeEach(() => {
-    useHistoryStore.setState({ undoStack: [], redoStack: [] })
+    useJournalStore.getState().clear()
 
     docProxy.pageMap.clear()
     docProxy.pageMap.set(PAGE_ID, structuredClone(makePage()))
@@ -156,7 +156,7 @@ describe('scene3d persistence', () => {
 
     expect(nodeScene3d(RECT)?.objects[0].material.color).toBe('#ff0000')
     expect(firstObjectColor(scene3dProxy.scenes.get(RECT))).toBe('#ff0000')
-    expect(useHistoryStore.getState().undoStack).toHaveLength(1)
+    expect(useJournalStore.getState().txns).toHaveLength(1)
 
     await undo()
 

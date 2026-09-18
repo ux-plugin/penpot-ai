@@ -5,32 +5,6 @@
 import type { LocalChange } from './bulk-changes'
 import type { DocMetaChange } from './doc-meta-change'
 
-/**
- * One undo/redo frame: forward edit and its inverse, across both page-scoped
- * changes (mutate `docProxy.pageMap`) and doc-meta changes (mutate
- * `docProxy.meta` — paint styles, text styles). A library-sync commit holds
- * both: the style edit in the doc-meta arm, the cascading shape rewrites in the
- * page arm. A single undo reverts the whole frame atomically.
- */
-export interface CommitFrame {
-  /**
-   * Kept in the form the caller wrote them, bulk changes included — the frame is
-   * what the undo stack retains for the session, so compression matters here and
-   * nowhere else. `commitChanges` expands on the way out. See ./bulk-changes.
-   */
-  redoChanges: LocalChange[]
-  undoChanges: LocalChange[]
-  docMetaRedoChanges?: DocMetaChange[]
-  docMetaUndoChanges?: DocMetaChange[]
-  /**
-   * Write-time tag: the focus session that produced this frame. A focus
-   * session's frames land in its sub-history buffer (not the undo stack) and
-   * fold into one entry on exit, which carries this as its label. See
-   * [[project_undo_model]].
-   */
-  groupId?: string
-}
-
 export interface CommitChangesParams {
   redoChanges: LocalChange[]
   undoChanges?: LocalChange[]
@@ -48,6 +22,4 @@ export interface CommitChangesParams {
   fromHistory?: boolean
   /** Skip renderer sync after local document apply (rare). */
   ignoreRendererSync?: boolean
-  /** Stamp the recorded frame's `groupId` (focus-session grouping — see CommitFrame). */
-  groupId?: string
 }

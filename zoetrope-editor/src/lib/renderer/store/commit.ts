@@ -140,7 +140,6 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
     saveUndo,
     fromHistory,
     ignoreRendererSync,
-    groupId,
   } = params
 
   // A crop-mode 3D scene pins its view frame while its box resizes, so the frame write
@@ -227,7 +226,6 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
     docMetaUndoChanges,
     fromHistory: resolvedFromHistory,
     saveUndo: resolvedSaveUndo,
-    groupId,
   })
 
   await emitChangesApplied({

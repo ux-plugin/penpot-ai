@@ -20,9 +20,9 @@ import {
   getCommittedNodeOnActivePage,
 } from '../../renderer/properties/commit-node-properties'
 import {
-  beginHistoryTransaction,
-  commitHistoryTransaction,
-} from '../../history/history-store'
+  beginJournalTransaction,
+  commitJournalTransaction,
+} from '../../history/journal/journal-store'
 import { armShaderDrag, consumeShaderDragClick } from '../../renderer/signals/shader-drag'
 import { ShaderThumbnail } from '../RightSidePanel/shader-thumbnails'
 import {
@@ -48,7 +48,7 @@ function ShadersSection({ selectedIds }: { selectedIds: readonly string[] }) {
       if (!pid || targets.length === 0) return
       // Just apply — as ONE undo step. Editing is a separate, explicit step (the
       // `</>` on the material row / dbl-click), not something applying forces.
-      beginHistoryTransaction('assets-apply-shader')
+      beginJournalTransaction('assets-apply-shader')
       try {
         for (const id of targets) {
           const before = getCommittedNodeOnActivePage(id)
@@ -57,7 +57,7 @@ function ShadersSection({ selectedIds }: { selectedIds: readonly string[] }) {
           }
         }
       } finally {
-        commitHistoryTransaction('assets-apply-shader')
+        commitJournalTransaction('assets-apply-shader')
       }
     },
     [targets],

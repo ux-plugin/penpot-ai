@@ -18,7 +18,7 @@ import type { Change } from 'penpot-exporter/types'
 import type { IndexedPage, IndexedShape } from '../../../../src/lib/worker/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
 import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useHistoryStore } from '../../../../src/lib/history/history-store'
+import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { commitChanges } from '../../../../src/lib/renderer/store/commit'
 import { undo } from '../../../../src/lib/page-crud'
 import {
@@ -393,7 +393,7 @@ async function commitGeometry(x: number, y: number, w: number, h: number): Promi
 
 describe('resize through the commit pipeline', () => {
   beforeEach(() => {
-    useHistoryStore.setState({ undoStack: [], redoStack: [] })
+    useJournalStore.getState().clear()
     docProxy.pageMap.clear()
     docProxy.pageMap.set(PAGE_ID, structuredClone(makePage()))
     docProxy.currentPageId = PAGE_ID
@@ -414,7 +414,7 @@ describe('resize through the commit pipeline', () => {
     await commitGeometry(160, 0, 200, 260)
     expect(win()!.x + win()!.w).toBeCloseTo(WIN.x + WIN.w, 6) // right edge held
     expect(win()!.w).toBeCloseTo((WIN.w * 200) / 360, 6)
-    expect(useHistoryStore.getState().undoStack).toHaveLength(1)
+    expect(useJournalStore.getState().txns).toHaveLength(1)
 
     // One undo restores the box AND its window together — split across two frames, undo
     // would put the box back and leave the content shifted.
@@ -427,7 +427,7 @@ describe('resize through the commit pipeline', () => {
     node().scene3d = { ...defaultSceneDocument(SCENE) } // reframe, no window yet
     await commitGeometry(160, 0, 200, 260)
     expect(win()).toMatchObject(WIN) // materialised from the PRE-resize box, unmoved
-    expect(useHistoryStore.getState().undoStack).toHaveLength(1)
+    expect(useJournalStore.getState().txns).toHaveLength(1)
   })
 
   it('writes nothing at all on a later scale resize', async () => {

@@ -5,11 +5,10 @@ import { ShapeToolbar } from './lib/components/ShapeToolbar'
 import { CursorHint } from './lib/components/CursorHint'
 import { ShaderDragOverlay } from './lib/components/Overlay/ShaderDragOverlay'
 import { ComponentDragOverlay } from './lib/components/Overlay/ComponentDragOverlay'
+import { DevJournalPanel } from './lib/components/DevJournalPanel'
 import { LayersPanel } from './lib/components/LayersPanel/LayersPanel'
 import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { undo, redo } from './lib/page-crud'
-import { focusUndo, focusRedo } from './lib/history/focus-undo'
-import { isFocusBufferOpen } from './lib/history/history-store'
 import { getPersistenceProvider, loadInitialDocument, startDocumentAutosave } from './lib/persistence'
 import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
 import { SettingsDialog } from './lib/components/Settings/SettingsDialog'
@@ -119,19 +118,17 @@ function App() {
       const t = e.target as HTMLElement | null
       if (t?.closest('input, textarea, select, [contenteditable="true"]')) return
       const mod = e.metaKey || e.ctrlKey
-      // While a focus stage's sub-history buffer is open, Cmd+Z steps through
-      // THAT session's frames (the buffer cursor) instead of reverting the whole
-      // session as one canvas step. On exit the session folds to one canvas
-      // entry. Cmd+Z inside the SkSL editor never reaches here — the input guard
-      // above lets CodeMirror's native text-undo handle it — so this is for
-      // Cmd+Z on the surrounding chrome (uniforms).
-      const focusOpen = isFocusBufferOpen()
+      // No focus branching here any more: `undo`/`redo` resolve the active lens
+      // from the open scope themselves, so this and the toolbar buttons cannot
+      // disagree about what Cmd+Z means. Cmd+Z inside the SkSL editor never
+      // reaches here — the input guard above lets CodeMirror's native text-undo
+      // handle it — so this is Cmd+Z on the surrounding chrome.
       if (mod && e.key === 'z' && !e.shiftKey) {
         e.preventDefault()
-        void (focusOpen ? focusUndo() : undo())
+        void undo()
       } else if (mod && e.key === 'z' && e.shiftKey) {
         e.preventDefault()
-        void (focusOpen ? focusRedo() : redo())
+        void redo()
       } else if (
         import.meta.env.DEV &&
         e.shiftKey && (e.key === 'P' || e.key === 'p') && !mod
@@ -206,6 +203,7 @@ function App() {
               {mode === 'design' && <CursorHint />}
               <ShaderDragOverlay />
               <ComponentDragOverlay />
+              {import.meta.env.DEV && <DevJournalPanel />}
               <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
               {error && (
                 <div

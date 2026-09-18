@@ -60,7 +60,7 @@ export {
   redo,
 } from './lib/page-crud'
 
-export type { CommitChangesParams, CommitFrame } from './lib/changes/commit-types'
+export type { CommitChangesParams } from './lib/changes/commit-types'
 export {
   emptyChangesBuilder,
   appendModObjPair,
@@ -70,12 +70,12 @@ export {
   toCommitBundle,
 } from './lib/changes/changes-builder'
 export {
-  useHistoryStore,
-  beginHistoryTransaction,
-  commitHistoryTransaction,
-  discardHistoryTransactions,
-  markHistoryInteraction,
-} from './lib/history/history-store'
+  useJournalStore,
+  beginJournalTransaction,
+  commitJournalTransaction,
+  discardJournalTransaction,
+  markJournalInteraction,
+} from './lib/history/journal/journal-store'
 
 // Document selection
 export { setSelectedIds, clearSelection, getSelectedIdsSet } from './lib/renderer/store/document-selection'

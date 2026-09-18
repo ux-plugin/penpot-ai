@@ -11,7 +11,7 @@ import {
 } from '../../../src/lib/changes/bulk-changes'
 import { useWorkspaceStore } from '../../../src/lib/renderer/store/workspace-store'
 import { docProxy } from '../../../src/lib/renderer/store/doc-proxy'
-import { useHistoryStore } from '../../../src/lib/history/history-store'
+import { useJournalStore } from '../../../src/lib/history/journal/journal-store'
 import { commitChanges } from '../../../src/lib/renderer/store/commit'
 import { undo } from '../../../src/lib/page-crud'
 
@@ -92,7 +92,7 @@ function node(id: string): Record<string, unknown> {
 
 describe('bulk changes (through the commit pipeline)', () => {
   beforeEach(() => {
-    useHistoryStore.setState({ undoStack: [], redoStack: [], transaction: null })
+    useJournalStore.getState().clear()
     docProxy.pageMap.clear()
     docProxy.pageMap.set(PAGE_ID, makePage())
     docProxy.currentPageId = PAGE_ID
@@ -123,19 +123,17 @@ describe('bulk changes (through the commit pipeline)', () => {
     expect(node('c').hidden).toBe(false)
   })
 
-  it('keeps the history frame compressed — one change, not one per shape', async () => {
+  it('records one history entry covering every shape in the bulk change', async () => {
     await commitChanges({
       pageId: PAGE_ID,
       redoChanges: [bulkAssign(PAGE_ID, ['a', 'b', 'c'], { hidden: true })],
       undoChanges: [bulkAssign(PAGE_ID, ['a', 'b', 'c'], { hidden: false })],
     })
 
-    const frame = useHistoryStore.getState().undoStack.at(-1)!
-    // This is the whole point of the representation: what the session retains.
-    expect(frame.redoChanges).toHaveLength(1)
-    expect(frame.undoChanges).toHaveLength(1)
-    expect(frame.redoChanges[0].type).toBe('mod-objs')
-    expect(countShapeEdits(frame.redoChanges)).toBe(3)
+    // The journal keeps per-shape ops, so the bulk change is expanded on the way in.
+    const txns = useJournalStore.getState().txns
+    expect(txns).toHaveLength(1)
+    expect(new Set(txns[0].ops.map((op) => op.entity))).toEqual(new Set(['a', 'b', 'c']))
   })
 
   it('reaches subscribers as ordinary per-shape changes', async () => {

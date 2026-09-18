@@ -2,10 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IndexedPage, IndexedShape } from '../../../../src/lib/worker/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
 import { docProxy, type DocumentMeta } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useHistoryStore } from '../../../../src/lib/history/history-store'
+import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { commitChanges } from '../../../../src/lib/renderer/store/commit'
 import { undo } from '../../../../src/lib/page-crud'
-import { countShapeEdits } from '../../../../src/lib/changes/bulk-changes'
 import {
   createComponentFromFrame,
   instantiateComponent,
@@ -91,9 +90,13 @@ function copyOf(mainNodeId: string): Record<string, unknown> | undefined {
   ) as unknown as Record<string, unknown> | undefined
 }
 
+/** Shapes the newest history entry touches. */
+const entitiesInLastEntry = () =>
+  new Set(useJournalStore.getState().txns.at(-1)!.ops.map((op) => op.entity))
+
 describe('component sync (main edits fanning into copies)', () => {
   beforeEach(() => {
-    useHistoryStore.setState({ undoStack: [], redoStack: [], transaction: null })
+    useJournalStore.getState().clear()
     docProxy.pageMap.clear()
     docProxy.pageMap.set(PAGE_ID, makePage())
     docProxy.currentPageId = PAGE_ID
@@ -121,8 +124,7 @@ describe('component sync (main edits fanning into copies)', () => {
   it('does nothing at all in a document with no components', async () => {
     await editMain('label', { fills: [{ fillColor: '#00FF00' }] })
 
-    const frame = useHistoryStore.getState().undoStack.at(-1)!
-    expect(frame.redoChanges).toHaveLength(1)
+    expect([...entitiesInLastEntry()]).toEqual(['label'])
     expect(node('label').fills).toEqual([{ fillColor: '#00FF00' }])
   })
 
@@ -211,12 +213,10 @@ describe('component sync (main edits fanning into copies)', () => {
 
       await editMain('label', { fills: [{ fillColor: '#00FF00' }] })
 
-      const frame = useHistoryStore.getState().undoStack.at(-1)!
-      // The user's own change, plus ONE bulk change covering all 20 copies.
-      expect(frame.redoChanges).toHaveLength(2)
-      expect(frame.undoChanges).toHaveLength(2)
-      // ...which still represents 21 shape edits once expanded.
-      expect(countShapeEdits(frame.redoChanges)).toBe(21)
+      // One history entry: the user's own edit plus all 20 copies. The journal
+      // records per-shape ops, so the bulk change is expanded here.
+      expect(useJournalStore.getState().txns.at(-1)!.undoes).toBeUndefined()
+      expect(entitiesInLastEntry().size).toBe(21)
 
       // And every copy really did get it.
       const greens = Object.values(objects()).filter(
@@ -235,11 +235,13 @@ describe('component sync (main edits fanning into copies)', () => {
     const labelCopy = (node(copyId).shapes as string[])[0]
 
     await editMain('label', { fills: [{ fillColor: '#00FF00' }] })
-    const framesAfterEdit = useHistoryStore.getState().undoStack.length
+    const entriesAfterEdit = useJournalStore.getState().txns.length
 
     await undo()
     expect(node(labelCopy).fills).toEqual([{ fillColor: '#111111' }])
-    // Replay must not push a new frame of its own.
-    expect(useHistoryStore.getState().undoStack.length).toBe(framesAfterEdit - 1)
+    // Undo appends exactly its own entry; replay must not add a sync entry on top.
+    const txns = useJournalStore.getState().txns
+    expect(txns.length).toBe(entriesAfterEdit + 1)
+    expect(txns.at(-1)!.undoes).toBeDefined()
   })
 })

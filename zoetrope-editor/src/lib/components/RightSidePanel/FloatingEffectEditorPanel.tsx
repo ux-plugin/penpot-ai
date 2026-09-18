@@ -14,7 +14,7 @@ import { FloatingPanelShell } from './FloatingPanelShell'
 import { MaterialEditor } from './MaterialEditor'
 import { NumericField } from './NumericField'
 import { round2 } from '@/lib/common/conversions'
-import { markHistoryInteraction } from '@/lib/history/history-store'
+import { markJournalInteraction } from '@/lib/history/journal/journal-store'
 
 const EFFECT_KIND_OPTIONS: { value: EffectKind; label: string }[] = [
   { value: 'drop-shadow', label: 'Drop shadow' },
@@ -199,7 +199,7 @@ export function FloatingEffectEditorPanel() {
   // (mirrors the fills color editor). Gradients aren't editable inline here.
   const commitShadowColor = (hex: string) => {
     if (!shadow || !isSolid) return
-    markHistoryInteraction('effect-color')
+    markJournalInteraction('effect-color')
     handleShadowUpdate({ color: { ...shadow.color, color: hex } })
   }
 

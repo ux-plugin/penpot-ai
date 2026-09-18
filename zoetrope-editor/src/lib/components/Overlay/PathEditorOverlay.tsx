@@ -41,7 +41,7 @@ import { eraseBrush, eraseLassoAnchors, flattenAnchorLoop } from '../../renderer
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
 import { getSelectedIdsSet, setSelectedIds } from '../../renderer/store/document-selection'
 import { applyChanges } from '../../page-crud'
-import { useHistoryStore } from '../../history/history-store'
+import { commitJournalTransaction, discardJournalTransaction } from '../../history/journal/journal-store'
 import { PEN_CREATE_TX } from '../../renderer/handlers/draw-path'
 import type { Change } from 'penpot-exporter/types'
 import { useWorkspaceStore } from '../../renderer/store/workspace-store'
@@ -311,7 +311,7 @@ export function PathEditorOverlay() {
     // Abandoned before any edge: drop the open create transaction so the dot's
     // add-obj leaves no orphan undo frame (the shape is being deleted anyway).
     // No-op when no transaction is open (e.g. emptying an existing path).
-    useHistoryStore.getState().discardTransactions()
+    discardJournalTransaction()
     void applyChanges([{ type: 'del-obj', id: shapeId, pageId: pid } as unknown as Change])
   }, [shapeId, canvasActor])
 
@@ -339,7 +339,7 @@ export function PathEditorOverlay() {
           // Close the create transaction: the dot + this first edge become one
           // undo entry. No-op for every later edit (the transaction is already
           // committed, and existing paths never opened it).
-          useHistoryStore.getState().commitTransaction(PEN_CREATE_TX)
+          commitJournalTransaction(PEN_CREATE_TX)
         },
       )
     },

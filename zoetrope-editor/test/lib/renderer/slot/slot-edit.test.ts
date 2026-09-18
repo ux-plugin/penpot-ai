@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IndexedPage } from '../../../../src/lib/worker/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
 import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useHistoryStore } from '../../../../src/lib/history/history-store'
+import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { undo } from '../../../../src/lib/page-crud'
 import { getCommittedNodeOnActivePage } from '../../../../src/lib/renderer/properties/commit-node-properties'
 import { isSlotShape } from '../../../../src/lib/worker/geometry/shapes'
@@ -48,7 +48,7 @@ function slot(): SlotShape {
 
 describe('slot write-path (integration through the commit pipeline)', () => {
   beforeEach(() => {
-    useHistoryStore.setState({ undoStack: [], redoStack: [], transaction: null })
+    useJournalStore.getState().clear()
     docProxy.pageMap.clear()
     docProxy.pageMap.set(PAGE_ID, makePage())
     docProxy.currentPageId = PAGE_ID
@@ -77,9 +77,9 @@ describe('slot write-path (integration through the commit pipeline)', () => {
     await setSlotClip('slot1', false) // clip off -> showContent true
     expect(slot().showContent).toBe(true)
 
-    const depth = useHistoryStore.getState().undoStack.length
+    const depth = useJournalStore.getState().txns.length
     await setSlotClip('slot1', false) // already unclipped -> no new history frame
-    expect(useHistoryStore.getState().undoStack.length).toBe(depth)
+    expect(useJournalStore.getState().txns.length).toBe(depth)
   })
 
   it('addNewViewToSlot creates a pre-sized view frame, registers it active, and is undoable', async () => {

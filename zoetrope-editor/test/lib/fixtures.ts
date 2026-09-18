@@ -18,7 +18,7 @@ import type {
   TextContent,
 } from 'penpot-exporter/types'
 import { docProxy } from '../../src/lib/renderer/store/doc-proxy'
-import { useHistoryStore } from '../../src/lib/history/history-store'
+import { useJournalStore } from '../../src/lib/history/journal/journal-store'
 
 export const ROOT = '00000000-0000-0000-0000-000000000000'
 export const PAGE_ID = 'page-1'
@@ -146,13 +146,7 @@ export function resetWorkspace(): void {
   docProxy.pageMap.clear()
   docProxy.currentPageId = null
   docProxy.selectedIds.clear()
-  useHistoryStore.setState({
-    undoStack: [],
-    redoStack: [],
-    transaction: null,
-    transactionHolders: new Set(),
-    focusBuffer: null,
-  })
+  useJournalStore.getState().clear()
 }
 
 /** Convenience: the rect's first fill from the live page map. */
