@@ -59,7 +59,7 @@ import {
 import { usePointerDownFactory } from './usePointerDownFactory'
 import { useGradientFill } from './useGradientFill'
 import { useImperativeDropIntent } from './useImperativeDropIntent'
-import { useImperativeSlotHover } from './useImperativeSlotHover'
+import { HOVER_COLOR as SLOT_HOVER_COLOR, useImperativeSlotHover } from './useImperativeSlotHover'
 
 export interface SelectionOverlayProps {
   canvasSize: { width: number; height: number }
@@ -79,6 +79,7 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   const dropLineRef = useRef<SVGLineElement>(null)
   const dropGhostRef = useRef<SVGRectElement>(null)
   const dropLabelRef = useRef<SVGTextElement>(null)
+  const slotHoverOutlineRef = useRef<SVGPathElement>(null)
   const slotHoverLabelRef = useRef<SVGTextElement>(null)
   const centerGizmoGRef = useRef<SVGGElement>(null)
 
@@ -87,7 +88,7 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   useImperativeCenterGizmo(centerGizmoGRef)
   useImperativeCornerHandles(cornerHandlesGRef, cornerRectRefs, cornerOverrideCursorRef, cornerPointerRef)
   useImperativeDropIntent(dropIntentGRef, dropRectRef, dropLineRef, dropGhostRef, dropLabelRef)
-  useImperativeSlotHover(slotHoverLabelRef)
+  useImperativeSlotHover(slotHoverOutlineRef, slotHoverLabelRef)
 
   const canvasActor = useCanvasActor()
   const doc = useSnapshot(docProxy)
@@ -375,12 +376,18 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
         </g>
       )}
       {/* Empty-slot hover chrome: an unpainted slot is invisible by design, so
-          hovering reveals it. Only the NAME lives here — the outline is traced by
-          the renderer over the slot's real geometry (see useImperativeSlotHover).
-          Editor-only either way: never in the document. */}
+          hovering reveals it — a dashed outline over its real geometry and its
+          name (see useImperativeSlotHover). Editor-only: never in the document. */}
+      <path
+        ref={slotHoverOutlineRef}
+        fill="none"
+        stroke={SLOT_HOVER_COLOR}
+        strokeLinejoin="round"
+        style={{ display: 'none', pointerEvents: 'none' }}
+      />
       <text
         ref={slotHoverLabelRef}
-        fill="#7F77DD"
+        fill={SLOT_HOVER_COLOR}
         fontWeight={500}
         style={{ display: 'none', pointerEvents: 'none', userSelect: 'none' }}
       />

@@ -321,10 +321,6 @@ export interface WasmModule {
   _clear_focus_mode(): void
   _set_focus_mode(): void
 
-  // Hover chrome (a stroke traced over a shape's own outline, on the UI surface)
-  _set_shape_highlight(a: number, b: number, c: number, d: number, color: number): void
-  _clear_shape_highlight(): void
-
   // Grid
   _show_grid(a: number, b: number, c: number, d: number): void
   _hide_grid(): void

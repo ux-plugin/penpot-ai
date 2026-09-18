@@ -19,6 +19,7 @@
 pub mod abi;
 pub mod bake;
 pub mod blend;
+pub mod bools;
 pub mod bump_watch;
 pub mod draw;
 pub mod editor;

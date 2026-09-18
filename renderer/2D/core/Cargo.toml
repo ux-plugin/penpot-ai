@@ -16,6 +16,7 @@ tiled-scheduler = []
 [dependencies]
 rustc-hash = "2"
 kurbo = "0.13.1"
+curve-bool = { path = "../curve-bool" }
 peniko = "0.6.1"
 render-macros = { path = "macros" }
 

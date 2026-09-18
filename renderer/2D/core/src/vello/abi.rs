@@ -69,6 +69,15 @@ pub fn take_bytes() -> Vec<u8> {
         .unwrap_or_default()
 }
 
+/// Leave `bytes` in the shared buffer and return a pointer to them, for an entry point whose
+/// result the host reads off the heap and then releases with `free_bytes`. Mirrors render-wasm's
+/// `mem::write_bytes`; any buffer still outstanding is replaced.
+pub fn put_bytes(mut bytes: Vec<u8>) -> *mut u8 {
+    let ptr = bytes.as_mut_ptr();
+    *BUFFER.lock().expect("byte buffer poisoned") = Some(bytes);
+    ptr
+}
+
 /// Borrow the live scene and viewport for the duration of `f`. Not part of the ABI — this is
 /// how `scene.rs` reads what the host has sent.
 ///
