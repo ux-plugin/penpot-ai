@@ -182,7 +182,7 @@ pub const PAYLOAD_PROGRAM_SLOT: usize = 22;
 pub const SCALE_CLAMP: f32 = 0.0;
 /// A scale arm's read past its value: transparent.
 pub const SCALE_TRANSPARENT: f32 = 1.0;
-/// A scale arm's read past its value: the output pixel as it is — a ground drawn there before.
+/// A scale arm's read past its value: the output pixel as it is — a halo's rows drawn there before.
 pub const SCALE_KEEP: f32 = 2.0;
 
 /// `u` with its device-pixel quantities scaled to resolution `k`, by the field program the payload
