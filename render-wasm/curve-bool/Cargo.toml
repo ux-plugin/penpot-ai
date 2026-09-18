@@ -1,0 +1,10 @@
+[package]
+name = "curve-bool"
+version = "0.1.0"
+edition = "2021"
+description = "Curve-native 2D boolean operations on kurbo::BezPath, backed by the linesweeper robust sweep-line engine. Self-contained (kurbo + linesweeper only) so it is shared by the Skia backend now and a Vello backend later."
+publish = false
+
+[dependencies]
+kurbo = "0.13"
+linesweeper = "0.4"

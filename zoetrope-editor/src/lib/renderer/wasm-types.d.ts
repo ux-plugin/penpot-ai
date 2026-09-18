@@ -239,6 +239,7 @@ export interface WasmModule {
   _set_shape_path_content(): void
   _set_shape_bool_type(bool_type: number): void
   _calculate_bool(bool_type: number): number
+  _path_boolean(bool_type: number, fill_rule: number, subject_seg_count: number): number
 
   // Temporary objects (for boolean calculations)
   _start_temp_objects(): void

@@ -27,7 +27,7 @@ export type DrawTool =
 
 /** Vector-edit sub-tool (Move / Add points / Bend / Width), held while in
  *  `pathEditing`. `width` sculpts the stroke's variable-width profile. */
-export type PathSubTool = 'move' | 'add' | 'bend' | 'width'
+export type PathSubTool = 'move' | 'add' | 'bend' | 'width' | 'eraser'
 
 /** Gizmo sub-tool (translate / rotate / scale), held while in `scene3dEditing`. */
 export type Scene3DGizmoMode = 'translate' | 'rotate' | 'scale'

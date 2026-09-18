@@ -1,7 +1,8 @@
 /**
- * Vector-edit launcher (C). For `path` nodes, a button that enters/leaves the
- * `pathEditing` mode — the discoverable alternative to double-clicking the path.
- * Mirrors the double-click entry wired in use-viewport-interactions.
+ * Vector-edit launcher (C). For `path` nodes — and for convertible primitives
+ * (rect / ellipse), which are baked into a path first — a button that enters/leaves
+ * `pathEditing`. The discoverable, worker-independent alternative to double-clicking
+ * (which relies on the hit-test worker); mirrors the entry in use-viewport-interactions.
  */
 
 import { useCallback } from 'react'
@@ -10,6 +11,12 @@ import { PenTool } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { useCanvasActor } from '@/lib/renderer/machine/canvas-actor-context'
+import { isConvertibleToPath, primitiveToPathPartial } from '@/lib/renderer/handlers/primitive-to-path'
+import {
+  commitNodePartialUpdate,
+  getCommittedNodeOnActivePage,
+} from '@/lib/renderer/properties/commit-node-properties'
+import { getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
 
 export interface VectorEditSectionProps {
@@ -25,13 +32,27 @@ export function VectorEditSection({ nodeId, initialNode, readOnly }: VectorEditS
     (s) => s.matches('pathEditing') && s.context.pathEditingShapeId === nodeId,
   )
 
-  const toggle = useCallback(() => {
-    if (editingThis) canvasActor.send({ type: 'STOP_PATH_EDIT' })
-    else canvasActor.send({ type: 'START_PATH_EDIT', shapeId: nodeId })
-  }, [canvasActor, editingThis, nodeId])
+  const isPath = (initialNode as { type?: string }).type === 'path'
 
-  // Only path nodes have an editable vector; rect/frame/circle keep native handles.
-  if ((initialNode as { type?: string }).type !== 'path') return null
+  const toggle = useCallback(async () => {
+    if (editingThis) {
+      canvasActor.send({ type: 'STOP_PATH_EDIT' })
+      return
+    }
+    // A primitive bakes into an editable path first (one undoable step), exactly
+    // like the double-click entry, so the vector editor has geometry to show.
+    if (!isPath) {
+      const before = getCommittedNodeOnActivePage(nodeId)
+      const partial = primitiveToPathPartial(before)
+      const pid = getActiveOrSinglePageId()
+      if (before && partial && pid) await commitNodePartialUpdate(nodeId, before, partial, pid)
+    }
+    canvasActor.send({ type: 'START_PATH_EDIT', shapeId: nodeId })
+  }, [canvasActor, editingThis, isPath, nodeId])
+
+  // Editable paths, plus primitives we can bake into one (rect/ellipse). Other
+  // types (frame, text, 3D) keep their native handles.
+  if (!isPath && !isConvertibleToPath(initialNode as { type?: string })) return null
 
   return (
     <>

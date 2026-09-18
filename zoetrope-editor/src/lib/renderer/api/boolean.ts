@@ -18,12 +18,13 @@ import { checkContext } from './context'
 import { UUID_U8_SIZE } from './constants'
 import { moduleUseShape } from './shape'
 import { setObject } from './orchestration'
-import { pathFromBytes } from './path'
+import { pathFromBytes, serializePathContent } from './path'
 
 /**
  * Segment size constants
  */
 const SEGMENT_U32_SIZE = 7 // 28 bytes / 4
+const SEGMENT_U8_SIZE = 28
 
 /**
  * Gets all children including nested children for a shape
@@ -127,6 +128,52 @@ export function calculateBool(
     // End temp objects
     module._end_temp_objects()
   }
+}
+
+/**
+ * Curve-native boolean of two arbitrary path contents (`subject OP clip`).
+ *
+ * Unlike {@link calculateBool} — which operates on shapes already in the scene by
+ * id — this takes raw geometry, so the eraser can subtract a transient brush band
+ * or lasso that is not a document shape. The operation runs on real béziers in
+ * Rust (`curve-bool`/linesweeper): no flattening to polygons and no re-fitting, so
+ * the surviving outline keeps the shape's exact curves. Returns `null` when both
+ * operands are empty; an engine failure comes back as an empty-segment content.
+ *
+ * `fillRule` decides how the subject's own nested rings (holes) are read; it
+ * defaults to non-zero to match the renderer's default fill.
+ */
+export function pathBoolean(
+  module: WasmModule,
+  subject: PathContent,
+  clip: PathContent,
+  boolType: BoolType,
+  fillRule: 'nonzero' | 'evenodd' = 'nonzero',
+): PathContent | null {
+  checkContext()
+
+  const subjectBytes = serializePathContent(subject)
+  const clipBytes = serializePathContent(clip)
+  const totalBytes = subjectBytes.length + clipBytes.length
+  if (totalBytes === 0) return null
+
+  const combined = new Uint8Array(totalBytes)
+  combined.set(subjectBytes, 0)
+  combined.set(clipBytes, subjectBytes.length)
+
+  const heapOffset = offset8To32(allocBytes(module, totalBytes))
+  const combinedU32 = new Uint32Array(combined.buffer, combined.byteOffset, totalBytes / 4)
+  module.HEAPU32.set(combinedU32, heapOffset)
+
+  const subjectSegCount = subjectBytes.length / SEGMENT_U8_SIZE
+  const fillNum = fillRule === 'evenodd' ? 1 : 0
+  const resultOffset = offset8To32(
+    module._path_boolean(translateBoolType(boolType), fillNum, subjectSegCount),
+  )
+  const out = readPathContentFromHeap(module, module.HEAPU32, resultOffset)
+
+  freeBytes(module)
+  return out
 }
 
 /**

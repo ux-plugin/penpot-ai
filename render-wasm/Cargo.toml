@@ -22,9 +22,11 @@ path = "src/main.rs"
 anim-runtime = { path = "../zoetrope-editor/anim-runtime" }
 base64 = "0.22.1"
 bezier-rs = "0.4.0"
+curve-bool = { path = "curve-bool" }
 gl = "0.14.0"
 glam = "0.24.2"
 indexmap = "2.7.1"
+kurbo = "0.13"
 lru = "0.12"
 render-macros = { path = "../render-macros" }
 render-core = { path = "../render-core" }

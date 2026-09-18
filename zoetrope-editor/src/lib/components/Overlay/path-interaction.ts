@@ -16,7 +16,7 @@
  * Pure and unit-tested — no React, no signals. Consumers pass plain inputs.
  */
 
-import { Link2, Move, Plus, Spline, UnfoldVertical } from 'lucide-react'
+import { Eraser, Link2, Move, Plus, Spline, UnfoldVertical } from 'lucide-react'
 import type { HintIcon } from '../CursorHint'
 import { PEN_CURSOR, SELECT_CURSOR } from '../cursors'
 import type { PathSubTool } from '../../renderer/machine/canvas-machine'
@@ -28,7 +28,7 @@ export type { PathSubTool }
 /** What the overlay's hit-test found under the cursor. */
 export type PathHover = 'node' | 'node-target' | 'edge' | 'empty'
 
-export type PathMode = 'pan' | 'move' | 'bend' | 'add-edge' | 'add-free' | 'connect' | 'idle' | 'width'
+export type PathMode = 'pan' | 'move' | 'bend' | 'add-edge' | 'add-free' | 'connect' | 'idle' | 'width' | 'erase'
 
 export interface PathInteractionInput {
   subTool: PathSubTool
@@ -54,18 +54,19 @@ export interface PathResolved {
  *  from ANY base tool (Move/Add/Bend + Alt ⇒ Bend). Used for the toolbar
  *  highlight, so the lit sub-tool follows Alt the moment it's held.
  *
- *  Width is the one carve-out: it has no anchors to bend, and it owns Alt itself
- *  (Alt-drag = move one side only), so Alt must not steal it away to Bend. */
+ *  Width and Erase are the carve-outs: neither bends anchors, so Alt must not
+ *  steal them away to Bend. */
 export function effectiveSubTool(subTool: PathSubTool, altHeld: boolean): PathSubTool {
-  if (subTool === 'width') return 'width'
+  if (subTool === 'width' || subTool === 'eraser') return subTool
   return altHeld ? 'bend' : subTool
 }
 
 function resolveMode(i: PathInteractionInput): PathMode {
   if (i.panHeld) return 'pan'
-  // Width resolves before the Alt→Bend override — inside the Width tool, Alt
-  // means "drag one side", not "bend". Pan still preempts it.
+  // Width and Erase resolve before the Alt→Bend override — they don't bend
+  // anchors (inside Width, Alt means "drag one side"). Pan still preempts them.
   if (i.subTool === 'width') return 'width'
+  if (i.subTool === 'eraser') return 'erase'
   // Alt is a transient Bend override from any sub-tool (incl. Add): over a node
   // it bends; over empty/edge there's nothing to bend, so it idles — which also
   // suppresses the Add ghost, so Add + Alt clearly reads as "bend", not "add".
@@ -88,6 +89,7 @@ const CURSOR: Record<PathMode, string> = {
   bend: SELECT_CURSOR,
   idle: SELECT_CURSOR,
   width: SELECT_CURSOR,
+  erase: 'crosshair',
   'add-edge': PEN_CURSOR,
   'add-free': PEN_CURSOR,
   connect: PEN_CURSOR,
@@ -99,6 +101,7 @@ const HINT: Record<PathMode, HintIcon | null> = {
   move: Move,
   bend: Spline,
   width: UnfoldVertical,
+  erase: Eraser,
   'add-edge': Plus,
   'add-free': Plus,
   connect: Link2,
@@ -111,7 +114,9 @@ export function resolvePathInteraction(i: PathInteractionInput): PathResolved {
     mode,
     cursor: CURSOR[mode],
     hint: i.dragging ? null : HINT[mode],
-    capture: isAdd,
+    // Erase, like Add, needs a live full-canvas capture so the lasso drag starts
+    // anywhere over the shape.
+    capture: isAdd || mode === 'erase',
     ghost: !i.dragging && (mode === 'add-edge' || mode === 'add-free'),
   }
 }
