@@ -60,7 +60,9 @@ use std::collections::HashMap;
 use crate::kurbo::{Affine, Rect, Vec2};
 
 use crate::vello::bake::{self, Policy, REC_COUNT, REC_STRIDE};
-use crate::vello::frame_graph::{pad_at, scale_rect, BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, FrameGraph, GNode, NodeId, Op};
+use crate::vello::frame_graph::{scale_rect, BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, FrameGraph, NodeId, Op};
+use crate::vello::halo;
+use crate::vello::resolve::{overlaps, tile_round, Demand, Res, Spines, Store};
 use crate::vello::frame_plan::{self, DrawCmd, FramePlan, Pass, Tiles, Window};
 use crate::vello::store_pack::StorePacker;
 use crate::vello::units::{BlurEdge, UnitOp};
@@ -69,8 +71,8 @@ use crate::vello::units::{BlurEdge, UnitOp};
 pub const TILE_WIDTH: u32 = 16;
 /// Pixel rows per tile. Must equal vello's `TILE_HEIGHT`; the backend checks it at compile time.
 pub const TILE_HEIGHT: u32 = 16;
-const TILE_W: f64 = TILE_WIDTH as f64;
-const TILE_H: f64 = TILE_HEIGHT as f64;
+pub(crate) const TILE_W: f64 = TILE_WIDTH as f64;
+pub(crate) const TILE_H: f64 = TILE_HEIGHT as f64;
 /// Descriptor floats per arm: the 26-float header and the operand records.
 const DESC_FLOATS: usize = 26 + REC_COUNT * REC_STRIDE;
 /// Operand record sources, as `fine.wgsl` reads them: absent, a store rect, the tile's registers,
@@ -86,66 +88,28 @@ const REC_COVERAGE: usize = 2;
 const REC_DISTANCE: usize = 3;
 const REC_OUTPUT: usize = 4;
 
-/// The share of the store's texels the budget counts on: the rest absorbs the packer's gaps.
-const STORE_FILL: f64 = 0.75;
-/// How far past the next rung the rule that lowered a pair must rise before the pair climbs back.
-const CLIMB_MARGIN: f32 = 1.25;
-
 /// The plan for `graph` on a `width × height` frame, on a device whose textures reach `max_dim`
 /// texels a side, with `pages` frame heights of store below the frame (the preset's; the device
 /// caps it). `memory` is what each pair ran at last frame, keyed by its `key`; the plan reads it
 /// and writes what it chose.
 #[must_use]
 pub fn plan(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64, memory: &mut HashMap<u128, f32>) -> FramePlan {
-    let expanded = {
-        let mut s = Scheduler::new(graph, width, height, max_dim, pages, memory);
-        s.demand_pass();
-        s.expanded()
-    };
-    let mut t = Scheduler::new(expanded.as_ref().unwrap_or(graph), width, height, max_dim, pages, memory);
-    t.resolve();
-    t.run()
+    let expanded = expanded(graph, width, height, max_dim, pages);
+    let mut s = Scheduler::new(expanded.as_ref().unwrap_or(graph), width, height, max_dim, pages);
+    s.resolve(memory);
+    s.run()
 }
-
-/// The resolution the expansion sizes a chain's reach by when deciding which chains an instance
-/// clones: the lowest a pair goes in practice, so a chain that would only enter the region past
-/// the frame once lowered is cloned in advance (a clone nothing demands costs nothing).
-const MEMBERSHIP_K: f32 = 1.0 / 16.0;
 
 /// The graph `plan` schedules for `graph` on a `width × height` frame: DAG++, the graph with every
 /// read of the frame's spine past the frame rerouted through a [`Op::Halo`] (see
-/// [`Scheduler::expanded`]); `None` when no read escapes and the graph is planned as it is.
+/// [`halo::expand`]); `None` when no read escapes and the graph is planned as it is.
 #[must_use]
 pub fn expanded(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64) -> Option<FrameGraph> {
-    let mut memory = HashMap::new();
-    let mut s = Scheduler::new(graph, width, height, max_dim, pages, &mut memory);
-    s.demand_pass();
-    s.expanded()
-}
-
-/// One read of the frame's spine past the frame, or several at one resolution: the spine node
-/// read, the resolution the readers run at, the region they read (frame pixels), and the graph
-/// nodes whose input is rerouted to the halo.
-struct Instance {
-    of: NodeId,
-    k: f32,
-    region: Rect,
-    rewired: Vec<NodeId>,
-}
-
-/// The resolution a pair runs at this frame: `bound` is the highest its rules allow (the target
-/// when none binds, and above it when they have slack), `prev` what it ran at last frame. It steps
-/// down whenever the bound is below it, and climbs a rung only once the bound clears that rung by
-/// [`CLIMB_MARGIN`]; never above `target`.
-fn settle(target: f32, bound: f32, prev: Option<f32>) -> f32 {
-    let mut k = target;
-    while k > bound && k > f32::MIN_POSITIVE {
-        k *= 0.5;
-    }
-    match prev {
-        Some(p) if p < k && bound < p * 2.0 * CLIMB_MARGIN => p.max(k * 0.5).min(k),
-        _ => k,
-    }
+    let store = Store::for_graph(graph, width, height, max_dim, pages);
+    let spines = Spines::of(graph);
+    let res = Res::targets(graph);
+    let dem = Demand::of(graph, store.frame, &res, &spines);
+    halo::expand(graph, store.frame, &res, &dem, &spines)
 }
 
 /// Where an arm reads one operand from.
@@ -208,33 +172,10 @@ struct Arm {
 
 struct Scheduler<'a> {
     g: &'a FrameGraph,
-    frame: Rect,
-    h: f64,
-    /// The store's width in texels: the frame's plus, on each side, the widest ring any chain in
-    /// the graph reads past its output at full resolution — so a value that is the frame grown by
-    /// its pads fits at k 1 and the width rule lowers nothing for the frame's own size; capped by
-    /// the device's texture dimension. Whole tiles.
-    store_w: f64,
-    /// The texels of store the plan counts on below the frame.
-    budget: f64,
-    /// What each pair ran at last frame and runs at this one, by its key.
-    memory: &'a mut HashMap<u128, f32>,
-    /// The resolution decided for each lowered pair, by its down node.
-    lowered: HashMap<NodeId, f32>,
-    /// The resolution each node's value runs at, a fraction of the frame's.
-    k: Vec<f32>,
-    /// A scale between equal resolutions is nothing: it is dropped and its readers read through it.
-    elided: Vec<bool>,
-    /// The node a reader really reads: itself, or what an elided scale reads.
-    alias: Vec<NodeId>,
-    ext: Vec<Rect>,
-    demand: Vec<Option<Rect>>,
-    out: Vec<Rect>,
-    /// For every node on a spine under an [`Op::Halo`], that halo; `None` on the frame's spine and
-    /// off the spines. A halo's spine is clamped to the halo's rect where the frame's is clamped
-    /// to the frame, and its composes write the halo's value where the frame's write the frame rows.
-    halo_of: Vec<Option<NodeId>>,
-    readers: Vec<Vec<NodeId>>,
+    store: Store,
+    spines: Spines,
+    res: Res,
+    dem: Demand,
     /// The arm each chain node belongs to.
     arm_of: HashMap<NodeId, usize>,
     /// The value each leaf or arm-tail node produces.
@@ -243,54 +184,11 @@ struct Scheduler<'a> {
     regs_leaf: HashMap<NodeId, u128>,
     arms: Vec<Arm>,
     values: Vec<Value>,
-    pruned: HashMap<NodeId, Vec<DrawItem>>,
     /// The chain being lowered: its compose.
     chain: NodeId,
 }
 
 
-
-fn tile_round(r: Rect) -> Rect {
-    Rect::new((r.x0 / TILE_W).floor() * TILE_W, (r.y0 / TILE_H).floor() * TILE_H, (r.x1 / TILE_W).ceil() * TILE_W, (r.y1 / TILE_H).ceil() * TILE_H)
-}
-
-fn union_into(slot: &mut Option<Rect>, r: Rect) {
-    *slot = Some(slot.map_or(r, |s| s.union(r)));
-}
-
-fn overlaps(a: Rect, b: Rect) -> bool {
-    a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
-}
-
-/// The bounds of what `r` holds past `f`: nothing when `f` covers it.
-fn outside(r: Rect, f: Rect) -> Rect {
-    let bands = [
-        Rect::new(r.x0, r.y0, f.x0.min(r.x1), r.y1),
-        Rect::new(f.x1.max(r.x0), r.y0, r.x1, r.y1),
-        Rect::new(r.x0, r.y0, r.x1, f.y0.min(r.y1)),
-        Rect::new(r.x0, f.y1.max(r.y0), r.x1, r.y1),
-    ];
-    bands.into_iter().filter(|b| b.x1 > b.x0 && b.y1 > b.y0).reduce(|a, b| a.union(b)).unwrap_or(Rect::ZERO)
-}
-
-/// How far, in frame pixels, the chain of compose `s` reads past its output at full resolution:
-/// its heads' pads, summed, each with the tile its read is rounded out to.
-fn chain_ring(g: &FrameGraph, s: NodeId) -> f64 {
-    let mut ring = 0.0;
-    let mut cur = g.nodes[s].inputs[1];
-    while !g.is_spine(cur) {
-        let node = &g.nodes[cur];
-        let pad = f64::from(pad_at(&node.op, 1.0));
-        if pad > 0.0 {
-            ring += pad + TILE_W;
-        }
-        match node.inputs.first() {
-            Some(&j) => cur = j,
-            None => break,
-        }
-    }
-    ring
-}
 
 fn is_head(op: &Op) -> bool {
     matches!(op, Op::Blur { .. } | Op::Warp(_) | Op::Scatter(_) | Op::Scale { .. })
@@ -301,103 +199,45 @@ fn is_pointwise(op: &Op) -> bool {
 }
 
 impl<'a> Scheduler<'a> {
-    fn new(g: &'a FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64, memory: &'a mut HashMap<u128, f32>) -> Self {
-        let frame = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
-        let pitch = (f64::from(height) / TILE_H).ceil() * TILE_H;
-        let rows = (f64::from(max_dim) - pitch).max(0.0).min(pages * pitch);
-        let ring = (0..g.nodes.len()).filter(|&s| matches!(g.nodes[s].op, Op::Compose { .. })).map(|s| chain_ring(g, s)).fold(0.0, f64::max);
-        let margin = ((ring + TILE_W) / TILE_W).ceil() * TILE_W;
-        let frame_w = (frame.x1 / TILE_W).ceil() * TILE_W;
-        let store_w = (frame_w + 2.0 * margin).min((f64::from(max_dim) / TILE_W).floor() * TILE_W).max(frame_w);
-        let n = g.nodes.len();
-        let mut halo_of = vec![None; n];
-        for i in 0..n {
-            if !matches!(g.nodes[i].op, Op::Halo { .. }) {
-                continue;
-            }
-            let mut s = g.nodes[i].inputs[0];
-            loop {
-                if matches!(g.nodes[s].op, Op::Halo { .. }) {
-                    break;
-                }
-                halo_of[s] = Some(i);
-                match g.nodes[s].inputs.first() {
-                    Some(&below) if g.is_spine(s) => s = below,
-                    _ => break,
-                }
-            }
-        }
-        let mut s = Self {
-            g,
-            frame,
-            h: f64::from(height),
-            store_w,
-            budget: rows * store_w * STORE_FILL,
-            memory,
-            lowered: HashMap::new(),
-            ext: Vec::new(),
-            k: Vec::new(),
-            elided: Vec::new(),
-            alias: Vec::new(),
-            demand: Vec::new(),
-            out: Vec::new(),
-            halo_of,
-            readers: Vec::new(),
-            arm_of: HashMap::new(),
-            value_of: HashMap::new(),
-            regs_leaf: HashMap::new(),
-            arms: Vec::new(),
-            values: Vec::new(),
-            pruned: HashMap::new(),
-            chain: 0,
-        };
-        s.set_resolutions();
-        s
+    fn new(g: &'a FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64) -> Self {
+        let store = Store::for_graph(g, width, height, max_dim, pages);
+        let spines = Spines::of(g);
+        let res = Res::targets(g);
+        let dem = Demand::of(g, store.frame, &res, &spines);
+        Self { g, store, spines, res, dem, arm_of: HashMap::new(), value_of: HashMap::new(), regs_leaf: HashMap::new(), arms: Vec::new(), values: Vec::new(), chain: 0 }
     }
 
-    /// Fix every node's resolution from the pairs' targets and what [`Self::decide`] lowered,
-    /// and everything that follows from it: elision, aliases, readers, extents — and a demand
-    /// pass yet to run.
-    fn set_resolutions(&mut self) {
-        let n = self.g.nodes.len();
-        let lowered = &self.lowered;
-        let k = self.g.resolutions_with(&|i, target| lowered.get(&i).copied().unwrap_or(target));
-        let mut elided = vec![false; n];
-        let mut alias: Vec<NodeId> = (0..n).collect();
-        for (i, node) in self.g.nodes.iter().enumerate() {
-            if let Op::Scale { .. } = node.op {
-                if k[node.inputs[0]] == k[i] {
-                    elided[i] = true;
-                    alias[i] = alias[node.inputs[0]];
-                }
-            }
+    /// The capacity decision on the demand at the pairs' targets, and demand again at what it
+    /// decided.
+    fn resolve(&mut self, memory: &mut HashMap<u128, f32>) {
+        if let Some(res) = self.res.decide(self.g, &self.dem, &self.store, memory) {
+            self.res = res;
+            self.dem = Demand::of(self.g, self.store.frame, &self.res, &self.spines);
         }
-        let mut readers = vec![Vec::new(); n];
-        for (i, node) in self.g.nodes.iter().enumerate() {
-            if elided[i] {
-                continue;
-            }
-            for &j in &node.inputs {
-                readers[alias[j]].push(i);
-            }
-        }
-        self.ext = self.g.extents_at(&k);
-        self.k = k;
-        self.elided = elided;
-        self.alias = alias;
-        self.readers = readers;
-        self.demand = vec![None; n];
-        self.out = vec![Rect::ZERO; n];
-        self.pruned.clear();
     }
 
-    /// Demand at the pairs' targets, the capacity decision, and demand again at what it decided.
-    fn resolve(&mut self) {
-        self.demand_pass();
-        if self.decide() {
-            self.set_resolutions();
-            self.demand_pass();
-        }
+    fn live(&self, i: NodeId) -> bool {
+        self.dem.live(&self.res, i)
+    }
+
+    fn input(&self, i: NodeId, n: usize) -> NodeId {
+        self.res.input(self.g, i, n)
+    }
+
+    fn inputs(&self, i: NodeId) -> Vec<NodeId> {
+        self.res.inputs(self.g, i)
+    }
+
+    fn in_space_of(&self, r: Rect, from: NodeId, to: NodeId) -> Rect {
+        self.res.in_space_of(r, from, to)
+    }
+
+    fn inside_of(&self, i: NodeId, r: Rect) -> Rect {
+        self.res.inside_of(self.g, &self.spines, self.store.frame, i, r)
+    }
+
+    fn read_rect(&self, i: NodeId) -> Rect {
+        self.dem.read_rect(self.g, &self.res, i)
     }
 
     /// The plan, once [`Self::resolve`] has settled every resolution and demand.
@@ -420,7 +260,7 @@ impl<'a> Scheduler<'a> {
         let mut s = String::from("schedule\n");
         for a in arms {
             let arm = &self.arms[a];
-            let k = arm.nodes.first().map_or(1.0, |&i| self.k[i]);
+            let k = arm.nodes.first().map_or(1.0, |&i| self.res.k[i]);
             let labels: Vec<&str> = arm.nodes.iter().map(|&i| self.g.nodes[i].label.as_str()).collect();
             let rect = arm.out.map(|v| self.values[v].rect);
             s.push_str(&format!(
@@ -453,160 +293,10 @@ impl<'a> Scheduler<'a> {
         s
     }
 
-    /// Whether scale `i` opens a pair: what it reads is not inside one.
-    fn is_down(&self, i: NodeId) -> bool {
-        let mut j = self.g.nodes[i].inputs[0];
-        loop {
-            let node = &self.g.nodes[j];
-            if self.g.is_spine(j) || matches!(node.op, Op::Draw(_)) {
-                return true;
-            }
-            if matches!(node.op, Op::Scale { .. }) {
-                return false;
-            }
-            j = node.inputs[0];
-        }
-    }
-
-    /// The links of the run pair `d` opens, in dependency order: the value each node between
-    /// the pair makes, starting at the leaf drawn at the pair's resolution, the down node's own
-    /// output, or — when the down node is nothing — the ops reading through it (what those read
-    /// of the spine is the value the down node would make once lowered; [`Self::decide`] counts
-    /// it); empty when nothing between the pair is demanded.
-    fn links(&self, d: NodeId) -> Vec<NodeId> {
-        let demanded = |i: NodeId| self.demand[i].is_some() && !self.out[i].is_zero_area();
-        let mut links: Vec<NodeId> = Vec::new();
-        if !self.elided[d] {
-            links.push(d);
-        } else if matches!(self.g.nodes[self.alias[d]].op, Op::Draw(_)) {
-            links.push(self.alias[d]);
-        } else {
-            links.extend((0..self.g.nodes.len()).filter(|&r| self.g.nodes[r].inputs.contains(&d) && !matches!(self.g.nodes[r].op, Op::Scale { .. })));
-        }
-        links.retain(|&l| demanded(l));
-        let mut i = 0;
-        while i < links.len() {
-            for &r in &self.readers[links[i]] {
-                if matches!(self.g.nodes[r].op, Op::Scale { .. }) || links.contains(&r) || self.g.is_spine(r) {
-                    continue;
-                }
-                if demanded(r) {
-                    links.push(r);
-                }
-            }
-            i += 1;
-        }
-        links
-    }
-
-    /// Decide every pair's resolution from the demand at its target (step 2). Returns whether
-    /// any pair now runs below its target, so demand must be measured again.
-    fn decide(&mut self) -> bool {
-        let budget = self.budget;
-        let width = self.store_width();
-        let mut seen: Vec<u128> = Vec::new();
-        for d in 0..self.g.nodes.len() {
-            let Op::Scale { target, key } = self.g.nodes[d].op else { continue };
-            if !self.is_down(d) {
-                continue;
-            }
-            let links = self.links(d);
-            if links.is_empty() {
-                continue;
-            }
-            let t = self.k[d];
-            let mut widest = links.iter().map(|&l| self.out[l].width()).fold(0.0, f64::max);
-            let mut peak: f64 = 0.0;
-            if self.elided[d] && self.g.is_spine(self.g.nodes[d].inputs[0]) {
-                for &l in links.iter().filter(|&&l| self.g.nodes[l].inputs.contains(&d)) {
-                    let r = self.read_rect(l);
-                    widest = widest.max(r.width());
-                    peak = peak.max(r.area() + self.out[l].area());
-                }
-            }
-            for &l in &links {
-                let a = self.out[l].area();
-                for &r in &self.readers[l] {
-                    if links.contains(&r) {
-                        peak = peak.max(a + self.out[r].area());
-                    }
-                }
-                peak = peak.max(a);
-            }
-            let bound = f64::from(t) * (width / widest).min((budget / peak).sqrt());
-            let k = settle(target, bound as f32, self.memory.get(&key).copied());
-            seen.push(key);
-            self.memory.insert(key, k);
-            if k < t {
-                self.lowered.insert(d, k);
-            }
-        }
-        self.memory.retain(|key, _| seen.contains(key));
-        !self.lowered.is_empty()
-    }
-
-    /// Input `n` of node `i`, read through any elided scale.
-    fn input(&self, i: NodeId, n: usize) -> NodeId {
-        self.alias[self.g.nodes[i].inputs[n]]
-    }
-
-    /// Every input of node `i`, read through any elided scale.
-    fn inputs(&self, i: NodeId) -> Vec<NodeId> {
-        self.g.nodes[i].inputs.iter().map(|&j| self.alias[j]).collect()
-    }
-
-    /// `r`, given in node `from`'s texels, in node `to`'s.
-    fn in_space_of(&self, r: Rect, from: NodeId, to: NodeId) -> Rect {
-        if self.k[from] == self.k[to] {
-            r
-        } else {
-            scale_rect(r, f64::from(self.k[to] / self.k[from]))
-        }
-    }
-
-    /// The extent a reader may see of node `i`: the frame for the frame's spine (its rows hold
-    /// the page colour everywhere), everything for a halo and the spine under it (their rows
-    /// hold the page colour past the draws) and for a scale of a spine, a leaf's bounds plus the
-    /// pixel its antialiased edge spills into, the node's own extent for any other chain value.
-    fn visible_extent(&self, i: NodeId) -> Rect {
-        let node = &self.g.nodes[i];
-        let everything = Rect::new(-1e9, -1e9, 1e9, 1e9);
-        if matches!(node.op, Op::Halo { .. }) {
-            everything
-        } else if self.g.is_spine(i) {
-            if self.halo_of[i].is_some() { everything } else { self.frame }
-        } else if matches!(node.op, Op::Scale { .. }) && self.g.is_spine(node.inputs[0]) {
-            everything
-        } else if matches!(node.op, Op::Draw(_)) {
-            self.ext[i].inflate(1.0, 1.0)
-        } else {
-            self.ext[i]
-        }
-    }
-
-    /// The rows spine node `i` writes, in its own texels: the frame for the frame's spine, and
-    /// nothing less than everything for a halo and the spine under it (its rows are whatever the
-    /// spine's nodes demand, joined).
-    fn spine_rect(&self, i: NodeId) -> Rect {
-        if self.halo_of[i].is_some() || matches!(self.g.nodes[i].op, Op::Halo { .. }) {
-            Rect::new(-1e9, -1e9, 1e9, 1e9)
-        } else {
-            self.frame
-        }
-    }
-
-    /// The spine node whose state node `i` stands on: a halo's `of`, any other node itself.
-    fn stands_on(&self, i: NodeId) -> NodeId {
-        match self.g.nodes[i].op {
-            Op::Halo { of } => of,
-            _ => i,
-        }
-    }
-
     /// The halo value spine node `j` is held in: a halo's own, the halo above a spine under one,
     /// nothing on the frame's spine.
     fn halo_value(&self, j: NodeId) -> Option<usize> {
-        let h = if matches!(self.g.nodes[j].op, Op::Halo { .. }) { Some(j) } else { self.halo_of[j] };
+        let h = if matches!(self.g.nodes[j].op, Op::Halo { .. }) { Some(j) } else { self.spines.halo_of[j] };
         h.and_then(|h| self.value_of.get(&h).copied())
     }
 
@@ -622,22 +312,15 @@ impl<'a> Scheduler<'a> {
     /// nothing on the frame's spine.
     fn spine_origin(&self, j: NodeId) -> Vec2 {
         match self.halo_value(j) {
-            Some(v) => self.values[v].place + Vec2::new(0.0, self.values[v].page as f64 * self.pitch()),
+            Some(v) => self.values[v].place + Vec2::new(0.0, self.values[v].page as f64 * self.store.pitch),
             None => Vec2::ZERO,
         }
-    }
-
-    /// The part of node `i`'s rect `r` that the spine it stands on already holds, in `i`'s texels:
-    /// a halo's rect inside the rows of `of`'s spine, a frame-spine node's inside the frame.
-    fn inside_of(&self, i: NodeId, r: Rect) -> Rect {
-        let sb = self.stands_on(i);
-        r.intersect(self.in_space_of(self.spine_rect(sb), sb, i))
     }
 
     /// Whether halo `h` is filled: a live chain node reads it. A fill point under a clone that
     /// nothing demands would be filled for nobody; the fill above it covers the same rows.
     fn fill_read(&self, h: NodeId) -> bool {
-        self.readers[h].iter().any(|&r| !self.g.is_spine(r) && self.live(r))
+        self.res.readers[h].iter().any(|&r| !self.g.is_spine(r) && self.live(r))
     }
 
     /// The nodes `i` reads: its inputs, and for a halo the spine node it continues.
@@ -647,94 +330,6 @@ impl<'a> Scheduler<'a> {
             nodes.push(of);
         }
         nodes
-    }
-
-    fn demand_pass(&mut self) {
-        let n = self.g.nodes.len();
-        self.demand[n - 1] = Some(self.frame);
-        for i in (0..n).rev() {
-            let Some(d) = self.demand[i] else { continue };
-            let node = &self.g.nodes[i];
-            if self.elided[i] {
-                union_into(&mut self.demand[node.inputs[0]], d);
-                continue;
-            }
-            let out = match &node.op {
-                Op::Compose { offset, .. } => {
-                    let v = self.ext[node.inputs[1]] + Vec2::new(f64::from(offset[0]), f64::from(offset[1]));
-                    let v = node.inputs.get(2).map_or(v, |&c| v.intersect(self.ext[c]));
-                    d.intersect(v)
-                }
-                _ => d.intersect(self.visible_extent(i)),
-            };
-            let out = if self.g.is_spine(i) { tile_round(out).intersect(tile_round(self.spine_rect(i))) } else { tile_round(out) };
-            self.out[i] = out;
-            if matches!(node.op, Op::Draw(_) | Op::Compose { .. }) {
-                if let Some(&below) = node.inputs.first() {
-                    union_into(&mut self.demand[below], d);
-                }
-            }
-            if out.is_zero_area() {
-                continue;
-            }
-            let grown = |p: f32| out.inflate(f64::from(p), f64::from(p));
-            let k = self.k[i];
-            match &node.op {
-                Op::Draw(items) => {
-                    let frame_out = scale_rect(out, 1.0 / f64::from(k));
-                    let kept: Vec<DrawItem> = items.iter().filter(|it| overlaps(it.bounds, frame_out)).cloned().collect();
-                    self.pruned.insert(i, kept);
-                }
-                Op::Blur { edge_clamp_style, .. } => {
-                    let r = if *edge_clamp_style == EdgeClampStyle::Transparent { out } else { grown(pad_at(&node.op, k)) };
-                    union_into(&mut self.demand[node.inputs[0]], r);
-                }
-                Op::Scale { .. } => {
-                    let j = node.inputs[0];
-                    union_into(&mut self.demand[j], scale_rect(out, f64::from(self.k[j] / k)));
-                }
-                Op::Warp(_) | Op::Scatter(_) => {
-                    union_into(&mut self.demand[node.inputs[0]], grown(pad_at(&node.op, k)));
-                    if let Some(&sdf) = node.inputs.get(1) {
-                        union_into(&mut self.demand[sdf], out);
-                    }
-                }
-                Op::EraseBy(u) => {
-                    union_into(&mut self.demand[node.inputs[0]], out);
-                    let shift = Vec2::new(f64::from(u.first().copied().unwrap_or(0.0)), f64::from(u.get(1).copied().unwrap_or(0.0)));
-                    union_into(&mut self.demand[node.inputs[1]], out - shift);
-                }
-                Op::Shade(_) | Op::MaskMix(_) | Op::ClipToSource(_) | Op::Colour(_) => {
-                    for &j in &node.inputs {
-                        union_into(&mut self.demand[j], out);
-                    }
-                }
-                Op::Compose { offset, .. } => {
-                    union_into(&mut self.demand[node.inputs[1]], out - Vec2::new(f64::from(offset[0]), f64::from(offset[1])));
-                    if let Some(&cov) = node.inputs.get(2) {
-                        union_into(&mut self.demand[cov], out);
-                    }
-                }
-                Op::Halo { of } => {
-                    let inside = self.inside_of(i, out);
-                    let past = outside(out, inside);
-                    if !past.is_zero_area() {
-                        union_into(&mut self.demand[node.inputs[0]], past);
-                    }
-                    let held = self.in_space_of(inside, i, *of);
-                    union_into(&mut self.demand[*of], held);
-                }
-            }
-        }
-    }
-
-    fn live(&self, i: NodeId) -> bool {
-        !self.elided[i] && self.demand[i].is_some() && !self.out[i].is_zero_area()
-    }
-
-    /// Whether node `i` is a scale between different resolutions: an arm that resamples.
-    fn is_scale(&self, i: NodeId) -> bool {
-        matches!(self.g.nodes[i].op, Op::Scale { .. }) && !self.elided[i]
     }
 
     /// Whether the chain holding node `i` is rooted in a drawn leaf rather than the spine, so
@@ -765,7 +360,7 @@ impl<'a> Scheduler<'a> {
         if spread != 0.0 {
             return None;
         }
-        let ok = self.readers[i].iter().all(|&r| match &self.g.nodes[r].op {
+        let ok = self.res.readers[i].iter().all(|&r| match &self.g.nodes[r].op {
             Op::Compose { offset, .. } => *offset == [0.0; 2] && self.g.nodes[r].inputs[1..].contains(&i),
             Op::EraseBy(_) => self.g.nodes[r].inputs[0] == i && self.g.nodes[r].inputs[1] != i && self.reads_land_on_frame(r),
             Op::Colour(_) | Op::ClipToSource(_) => self.g.nodes[r].inputs[0] == i && self.reads_land_on_frame(r),
@@ -779,7 +374,7 @@ impl<'a> Scheduler<'a> {
     fn reads_land_on_frame(&self, i: NodeId) -> bool {
         let mut cur = i;
         loop {
-            let [r] = self.readers[cur].as_slice() else { return false };
+            let [r] = self.res.readers[cur].as_slice() else { return false };
             match &self.g.nodes[*r].op {
                 Op::Compose { .. } => return self.g.nodes[*r].inputs[1] == cur,
                 op if is_pointwise(op) => cur = *r,
@@ -806,7 +401,7 @@ impl<'a> Scheduler<'a> {
                 Op::Compose { .. } => {
                     self.chain = i;
                     let value = self.input(i, 1);
-                    let cov = self.g.nodes[i].inputs.get(2).map(|&c| self.alias[c]);
+                    let cov = self.g.nodes[i].inputs.get(2).map(|&c| self.res.alias[c]);
                     self.lower_chain(value);
                     if let Some(c) = cov {
                         self.lower_chain(c);
@@ -829,12 +424,12 @@ impl<'a> Scheduler<'a> {
         let v = match self.value_of.get(&root) {
             Some(&v) => v,
             None => {
-                let items = self.pruned.get(&root).cloned().unwrap_or_default();
+                let items = self.dem.kept[root].clone();
                 let rect = (0..self.g.nodes.len())
                     .filter(|&s| self.live(s) && self.g.is_spine(s) && self.g.spine_root(s) == root)
-                    .map(|s| self.out[s])
+                    .map(|s| self.dem.out[s])
                     .reduce(|a, b| a.union(b))
-                    .unwrap_or(self.out[h]);
+                    .unwrap_or(self.dem.out[h]);
                 let v = self.values.len();
                 self.values.push(Value { node: h, rect, place: Vec2::ZERO, birth: 0, last_read: 0, page: 0, leaf: None, decode: 0.0, root: Some(items) });
                 self.value_of.insert(root, v);
@@ -842,7 +437,7 @@ impl<'a> Scheduler<'a> {
             }
         };
         self.value_of.insert(h, v);
-        if self.k[of] == self.k[h] || !self.fill_read(h) || self.inside_of(h, self.out[h]).is_zero_area() {
+        if self.res.k[of] == self.res.k[h] || !self.fill_read(h) || self.inside_of(h, self.dem.out[h]).is_zero_area() {
             return;
         }
         let a = self.arms.len();
@@ -864,175 +459,6 @@ impl<'a> Scheduler<'a> {
         self.arms[a].round = r;
     }
 
-    /// DAG++: the graph with every read of the frame's spine past the frame rerouted through a
-    /// halo. One instance per spine node read and resolution read at: the spine from the frame's
-    /// root up to that node cloned under a root draw of its items, every chain whose footprint
-    /// reaches the region read past the frame cloned over a fill point of its level (its leaves
-    /// cloned, its scales verbatim), the other
-    /// composes passed over, and a halo of the node on top, placed before the first node that
-    /// reads it. `None` when no read escapes. Runs on demand at the pairs' targets; the decision
-    /// comes after, on what this returns.
-    fn expanded(&self) -> Option<FrameGraph> {
-        let g = self.g;
-        let n = g.nodes.len();
-        let mut instances: Vec<Instance> = Vec::new();
-        for j in 0..n {
-            if !g.is_spine(j) || self.halo_value(j).is_some() || self.halo_of[j].is_some() {
-                continue;
-            }
-            for &r in &self.readers[j] {
-                if g.is_spine(r) || !self.live(r) {
-                    continue;
-                }
-                let read = tile_round(self.read_of(r, j));
-                let inside = self.frame.x0 <= read.x0 && read.x1 <= self.frame.x1 && self.frame.y0 <= read.y0 && read.y1 <= self.frame.y1;
-                if inside {
-                    continue;
-                }
-                let k = self.k[r];
-                let x = if g.nodes[r].inputs.contains(&j) {
-                    r
-                } else {
-                    g.nodes[r].inputs.iter().copied().find(|&e| self.elided[e] && g.nodes[e].inputs.contains(&j)).expect("a reader reads through an elided scale")
-                };
-                match instances.iter_mut().find(|i| i.of == j && i.k == k) {
-                    Some(i) => {
-                        i.region = i.region.union(read);
-                        if !i.rewired.contains(&x) {
-                            i.rewired.push(x);
-                        }
-                    }
-                    None => instances.push(Instance { of: j, k, region: read, rewired: vec![x] }),
-                }
-            }
-        }
-        if instances.is_empty() {
-            return None;
-        }
-        if std::env::var_os("WV_PLAN_DUMP").is_some() {
-            for inst in &instances {
-                let names: Vec<&str> = inst.rewired.iter().map(|&x| g.nodes[x].label.as_str()).collect();
-                eprintln!("expand: halo of {} at k={} over {:?} for {names:?}", g.nodes[inst.of].label, inst.k, inst.region);
-            }
-        }
-        let mut nodes: Vec<GNode> = Vec::with_capacity(n * 2);
-        let mut map: Vec<NodeId> = vec![usize::MAX; n];
-        let mut halos: Vec<NodeId> = vec![usize::MAX; instances.len()];
-        for i in 0..n {
-            for (ix, inst) in instances.iter().enumerate() {
-                if inst.rewired.iter().min() == Some(&i) {
-                    halos[ix] = self.emit_instance(inst, ix, &map, &mut nodes);
-                }
-            }
-            let node = &g.nodes[i];
-            let inputs = node
-                .inputs
-                .iter()
-                .map(|&j| match instances.iter().position(|inst| inst.of == j && inst.rewired.contains(&i)) {
-                    Some(ix) => halos[ix],
-                    None => map[j],
-                })
-                .collect();
-            map[i] = nodes.len();
-            nodes.push(GNode { op: node.op.clone(), inputs, label: node.label.clone() });
-        }
-        Some(FrameGraph { frame: g.frame, background: g.background, nodes })
-    }
-
-    /// One instance's nodes, appended: the root, the cloned spine with its fill points and chain
-    /// clones, and the halo, whose index is returned. `map` gives the frame's nodes their new
-    /// indices for the halos' `of`.
-    fn emit_instance(&self, inst: &Instance, ix: usize, map: &[NodeId], nodes: &mut Vec<GNode>) -> NodeId {
-        let g = self.g;
-        let mut spine = vec![inst.of];
-        while let Some(&below) = g.nodes[*spine.last().expect("one node")].inputs.first() {
-            spine.push(below);
-        }
-        spine.reverse();
-        let mut region = inst.region;
-        let mut cloned = vec![false; spine.len()];
-        for (p, &s) in spine.iter().enumerate().rev() {
-            let Op::Compose { offset, .. } = &g.nodes[s].op else { continue };
-            let v = self.ext[g.nodes[s].inputs[1]] + Vec2::new(f64::from(offset[0]), f64::from(offset[1]));
-            let foot = g.nodes[s].inputs.get(2).map_or(v, |&c| v.intersect(self.ext[c]));
-            let hit = foot.intersect(outside(region, self.frame));
-            if hit.is_zero_area() {
-                continue;
-            }
-            cloned[p] = true;
-            let reach = self.chain_reach(s, MEMBERSHIP_K);
-            region = region.union(hit.inflate(reach, reach));
-        }
-        let mut push = |node: GNode| {
-            nodes.push(node);
-            nodes.len() - 1
-        };
-        let label = |s: NodeId| format!("{} @{ix}", g.nodes[s].label);
-        let mut top = match &g.nodes[spine[0]].op {
-            Op::Draw(_) => None,
-            _ => Some(push(GNode { op: Op::Draw(Vec::new()), inputs: vec![], label: format!("root @{ix}") })),
-        };
-        for (p, &s) in spine.iter().enumerate() {
-            match &g.nodes[s].op {
-                Op::Draw(items) => {
-                    let inputs = top.map_or(Vec::new(), |t| vec![t]);
-                    top = Some(push(GNode { op: Op::Draw(items.clone()), inputs, label: label(s) }));
-                }
-                Op::Compose { .. } if cloned[p] => {
-                    let below = g.nodes[s].inputs[0];
-                    let fill = push(GNode { op: Op::Halo { of: map[below] }, inputs: vec![top.expect("a spine under a compose")], label: format!("fill of {} @{ix}", g.nodes[below].label) });
-                    let mut clones = HashMap::new();
-                    let value = self.clone_chain(g.nodes[s].inputs[1], fill, ix, &mut clones, &mut push);
-                    let mut inputs = vec![fill, value];
-                    if let Some(&c) = g.nodes[s].inputs.get(2) {
-                        inputs.push(self.clone_chain(c, fill, ix, &mut clones, &mut push));
-                    }
-                    top = Some(push(GNode { op: g.nodes[s].op.clone(), inputs, label: label(s) }));
-                }
-                _ => {}
-            }
-        }
-        push(GNode { op: Op::Halo { of: map[inst.of] }, inputs: vec![top.expect("a spine")], label: format!("halo of {} @{ix}", g.nodes[inst.of].label) })
-    }
-
-    /// Chain node `i` cloned into instance `ix` (memoised in `clones`): its spine reads go to the
-    /// instance's fill point `fill`, its scales keep their targets (the resolution rules make a
-    /// clone's pair open no higher than its spine and close at it), its keys are the instance's own.
-    fn clone_chain(&self, i: NodeId, fill: NodeId, ix: usize, clones: &mut HashMap<NodeId, NodeId>, push: &mut dyn FnMut(GNode) -> NodeId) -> NodeId {
-        if self.g.is_spine(i) {
-            return fill;
-        }
-        if let Some(&c) = clones.get(&i) {
-            return c;
-        }
-        let node = &self.g.nodes[i];
-        let inputs: Vec<NodeId> = node.inputs.iter().map(|&j| self.clone_chain(j, fill, ix, clones, push)).collect();
-        let op = match &node.op {
-            Op::Scale { target, key } => Op::Scale { target: *target, key: key ^ ((ix as u128 + 1) << 64) },
-            op => op.clone(),
-        };
-        let c = push(GNode { op, inputs, label: format!("{} @{ix}", node.label) });
-        clones.insert(i, c);
-        c
-    }
-
-    /// How far, in frame pixels, the chain of compose `s` reads past its output when it runs no
-    /// higher than `k`: its heads' pads, summed.
-    fn chain_reach(&self, s: NodeId, k: f32) -> f64 {
-        let mut reach = 0.0;
-        let mut cur = self.g.nodes[s].inputs[1];
-        while !self.g.is_spine(cur) {
-            let node = &self.g.nodes[cur];
-            let kk = self.k[cur].min(k);
-            reach += f64::from(pad_at(&node.op, kk)) / f64::from(kk);
-            match node.inputs.first() {
-                Some(&j) => cur = j,
-                None => break,
-            }
-        }
-        reach
-    }
-
     /// The round after which node `i`'s result can be read over `r`: an arm's own round, a leaf's
     /// round 0, and for the spine the round of the last live compose below `i` that touches `r`
     /// (a pruned compose has no arm and is walked past). A spine draw has no round of its own:
@@ -1044,7 +470,7 @@ impl<'a> Scheduler<'a> {
             if let Some(&a) = self.arm_of.get(&i) {
                 return self.arms[a].round;
             }
-            let inside = self.inside_of(i, self.out[i]);
+            let inside = self.inside_of(i, self.dem.out[i]);
             let filled = self.ready(of, self.in_space_of(inside, i, of));
             return filled.max(self.ready(self.g.nodes[i].inputs[0], r));
         }
@@ -1053,7 +479,7 @@ impl<'a> Scheduler<'a> {
             loop {
                 let node = &self.g.nodes[s];
                 if let Op::Compose { .. } = &node.op {
-                    if overlaps(self.out[s], r) {
+                    if overlaps(self.dem.out[s], r) {
                         if let Some(&a) = self.arm_of.get(&s) {
                             return self.arms[a].round;
                         }
@@ -1071,12 +497,6 @@ impl<'a> Scheduler<'a> {
         0
     }
 
-    /// The region node `i` reads of an input, in `i`'s own texels: its output grown by its pad.
-    fn read_rect(&self, i: NodeId) -> Rect {
-        let p = f64::from(pad_at(&self.g.nodes[i].op, self.k[i]));
-        self.out[i].inflate(p, p)
-    }
-
     /// Lower every chain node reachable from `i` into arms and values, depth first.
     fn lower_chain(&mut self, i: NodeId) {
         if self.g.is_spine(i) || self.arm_of.contains_key(&i) || self.value_of.contains_key(&i) || !self.live(i) {
@@ -1092,18 +512,18 @@ impl<'a> Scheduler<'a> {
                     return;
                 }
                 let decode = match items.first().map(|it| it.style) {
-                    Some(DrawStyle::Distance { decode }) => decode * self.k[i],
+                    Some(DrawStyle::Distance { decode }) => decode * self.res.k[i],
                     _ => 0.0,
                 };
                 let v = self.values.len();
-                self.values.push(Value { node: i, rect: self.out[i], place: Vec2::ZERO, birth: 0, last_read: 0, page: 0, leaf: items.first().cloned(), decode, root: None });
+                self.values.push(Value { node: i, rect: self.dem.out[i], place: Vec2::ZERO, birth: 0, last_read: 0, page: 0, leaf: items.first().cloned(), decode, root: None });
                 self.value_of.insert(i, v);
             }
             op if is_head(op) || is_pointwise(op) => {
                 let in0 = self.input(i, 0);
                 let joins = is_pointwise(op)
                     && self.arm_of.get(&in0).is_some_and(|&a| {
-                        self.arms[a].compose.is_none() && *self.arms[a].nodes.last().unwrap() == in0 && self.readers[in0].len() == 1
+                        self.arms[a].compose.is_none() && *self.arms[a].nodes.last().unwrap() == in0 && self.res.readers[in0].len() == 1
                     });
                 if joins {
                     let a = self.arm_of[&in0];
@@ -1148,7 +568,7 @@ impl<'a> Scheduler<'a> {
                 r = r.max(self.ready(j, self.in_space_of(self.read_rect(i), i, j)));
             }
             if let Op::Halo { of } = self.g.nodes[i].op {
-                let inside = self.inside_of(i, self.out[i]);
+                let inside = self.inside_of(i, self.dem.out[i]);
                 r = r.max(self.ready(of, self.in_space_of(inside, i, of)));
             }
         }
@@ -1157,7 +577,7 @@ impl<'a> Scheduler<'a> {
                 if self.arm_of.get(&j) == Some(&a) {
                     continue;
                 }
-                r = r.max(self.ready(j, self.out[c]));
+                r = r.max(self.ready(j, self.dem.out[c]));
             }
         }
         r + 1
@@ -1167,7 +587,7 @@ impl<'a> Scheduler<'a> {
     /// it a headless arm of its own. Returns the compose's round.
     fn compose(&mut self, c: NodeId, value: NodeId) -> u32 {
         let foldable = self.arm_of.get(&value).is_some_and(|&a| {
-            self.arms[a].compose.is_none() && *self.arms[a].nodes.last().unwrap() == value && self.readers[value].len() == 1
+            self.arms[a].compose.is_none() && *self.arms[a].nodes.last().unwrap() == value && self.res.readers[value].len() == 1
         });
         let a = if foldable {
             self.arm_of[&value]
@@ -1193,21 +613,6 @@ impl<'a> Scheduler<'a> {
         let r = self.arm_round(a);
         self.arms[a].round = r;
         r
-    }
-
-    /// The rect chain node `i` reads of its input `j`, in `j`'s texels: its output grown by its
-    /// pad for a head, its output for a pointwise op, displaced for an `EraseBy` reference.
-    fn read_of(&self, i: NodeId, j: NodeId) -> Rect {
-        let node = &self.g.nodes[i];
-        let r = match &node.op {
-            Op::EraseBy(u) if node.inputs.get(1).map(|&x| self.alias[x]) == Some(j) => {
-                let shift = Vec2::new(f64::from(u.first().copied().unwrap_or(0.0)), f64::from(u.get(1).copied().unwrap_or(0.0)));
-                self.out[i] - shift
-            }
-            op if is_head(op) && self.input(i, 0) == j => self.read_rect(i),
-            _ => self.out[i],
-        };
-        self.in_space_of(r, i, j)
     }
 
     /// The values arm `a` reads that are drawn rather than computed: leaves and halo spines.
@@ -1237,7 +642,7 @@ impl<'a> Scheduler<'a> {
     /// nor for a halo's arm, which writes the halo value it stands on.
     fn out_area(&self, a: usize) -> f64 {
         match self.arms[a].nodes.last() {
-            Some(&tail) if self.arms[a].compose.is_none() && !matches!(self.g.nodes[tail].op, Op::Halo { .. }) => self.out[tail].area(),
+            Some(&tail) if self.arms[a].compose.is_none() && !matches!(self.g.nodes[tail].op, Op::Halo { .. }) => self.dem.out[tail].area(),
             _ => 0.0,
         }
     }
@@ -1293,7 +698,7 @@ impl<'a> Scheduler<'a> {
                         .filter(|&&(v, b, d)| lo(v, b) <= r && r <= d + shift && !(drawn[v] && r <= self.values[v].last_read))
                         .map(|&(v, _, _)| self.values[v].rect.area())
                         .sum();
-                    live.get(r as usize).copied().unwrap_or(0.0) + statics + outs <= self.budget
+                    live.get(r as usize).copied().unwrap_or(0.0) + statics + outs <= self.store.budget()
                 });
                 if fits || first + shift > far {
                     break;
@@ -1339,7 +744,7 @@ impl<'a> Scheduler<'a> {
                 continue;
             }
             let v = self.values.len();
-            self.values.push(Value { node: tail, rect: self.out[tail], place: Vec2::ZERO, birth: self.arms[a].round, last_read: self.arms[a].round, page: 0, leaf: None, decode: 0.0, root: None });
+            self.values.push(Value { node: tail, rect: self.dem.out[tail], place: Vec2::ZERO, birth: self.arms[a].round, last_read: self.arms[a].round, page: 0, leaf: None, decode: 0.0, root: None });
             self.value_of.insert(tail, v);
             self.arms[a].out = Some(v);
         }
@@ -1360,8 +765,8 @@ impl<'a> Scheduler<'a> {
         }
         let mut order: Vec<usize> = (0..self.values.len()).collect();
         order.sort_by_key(|&v| (self.values[v].birth, v));
-        let pitch = self.pitch();
-        let mut packer = StorePacker::new((self.store_width() / TILE_W) as u32);
+        let pitch = self.store.pitch;
+        let mut packer = StorePacker::new((self.store.width / TILE_W) as u32);
         for v in order {
             let (rect, birth, death) = (self.values[v].rect, self.values[v].birth, self.values[v].last_read);
             let [x, y] = packer.place((rect.width() / TILE_W).ceil() as u32, (rect.height() / TILE_H).ceil() as u32, birth, death);
@@ -1372,26 +777,16 @@ impl<'a> Scheduler<'a> {
         }
     }
 
-    /// The store's width: the frame's plus the widest chain ring on each side, whole tiles.
-    fn store_width(&self) -> f64 {
-        self.store_w
-    }
-
     /// How many pages the frame rents below its own rows: enough for the lowest value's rows.
     fn pages(&self) -> usize {
-        let pitch = self.pitch();
+        let pitch = self.store.pitch;
         (0..self.values.len()).map(|v| (self.store_rect(v).y1 / pitch).ceil() as usize - 1).max().unwrap_or(0)
-    }
-
-    /// The page pitch: the frame height rounded up to whole tiles.
-    fn pitch(&self) -> f64 {
-        (self.h / TILE_H).ceil() * TILE_H
     }
 
     /// A value's rect in store texels: its frame rect slid by its placement, down by its page.
     fn store_rect(&self, v: usize) -> Rect {
         let val = &self.values[v];
-        val.rect + val.place + Vec2::new(0.0, val.page as f64 * self.pitch())
+        val.rect + val.place + Vec2::new(0.0, val.page as f64 * self.store.pitch)
     }
 
     /// Where arm `a` reads node `j`: the spine is the tile's own registers when a pointwise read
@@ -1422,11 +817,11 @@ impl<'a> Scheduler<'a> {
             Operand::Area => r[0] = SRC_AREA,
             Operand::Value { v, shift } => {
                 let s = self.store_rect(v);
-                let d = shift * f64::from(self.k[self.values[v].node]) - self.values[v].place;
+                let d = shift * f64::from(self.res.k[self.values[v].node]) - self.values[v].place;
                 r = [SRC_STORE, s.x0 as f32, s.y0 as f32, s.x1 as f32, s.y1 as f32, d.x as f32, d.y as f32, decode];
             }
             Operand::Frame => {
-                let f = self.frame;
+                let f = self.store.frame;
                 r = [SRC_STORE, f.x0 as f32, f.y0 as f32, f.x1 as f32, f.y1 as f32, 0.0, 0.0, 0.0];
             }
         }
@@ -1447,10 +842,10 @@ impl<'a> Scheduler<'a> {
                     EdgeClampStyle::Transparent => BlurEdge::Coverage,
                 },
             },
-            Op::Warp(u) => UnitOp::Warp(bake::payload_at(u, self.k[i])),
-            Op::Scatter(u) => UnitOp::Scatter(bake::payload_at(u, self.k[i])),
-            Op::Shade(u) => UnitOp::Shade(bake::payload_at(u, self.k[i])),
-            Op::MaskMix(u) => UnitOp::MaskMix(bake::payload_at(u, self.k[i])),
+            Op::Warp(u) => UnitOp::Warp(bake::payload_at(u, self.res.k[i])),
+            Op::Scatter(u) => UnitOp::Scatter(bake::payload_at(u, self.res.k[i])),
+            Op::Shade(u) => UnitOp::Shade(bake::payload_at(u, self.res.k[i])),
+            Op::MaskMix(u) => UnitOp::MaskMix(bake::payload_at(u, self.res.k[i])),
             Op::ClipToSource(u) => UnitOp::ClipToSource(u.clone()),
             Op::EraseBy(_) => UnitOp::EraseBy(Vec::new()),
             Op::Colour(_) | Op::Draw(_) | Op::Compose { .. } | Op::Scale { .. } | Op::Halo { .. } => return None,
@@ -1476,17 +871,17 @@ impl<'a> Scheduler<'a> {
             let node = &self.g.nodes[i];
             match &node.op {
                 Op::Blur { sigma, linear, axis, edge_clamp_style, taps } => {
-                    blur = Some((*sigma * self.k[i], *taps, *linear, *axis == BlurAxis::Y));
+                    blur = Some((*sigma * self.res.k[i], *taps, *linear, *axis == BlurAxis::Y));
                     edge_coverage = *edge_clamp_style == EdgeClampStyle::Transparent;
                 }
                 Op::Scale { .. } => {
                     let j = self.input(i, 0);
                     let past = if self.rooted_in_leaf(i) { bake::SCALE_TRANSPARENT } else { bake::SCALE_CLAMP };
-                    scale = Some((self.k[j] / self.k[i], past));
+                    scale = Some((self.res.k[j] / self.res.k[i], past));
                 }
                 Op::Colour(c) => tint = Some([c[0], c[1], c[2], c[3]]),
                 Op::MaskMix(u) if u.get(bake::PAYLOAD_PROGRAM_SLOT).copied() == Some(bake::PROGRAM_RADIAL) => program = Some(bake::PROGRAM_RADIAL),
-                Op::Halo { of } => scale = Some((self.k[*of] / self.k[i], bake::SCALE_KEEP)),
+                Op::Halo { of } => scale = Some((self.res.k[*of] / self.res.k[i], bake::SCALE_KEEP)),
                 _ => {}
             }
             if let Some(u) = self.unit_of(i) {
@@ -1498,7 +893,7 @@ impl<'a> Scheduler<'a> {
                     _ => self.operand_for(a, self.input(i, 0), Vec2::ZERO, is_pointwise(&node.op)),
                 };
                 if let (Op::Warp(_), Some(&sdf)) = (&node.op, node.inputs.get(1)) {
-                    let sdf = self.alias[sdf];
+                    let sdf = self.res.alias[sdf];
                     let dec = self.value_of.get(&sdf).map_or(0.0, |&v| self.values[v].decode);
                     distance = self.operand_for(a, sdf, Vec2::ZERO, true);
                     if let Operand::Value { .. } = distance {
@@ -1569,7 +964,7 @@ impl<'a> Scheduler<'a> {
         bake::stamp_field_anchor(&desc, &mut rec);
         let (out_rect, out_place) = match self.arms[a].out.or_else(|| compose.and_then(|c| self.halo_value(c))) {
             Some(v) => (self.store_rect(v), self.values[v].place),
-            None => (self.out[compose.expect("an arm composes or writes a value")], Vec2::ZERO),
+            None => (self.dem.out[compose.expect("an arm composes or writes a value")], Vec2::ZERO),
         };
         let mut records = [[0.0f32; REC_STRIDE]; REC_COUNT];
         records[REC_VALUE] = self.record(value, 0.0);
@@ -1614,14 +1009,14 @@ impl<'a> Scheduler<'a> {
             self.bake_arm(a, &mut params);
         }
         let pages = self.pages();
-        let pitch = self.pitch();
+        let pitch = self.store.pitch;
         let store_h = pitch * (1 + pages) as f64;
         let rounds = self.arms.iter().map(|a| a.round + 1).max().unwrap_or(1);
 
         let mut draws: Vec<DrawCmd> = Vec::new();
         let mut copies: Vec<Vec<Pass>> = vec![Vec::new(); rounds as usize + 1];
         let mut tiles: Vec<Vec<u32>> = vec![Vec::new(); rounds as usize];
-        Self::tiles_of(self.frame, &mut tiles[0]);
+        Self::tiles_of(self.store.frame, &mut tiles[0]);
         let mut work: Vec<u32> = vec![0; rounds as usize];
         work[0] |= frame_plan::work::PAINT;
         for arm in &self.arms {
@@ -1642,7 +1037,7 @@ impl<'a> Scheduler<'a> {
         let mut page_work: Vec<(u32, u32, Vec<DrawCmd>)> = Vec::new();
         for (vi, v) in self.values.iter().enumerate() {
             let rect = self.store_rect(vi);
-            let k = f64::from(self.k[v.node]);
+            let k = f64::from(self.res.k[v.node]);
             let origin = v.place + Vec2::new(0.0, v.page as f64 * pitch);
             let transform = if k == 1.0 { Affine::translate(origin) } else { Affine::translate(origin) * Affine::scale(k) };
             let items = match (&v.leaf, &v.root) {
@@ -1651,7 +1046,7 @@ impl<'a> Scheduler<'a> {
                         copies[v.birth as usize].push(Pass::Clear { rect, colour: [0.0; 4] });
                     }
                     let mut it = item.clone();
-                    it.bounds = scale_rect(self.out[v.node], 1.0 / k);
+                    it.bounds = scale_rect(self.dem.out[v.node], 1.0 / k);
                     vec![it]
                 }
                 (None, Some(items)) => {
@@ -1681,20 +1076,20 @@ impl<'a> Scheduler<'a> {
             page_work.push((v.birth, 0, cmds));
         }
         for i in 0..self.g.nodes.len() {
-            let (Some(h), Op::Draw(_)) = (self.halo_of[i], &self.g.nodes[i].op) else { continue };
+            let (Some(h), Op::Draw(_)) = (self.spines.halo_of[i], &self.g.nodes[i].op) else { continue };
             if self.g.nodes[i].inputs.is_empty() || !self.live(i) {
                 continue;
             }
-            let items = self.pruned.get(&i).cloned().unwrap_or_default();
+            let items = self.dem.kept[i].clone();
             if items.is_empty() {
                 continue;
             }
             let v = self.value_of[&h];
             let birth = self.values[v].birth;
             let origin = self.values[v].place + Vec2::new(0.0, self.values[v].page as f64 * pitch);
-            let k = f64::from(self.k[i]);
-            let rect = self.out[i] + origin;
-            let round = self.ready(i, self.out[i]).max(birth);
+            let k = f64::from(self.res.k[i]);
+            let rect = self.dem.out[i] + origin;
+            let round = self.ready(i, self.dem.out[i]).max(birth);
             Self::tiles_of(rect, &mut tiles[round as usize]);
             work[round as usize] |= frame_plan::work::DRAW;
             let transform = Affine::translate(origin) * Affine::scale(k);
@@ -1702,10 +1097,10 @@ impl<'a> Scheduler<'a> {
         }
         for h in 0..self.g.nodes.len() {
             let Op::Halo { of } = self.g.nodes[h].op else { continue };
-            if !self.live(h) || self.k[of] != self.k[h] || !self.fill_read(h) {
+            if !self.live(h) || self.res.k[of] != self.res.k[h] || !self.fill_read(h) {
                 continue;
             }
-            let inside = self.inside_of(h, self.out[h]);
+            let inside = self.inside_of(h, self.dem.out[h]);
             if inside.is_zero_area() {
                 continue;
             }
@@ -1717,15 +1112,15 @@ impl<'a> Scheduler<'a> {
             }
         }
         if pages > 0 {
-            draws.push(DrawCmd::Clip { rect: Rect::new(0.0, 0.0, self.store_width(), pitch) });
+            draws.push(DrawCmd::Clip { rect: Rect::new(0.0, 0.0, self.store.width, pitch) });
         }
         for i in 0..self.g.nodes.len() {
-            if !self.live(i) || !self.g.is_spine(i) || self.halo_of[i].is_some() {
+            if !self.live(i) || !self.g.is_spine(i) || self.spines.halo_of[i].is_some() {
                 continue;
             }
             match &self.g.nodes[i].op {
                 Op::Draw(_) => {
-                    let items = self.pruned.get(&i).cloned().unwrap_or_default();
+                    let items = self.dem.kept[i].clone();
                     if items.is_empty() {
                         continue;
                     }
@@ -1734,7 +1129,7 @@ impl<'a> Scheduler<'a> {
                 Op::Compose { .. } => {
                     let a = self.arm_of[&i];
                     let arm = &self.arms[a];
-                    let footprint = self.out[i];
+                    let footprint = self.dem.out[i];
                     Self::tiles_of(footprint, &mut tiles[arm.round as usize]);
                     draws.push(DrawCmd::Marker {
                         shape: arm.mask_shape.unwrap_or(0),
@@ -1754,7 +1149,7 @@ impl<'a> Scheduler<'a> {
             draws.push(DrawCmd::Unclip);
         }
         for i in 0..self.g.nodes.len() {
-            let (Some(h), Op::Compose { .. }) = (self.halo_of[i], &self.g.nodes[i].op) else { continue };
+            let (Some(h), Op::Compose { .. }) = (self.spines.halo_of[i], &self.g.nodes[i].op) else { continue };
             if !self.live(i) {
                 continue;
             }
@@ -1762,8 +1157,8 @@ impl<'a> Scheduler<'a> {
             let arm = &self.arms[a];
             let vh = self.value_of[&h];
             let origin = self.values[vh].place + Vec2::new(0.0, self.values[vh].page as f64 * pitch);
-            let k = f64::from(self.k[i]);
-            let footprint = self.out[i] + origin;
+            let k = f64::from(self.res.k[i]);
+            let footprint = self.dem.out[i] + origin;
             Self::tiles_of(footprint, &mut tiles[arm.round as usize]);
             let marker = DrawCmd::Marker {
                 shape: arm.mask_shape.unwrap_or(0),
@@ -1796,9 +1191,9 @@ impl<'a> Scheduler<'a> {
         page_work.sort_by_key(|w| (w.0, w.1));
         draws.extend(page_work.into_iter().flat_map(|w| w.2));
 
-        let mut passes = vec![Pass::Clear { rect: self.frame, colour: self.g.background.components }];
+        let mut passes = vec![Pass::Clear { rect: self.store.frame, colour: self.g.background.components }];
         if pages > 0 {
-            passes.push(Pass::Clear { rect: Rect::new(0.0, self.h, self.store_width(), store_h), colour: [0.0; 4] });
+            passes.push(Pass::Clear { rect: Rect::new(0.0, self.store.frame.y1, self.store.width, store_h), colour: [0.0; 4] });
         }
         passes.push(Pass::Frontend { draws });
         for (r, list) in tiles.iter_mut().enumerate() {
@@ -1810,8 +1205,8 @@ impl<'a> Scheduler<'a> {
             let r = r as u32;
             passes.push(Pass::Fine { window: Window { rounds: (r, r + 1), tiles: Tiles::List { off, n: list.len() as u32 } }, work: work[r as usize] });
         }
-        passes.push(Pass::Present { from: self.frame });
-        FramePlan { store: (self.store_width() as u32, store_h as u32), page: pitch as u32, params, passes }
+        passes.push(Pass::Present { from: self.store.frame });
+        FramePlan { store: (self.store.width as u32, store_h as u32), page: pitch as u32, params, passes }
     }
 }
 
@@ -1820,6 +1215,7 @@ mod tests {
     use super::*;
     use crate::peniko::Color;
     use crate::vello::frame_graph::{DrawStyle, GNode, BLUR_TAPS};
+    use crate::vello::resolve::settle;
 
     fn body(shape: u128, r: Rect) -> DrawItem {
         DrawItem { shape, style: DrawStyle::Body, bounds: r }
@@ -1857,9 +1253,7 @@ mod tests {
     fn rounds_are_dependency_depth_and_live_values_share_a_page_apart() {
         let g = graph();
         g.validate().expect("valid");
-        let mut memory = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut memory);
-        s.demand_pass();
+        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0);
         s.build_arms();
         s.assign_pages();
         let arms: Vec<(Vec<NodeId>, Option<NodeId>, u32)> = s.arms.iter().map(|a| (a.nodes.clone(), a.compose, a.round)).collect();
@@ -1872,7 +1266,7 @@ mod tests {
         assert_eq!((s.values[sil].birth, s.values[sil].last_read), (0, 1));
         assert_eq!((s.values[bx].birth, s.values[bx].last_read), (1, 2));
         assert!(!overlaps(s.store_rect(sil), s.store_rect(bx)), "values alive in the same round never share a texel");
-        assert!(s.store_rect(sil).y0 >= s.pitch() && s.store_rect(bx).y0 >= s.pitch(), "values sit below the frame rows");
+        assert!(s.store_rect(sil).y0 >= s.store.pitch && s.store_rect(bx).y0 >= s.store.pitch, "values sit below the frame rows");
     }
 
     #[test]
@@ -1978,9 +1372,7 @@ mod tests {
         let k = g.resolutions();
         assert_eq!((k[11], k[10], k[6], k[5], k[7], k[9]), (0.5, 0.5, 0.5, 0.5, 0.5, 0.5), "the halo, its spine, its fill point, the clone chain and its leaf run at the reader's k");
         assert_eq!((k[4], k[0], k[3]), (1.0, 1.0, 1.0), "the frame's spine and A's own leaf stay at 1");
-        let mut memory = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut memory);
-        s.demand_pass();
+        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0);
         s.build_arms();
         s.fit_rounds();
         s.assign_pages();
@@ -1988,12 +1380,12 @@ mod tests {
         assert_eq!((s.value_of[&6], s.value_of[&5]), (halo, halo), "one value per spine: the fill point and the root share the halo's");
         let items: Vec<u128> = s.values[halo].root.as_ref().expect("the halo value is drawn from its root").iter().map(|it| it.shape).collect();
         assert_eq!(items, vec![1], "the root's items, pruned to the halo");
-        assert!(s.out[11].x1 > 320.0 && s.out[11].x0 < 320.0, "the halo straddles the frame's right edge in half texels: {:?}", s.out[11]);
-        assert!(s.out[10].x0 >= 320.0, "the clone composes only past the frame: {:?}", s.out[10]);
-        assert!(s.out[6].x0 < 320.0 && s.out[6].x1 > 320.0, "the fill point holds the clone's sampling ring inside the frame: {:?}", s.out[6]);
-        assert!(s.out[5].x0 >= 320.0, "the root draws only past the frame: {:?}", s.out[5]);
-        assert_eq!(s.values[halo].rect, s.out[6].union(s.out[11]), "the value is what its spine demands, joined");
-        assert!(s.demand[4].is_some_and(|d| d.x0 < 640.0 && d.x1 <= 640.0), "A is demanded in-frame for the halo's fill: {:?}", s.demand[4]);
+        assert!(s.dem.out[11].x1 > 320.0 && s.dem.out[11].x0 < 320.0, "the halo straddles the frame's right edge in half texels: {:?}", s.dem.out[11]);
+        assert!(s.dem.out[10].x0 >= 320.0, "the clone composes only past the frame: {:?}", s.dem.out[10]);
+        assert!(s.dem.out[6].x0 < 320.0 && s.dem.out[6].x1 > 320.0, "the fill point holds the clone's sampling ring inside the frame: {:?}", s.dem.out[6]);
+        assert!(s.dem.out[5].x0 >= 320.0, "the root draws only past the frame: {:?}", s.dem.out[5]);
+        assert_eq!(s.values[halo].rect, s.dem.out[6].union(s.dem.out[11]), "the value is what its spine demands, joined");
+        assert!(s.dem.wanted[4].is_some_and(|d| d.x0 < 640.0 && d.x1 <= 640.0), "A is demanded in-frame for the halo's fill: {:?}", s.dem.wanted[4]);
         let (lower, clone, fill, outer) = (s.arm_of[&6], s.arm_of[&7], s.arm_of[&11], s.arm_of[&13]);
         assert_eq!((s.arms[lower].round, s.arms[clone].round, s.arms[fill].round, s.arms[outer].round), (1, 2, 3, 4), "the ring's fill, the clone chain, the halo's fill over it, then B's chain");
         assert_eq!((s.arms[lower].out, s.arms[fill].out), (Some(halo), Some(halo)), "both fills write the halo value");
@@ -2012,9 +1404,7 @@ mod tests {
     #[test]
     fn a_halo_at_the_spines_resolution_is_one_copy() {
         let g = halo_graph(1.0);
-        let mut memory = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut memory);
-        s.demand_pass();
+        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0);
         s.build_arms();
         assert!(!s.arm_of.contains_key(&6) && !s.arm_of.contains_key(&11), "no fill arms at k 1");
         let p = plan_as_is(&g);
@@ -2051,8 +1441,8 @@ mod tests {
     /// The plan of `g` as it is: no expansion.
     fn plan_as_is(g: &FrameGraph) -> FramePlan {
         let mut memory = HashMap::new();
-        let mut s = Scheduler::new(g, 640, 480, 8192, 4.0, &mut memory);
-        s.resolve();
+        let mut s = Scheduler::new(g, 640, 480, 8192, 4.0);
+        s.resolve(&mut memory);
         s.run()
     }
 
@@ -2146,12 +1536,10 @@ mod tests {
     #[test]
     fn a_half_pair_runs_its_run_at_half_and_resamples_at_its_ends() {
         let g = scaled_graph(0.5);
-        let mut memory = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut memory);
-        assert!(s.elided[2], "a leaf's downscale is the leaf drawn at half");
-        assert!(!s.elided[5] && !s.elided[8] && !s.elided[10]);
-        assert_eq!((s.k[1], s.k[3], s.k[4], s.k[5], s.k[9], s.k[10]), (0.5, 0.5, 0.5, 1.0, 0.5, 1.0));
-        s.demand_pass();
+        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0);
+        assert!(s.res.elided[2], "a leaf's downscale is the leaf drawn at half");
+        assert!(!s.res.elided[5] && !s.res.elided[8] && !s.res.elided[10]);
+        assert_eq!((s.res.k[1], s.res.k[3], s.res.k[4], s.res.k[5], s.res.k[9], s.res.k[10]), (0.5, 0.5, 0.5, 1.0, 0.5, 1.0));
         s.build_arms();
         s.assign_pages();
         let mut params = Vec::new();
@@ -2235,46 +1623,38 @@ mod tests {
         };
         g.validate().expect("valid");
         let mut memory = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut memory);
-        s.demand_pass();
-        assert_eq!(s.store_width(), 640.0 + 2.0 * 672.0, "two σ100 blurs read 308 px past their output each, plus a tile of rounding per read: the store grows by that ring on both sides");
-        assert!(s.out[2].width() > 640.0 && s.out[2].width() <= s.store_width(), "at target 1 the backdrop the blur needs is wider than the frame and no wider than the store: {:?}", s.out[2]);
-        assert!(s.decide(), "the pair's two links together exceed the store's texels");
-        s.set_resolutions();
-        s.demand_pass();
-        assert_eq!(s.k[2], 0.5, "one rung down fits");
-        assert!(s.out[1].area() + s.out[2].area() <= s.budget, "{:?} {:?}", s.out[1], s.out[2]);
-        assert!(!s.elided[1], "the pair is now real");
+        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0);
+        assert_eq!(s.store.width, 640.0 + 2.0 * 672.0, "two σ100 blurs read 308 px past their output each, plus a tile of rounding per read: the store grows by that ring on both sides");
+        assert!(s.dem.out[2].width() > 640.0 && s.dem.out[2].width() <= s.store.width, "at target 1 the backdrop the blur needs is wider than the frame and no wider than the store: {:?}", s.dem.out[2]);
+        s.resolve(&mut memory);
+        assert_eq!(s.res.k[2], 0.5, "the pair's two links together exceed the store's texels: one rung down fits");
+        assert!(s.dem.out[1].area() + s.dem.out[2].area() <= s.store.budget(), "{:?} {:?}", s.dem.out[1], s.dem.out[2]);
+        assert!(!s.res.elided[1], "the pair is now real");
         assert_eq!(memory.get(&7), Some(&0.5), "the pair remembers what it ran at");
         let mut memory = HashMap::from([(7u128, 0.5f32)]);
-        let s2 = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut memory);
-        drop(s2);
-        assert_eq!(memory.get(&7), Some(&0.5), "an untouched memory keeps last frame");
-        let mut capped = HashMap::new();
-        let c = Scheduler::new(&g, 640, 480, 640, 4.0, &mut capped);
-        assert_eq!(c.store_width(), 640.0, "a device that cannot hold the ring caps the store at the frame's width, never below it");
+        let mut s2 = Scheduler::new(&g, 640, 480, 8192, 4.0);
+        s2.resolve(&mut memory);
+        assert_eq!(memory.get(&7), Some(&0.5), "the same frame keeps last frame's resolution");
+        let c = Scheduler::new(&g, 640, 480, 640, 4.0);
+        assert_eq!(c.store.width, 640.0, "a device that cannot hold the ring caps the store at the frame's width, never below it");
     }
 
     #[test]
     fn chains_are_placed_first_fit_within_the_budget() {
         let g = shadows(3, 4.0, EdgeClampStyle::Transparent);
         let mut roomy = HashMap::new();
-        let wide = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut roomy);
-        let mut wide = wide;
-        wide.demand_pass();
-        assert!(!wide.decide(), "three small shadows need no lowering with room to spare");
+        let mut wide = Scheduler::new(&g, 640, 480, 8192, 4.0);
+        let targets = wide.res.k.clone();
+        wide.resolve(&mut roomy);
+        assert_eq!(wide.res.k, targets, "three small shadows need no lowering with room to spare");
         wide.build_arms();
         wide.fit_rounds();
         let natural: Vec<u32> = wide.arms.iter().map(|a| a.round).collect();
         assert_eq!(natural, vec![1, 2, 1, 2, 1, 2], "disjoint chains run side by side: {natural:?}");
 
         let mut tight = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 480 + 64, 4.0, &mut tight);
-        s.demand_pass();
-        if s.decide() {
-            s.set_resolutions();
-            s.demand_pass();
-        }
+        let mut s = Scheduler::new(&g, 640, 480, 480 + 64, 4.0);
+        s.resolve(&mut tight);
         s.build_arms();
         s.fit_rounds();
         s.assign_pages();
@@ -2283,7 +1663,7 @@ mod tests {
         assert!(last > 3, "a tight budget serialises the chains: {rounds:?}");
         for r in 0..=last {
             let live: f64 = s.values.iter().filter(|v| v.birth <= r && r <= v.last_read).map(|v| v.rect.area()).sum();
-            assert!(live <= s.budget, "round {r} holds {live} texels of a {} budget", s.budget);
+            assert!(live <= s.store.budget(), "round {r} holds {live} texels of a {} budget", s.store.budget());
         }
         assert!(rounds.windows(2).all(|w| w[0].0 != w[1].0 || w[0].1 < w[1].1), "each chain still runs in order: {rounds:?}");
     }
