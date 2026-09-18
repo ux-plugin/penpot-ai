@@ -19,6 +19,54 @@ thread_local! {
     /// the key unchanged and hits the cache — only a real geometry/width edit
     /// misses and rebuilds. Bounded; cleared wholesale when it grows large.
     static RIBBON_CACHE: RefCell<HashMap<u64, Path>> = RefCell::new(HashMap::new());
+
+    /// One seamless, tileable grain-noise image, baked on first use and reused for
+    /// EVERY Texture stroke regardless of config. See [`grain_noise_image`].
+    static GRAIN_NOISE: RefCell<Option<skia::Image>> = const { RefCell::new(None) };
+}
+
+/// Side length of the baked grain tile, in texels. Larger = finer texels, so the
+/// tile stays smooth under the heavy magnification of deep zoom (a smaller tile
+/// shows its texel grid as visible blocks). One-time bake; no per-frame cost.
+const GRAIN_TILE: i32 = 512;
+/// Base frequency the grain tile is baked at: one noise cell every
+/// `1 / GRAIN_BASE_FREQ` texels, so the tile holds `GRAIN_TILE * GRAIN_BASE_FREQ`
+/// cells (32 here — enough that the wrap is invisible on a grungy overlay). The
+/// on-screen feature size is independent of this (it's set by the stroke `scale`
+/// via the sample matrix); this only trades texel density against cell count.
+const GRAIN_BASE_FREQ: f32 = 1.0 / 16.0;
+
+/// A single seamless Perlin-noise tile, baked once and reused for every Texture
+/// stroke. The live `skia::shaders::fractal_noise` is evaluated per pixel (4
+/// octaves) and, on this build, on the CPU — the dominant deep-zoom cost
+/// (measured ~82 ms/frame). Sampling a cached texture instead is far cheaper.
+///
+/// One tile serves ALL configurations because the only config-dependent input to
+/// the noise is its frequency, and frequency is just a scale on the sample
+/// coordinates — handled by the local matrix in [`draw_grain`]. The stroke colour
+/// is applied by the same `SrcIn` filter as before, and `density` only touches
+/// the base fill. So no per-config keying is needed.
+fn grain_noise_image() -> Option<skia::Image> {
+    GRAIN_NOISE.with(|c| {
+        if let Some(img) = c.borrow().as_ref() {
+            return Some(img.clone());
+        }
+        let info = skia::ImageInfo::new_n32_premul((GRAIN_TILE, GRAIN_TILE), None);
+        let mut surface = skia::surfaces::raster(&info, None, None)?;
+        // `tile_size` makes `fractal_noise` wrap seamlessly at `GRAIN_TILE`.
+        let noise = skia::shaders::fractal_noise(
+            (GRAIN_BASE_FREQ, GRAIN_BASE_FREQ),
+            4,
+            0.0,
+            skia::ISize::new(GRAIN_TILE, GRAIN_TILE),
+        )?;
+        let mut p = skia::Paint::default();
+        p.set_shader(noise);
+        surface.canvas().draw_paint(&p);
+        let img = surface.image_snapshot();
+        *c.borrow_mut() = Some(img.clone());
+        Some(img)
+    })
 }
 
 /// Content hash of everything `power_ribbon` depends on, so pan/zoom reuses the
@@ -322,18 +370,31 @@ pub fn draw_grain(
     base.set_alpha((base_alpha * d) as u8);
     canvas.draw_path(ribbon, &base);
 
-    // Grain overlay.
-    let freq = 1.0 / scale.max(1.0);
-    if let Some(noise) = skia::shaders::fractal_noise((freq, freq), 4, 0.0, None) {
-        let mut grain = base_paint.clone();
-        grain.set_style(skia::PaintStyle::Fill);
-        grain.set_path_effect(None);
-        // Tint the grayscale noise to the stroke color, keeping the noise alpha.
-        match skia::color_filters::blend(color, skia::BlendMode::SrcIn) {
-            Some(cf) => grain.set_shader(noise.with_color_filter(&cf)),
-            None => grain.set_shader(noise),
-        };
-        canvas.draw_path(ribbon, &grain);
+    // Grain overlay — sample the cached noise tile instead of evaluating Perlin
+    // per pixel. The tile is baked at `GRAIN_BASE_FREQ` (feature ≈ 1/GRAIN_BASE_FREQ
+    // texels); scale it so a feature maps to `scale` world units, matching the old
+    // `fractal_noise((1/scale, 1/scale), …)`. Repeat-tile so it fills any ribbon.
+    if let Some(img) = grain_noise_image() {
+        let k = scale.max(1.0) * GRAIN_BASE_FREQ;
+        let mut matrix = skia::Matrix::new_identity();
+        matrix.pre_scale((k, k), None);
+        // Cubic (Mitchell) resampling smooths the magnified texels so the tile
+        // doesn't read as a blocky grid at deep zoom, where the original live
+        // Perlin stayed continuous.
+        let sampling = skia::SamplingOptions::from(skia::CubicResampler::mitchell());
+        if let Some(noise) =
+            img.to_shader((skia::TileMode::Repeat, skia::TileMode::Repeat), sampling, &matrix)
+        {
+            let mut grain = base_paint.clone();
+            grain.set_style(skia::PaintStyle::Fill);
+            grain.set_path_effect(None);
+            // Tint the grayscale noise to the stroke color, keeping the noise alpha.
+            match skia::color_filters::blend(color, skia::BlendMode::SrcIn) {
+                Some(cf) => grain.set_shader(noise.with_color_filter(&cf)),
+                None => grain.set_shader(noise),
+            };
+            canvas.draw_path(ribbon, &grain);
+        }
     }
 }
 
