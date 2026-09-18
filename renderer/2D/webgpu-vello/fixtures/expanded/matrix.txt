@@ -1,0 +1,376 @@
+frame [0.0 0.0 1192.0 622.0] nodes 375 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 3 item(s)           in=[] Draw n=3 [48.0 48.0 378.0 194.0] 1:body[54.0 54.0 188.0 188.0] 2:body[48.0 48.0 194.0 194.0] 3:body[244.0 54.0 378.0 188.0]
+  1   s1 drop silhouette         in=[] Draw n=1 [238.0 48.0 384.0 194.0] 4:coverage[238.0 48.0 384.0 194.0]
+  2   s1 down                    in=[1] Scale → 0.5
+  3   s1 drop blur-X σ6.3        in=[2] Blur σ6.3 X srgb transparent taps 193
+  4   s1 drop blur-Y σ6.3        in=[3] Blur σ6.3 Y srgb transparent taps 193
+  5   s1 up                      in=[4] Scale → 1
+  6 | s1 drop → spine            in=[0, 5] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+  7 | draw · 1 item(s)           in=[6] Draw n=1 [238.0 48.0 384.0 194.0] 4:body[238.0 48.0 384.0 194.0]
+  8 | draw · 1 item(s)           in=[7] Draw n=1 [434.0 54.0 568.0 188.0] 5:body[434.0 54.0 568.0 188.0]
+  9   s2 drop silhouette         in=[] Draw n=1 [428.0 48.0 574.0 194.0] 6:coverage[428.0 48.0 574.0 194.0]
+ 10   s2 down                    in=[9] Scale → 0.5
+ 11   s2 drop blur-X σ7.4        in=[10] Blur σ7.4 X srgb transparent taps 193
+ 12   s2 drop blur-Y σ7.4        in=[11] Blur σ7.4 Y srgb transparent taps 193
+ 13   s2 up                      in=[12] Scale → 1
+ 14 | s2 drop → spine            in=[8, 13] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+ 15   s2 drop silhouette         in=[] Draw n=1 [428.0 48.0 574.0 194.0] 6:coverage[428.0 48.0 574.0 194.0]
+ 16   s2 down                    in=[15] Scale → 1
+ 17   s2 drop blur-X σ3.4        in=[16] Blur σ3.4 X srgb transparent taps 193
+ 18   s2 drop blur-Y σ3.4        in=[17] Blur σ3.4 Y srgb transparent taps 193
+ 19   s2 up                      in=[18] Scale → 1
+ 20 | s2 drop → spine            in=[14, 19] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+ 21 | draw · 1 item(s)           in=[20] Draw n=1 [428.0 48.0 574.0 194.0] 6:body[428.0 48.0 574.0 194.0]
+ 22 | draw · 1 item(s)           in=[21] Draw n=1 [624.0 54.0 758.0 188.0] 7:body[624.0 54.0 758.0 188.0]
+ 23   s3 drop silhouette         in=[] Draw n=1 [618.0 48.0 764.0 194.0] 8:coverage[618.0 48.0 764.0 194.0]
+ 24 | s3 drop → spine            in=[22, 23] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+ 25 | draw · 1 item(s)           in=[24] Draw n=1 [618.0 48.0 764.0 194.0] 8:body[618.0 48.0 764.0 194.0]
+ 26 | draw · 1 item(s)           in=[25] Draw n=1 [814.0 54.0 948.0 188.0] 9:body[814.0 54.0 948.0 188.0]
+ 27   s4 drop silhouette         in=[] Draw n=1 [804.0 44.0 958.0 198.0] a:coverage+4.0[804.0 44.0 958.0 198.0]
+ 28   s4 down                    in=[27] Scale → 1
+ 29   s4 drop blur-X σ5.1        in=[28] Blur σ5.1 X srgb transparent taps 193
+ 30   s4 drop blur-Y σ5.1        in=[29] Blur σ5.1 Y srgb transparent taps 193
+ 31   s4 up                      in=[30] Scale → 1
+ 32 | s4 drop → spine            in=[26, 31] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+ 33 | draw · 1 item(s)           in=[32] Draw n=1 [808.0 48.0 954.0 194.0] a:body[808.0 48.0 954.0 194.0]
+ 34 | draw · 1 item(s)           in=[33] Draw n=1 [1004.0 54.0 1138.0 188.0] b:body[1004.0 54.0 1138.0 188.0]
+ 35 | draw · 1 item(s)           in=[34] Draw n=1 [998.0 48.0 1144.0 194.0] c:body[998.0 48.0 1144.0 194.0]
+ 36   s5 inner flood             in=[] Draw n=1 [998.0 48.0 1144.0 194.0] c:coverage[998.0 48.0 1144.0 194.0]
+ 37   s5 down                    in=[36] Scale → 1
+ 38   s5 punch blur-X σ5.1       in=[37] Blur σ5.1 X srgb transparent taps 193
+ 39   s5 punch blur-Y σ5.1       in=[38] Blur σ5.1 Y srgb transparent taps 193
+ 40   s5 up                      in=[39] Scale → 1
+ 41   s5 inner band              in=[36, 40] EraseBy at -5.0,-6.0
+ 42 | s5 inner → spine           in=[35, 41] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 43 | draw · 1 item(s)           in=[42] Draw n=1 [54.0 244.0 188.0 378.0] d:body[54.0 244.0 188.0 378.0]
+ 44 | draw · 1 item(s)           in=[43] Draw n=1 [48.0 238.0 194.0 384.0] e:body[48.0 238.0 194.0 384.0]
+ 45   s6 inner flood             in=[] Draw n=1 [48.0 238.0 194.0 384.0] e:coverage[48.0 238.0 194.0 384.0]
+ 46   s6 down                    in=[45] Scale → 0.5
+ 47   s6 punch blur-X σ5.7       in=[46] Blur σ5.7 X srgb transparent taps 193
+ 48   s6 punch blur-Y σ5.7       in=[47] Blur σ5.7 Y srgb transparent taps 193
+ 49   s6 up                      in=[48] Scale → 1
+ 50   s6 inner flood at 1        in=[] Draw n=1 [48.0 238.0 194.0 384.0] e:coverage[48.0 238.0 194.0 384.0]
+ 51   s6 inner band              in=[50, 49] EraseBy at -5.0,-6.0
+ 52 | s6 inner → spine           in=[44, 51] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 53   s6 inner flood             in=[] Draw n=1 [48.0 238.0 194.0 384.0] e:coverage[48.0 238.0 194.0 384.0]
+ 54   s6 down                    in=[53] Scale → 1
+ 55   s6 punch blur-X σ2.8       in=[54] Blur σ2.8 X srgb transparent taps 193
+ 56   s6 punch blur-Y σ2.8       in=[55] Blur σ2.8 Y srgb transparent taps 193
+ 57   s6 up                      in=[56] Scale → 1
+ 58   s6 inner band              in=[53, 57] EraseBy at -5.0,-6.0
+ 59 | s6 inner → spine           in=[52, 58] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 60 | draw · 1 item(s)           in=[59] Draw n=1 [244.0 244.0 378.0 378.0] f:body[244.0 244.0 378.0 378.0]
+ 61 | draw · 1 item(s)           in=[60] Draw n=1 [238.0 238.0 384.0 384.0] 10:body[238.0 238.0 384.0 384.0]
+ 62   s7 inner flood             in=[] Draw n=1 [238.0 238.0 384.0 384.0] 10:coverage[238.0 238.0 384.0 384.0]
+ 63   s7 inner band              in=[62, 62] EraseBy at -5.0,-6.0
+ 64 | s7 inner → spine           in=[61, 63] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 65 | draw · 1 item(s)           in=[64] Draw n=1 [434.0 244.0 568.0 378.0] 11:body[434.0 244.0 568.0 378.0]
+ 66   s8 drop silhouette         in=[] Draw n=1 [428.0 238.0 574.0 384.0] 12:coverage[428.0 238.0 574.0 384.0]
+ 67   s8 down                    in=[66] Scale → 0.5
+ 68   s8 drop blur-X σ6.3        in=[67] Blur σ6.3 X srgb transparent taps 193
+ 69   s8 drop blur-Y σ6.3        in=[68] Blur σ6.3 Y srgb transparent taps 193
+ 70   s8 up                      in=[69] Scale → 1
+ 71 | s8 drop → spine            in=[65, 70] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+ 72 | draw · 1 item(s)           in=[71] Draw n=1 [428.0 238.0 574.0 384.0] 12:body[428.0 238.0 574.0 384.0]
+ 73   s8 inner flood             in=[] Draw n=1 [428.0 238.0 574.0 384.0] 12:coverage[428.0 238.0 574.0 384.0]
+ 74   s8 down                    in=[73] Scale → 1
+ 75   s8 punch blur-X σ4.5       in=[74] Blur σ4.5 X srgb transparent taps 193
+ 76   s8 punch blur-Y σ4.5       in=[75] Blur σ4.5 Y srgb transparent taps 193
+ 77   s8 up                      in=[76] Scale → 1
+ 78   s8 inner band              in=[73, 77] EraseBy at -5.0,-6.0
+ 79 | s8 inner → spine           in=[72, 78] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+ 80 | draw · 1 item(s)           in=[79] Draw n=1 [624.0 244.0 758.0 378.0] 13:body[624.0 244.0 758.0 378.0]
+ 81   s9 body leaf               in=[] Draw n=1 [618.0 238.0 764.0 384.0] 14:body[618.0 238.0 764.0 384.0]
+ 82   s9 down                    in=[81] Scale → 1
+ 83   s9 body blur-X σ2.8        in=[82] Blur σ2.8 X linear transparent taps 193
+ 84   s9 body blur-Y σ2.8        in=[83] Blur σ2.8 Y linear transparent taps 193
+ 85   s9 up                      in=[84] Scale → 1
+ 86 | s9 body → spine            in=[80, 85] Compose Over
+ 87 | draw · 1 item(s)           in=[86] Draw n=1 [814.0 244.0 948.0 378.0] 15:body[814.0 244.0 948.0 378.0]
+ 88   s10 drop silhouette        in=[] Draw n=1 [808.0 238.0 954.0 384.0] 16:coverage[808.0 238.0 954.0 384.0]
+ 89   s10 down                   in=[88] Scale → 0.5
+ 90   s10 drop blur-X σ6.3       in=[89] Blur σ6.3 X srgb transparent taps 193
+ 91   s10 drop blur-Y σ6.3       in=[90] Blur σ6.3 Y srgb transparent taps 193
+ 92   s10 up                     in=[91] Scale → 1
+ 93 | s10 drop → spine           in=[87, 92] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+ 94   s10 body leaf              in=[] Draw n=1 [808.0 238.0 954.0 384.0] 16:body[808.0 238.0 954.0 384.0]
+ 95   s10 down                   in=[94] Scale → 1
+ 96   s10 body blur-X σ2.2       in=[95] Blur σ2.2 X linear transparent taps 193
+ 97   s10 body blur-Y σ2.2       in=[96] Blur σ2.2 Y linear transparent taps 193
+ 98   s10 up                     in=[97] Scale → 1
+ 99 | s10 body → spine           in=[93, 98] Compose Over
+100 | draw · 1 item(s)           in=[99] Draw n=1 [1004.0 244.0 1138.0 378.0] 17:body[1004.0 244.0 1138.0 378.0]
+101   s11 body leaf              in=[] Draw n=1 [998.0 238.0 1144.0 384.0] 18:body[998.0 238.0 1144.0 384.0]
+102   s11 down                   in=[101] Scale → 1
+103   s11 body blur-X σ2.2       in=[102] Blur σ2.2 X linear transparent taps 193
+104   s11 body blur-Y σ2.2       in=[103] Blur σ2.2 Y linear transparent taps 193
+105   s11 up                     in=[104] Scale → 1
+106 | s11 body → spine           in=[100, 105] Compose Over
+107   s11 inner flood            in=[] Draw n=1 [998.0 238.0 1144.0 384.0] 18:coverage[998.0 238.0 1144.0 384.0]
+108   s11 down                   in=[107] Scale → 1
+109   s11 punch blur-X σ5.1      in=[108] Blur σ5.1 X srgb transparent taps 193
+110   s11 punch blur-Y σ5.1      in=[109] Blur σ5.1 Y srgb transparent taps 193
+111   s11 up                     in=[110] Scale → 1
+112   s11 inner band             in=[107, 111] EraseBy at -5.0,-6.0
+113 | s11 inner → spine          in=[106, 112] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+114 | draw · 1 item(s)           in=[113] Draw n=1 [54.0 434.0 188.0 568.0] 19:body[54.0 434.0 188.0 568.0]
+115 | draw · 3 item(s) @0        in=[] Draw n=3 [48.0 48.0 378.0 194.0] 1:body[54.0 54.0 188.0 188.0] 2:body[48.0 48.0 194.0 194.0] 3:body[244.0 54.0 378.0 188.0]
+116 | draw · 1 item(s) @0        in=[115] Draw n=1 [238.0 48.0 384.0 194.0] 4:body[238.0 48.0 384.0 194.0]
+117 | draw · 1 item(s) @0        in=[116] Draw n=1 [434.0 54.0 568.0 188.0] 5:body[434.0 54.0 568.0 188.0]
+118 | draw · 1 item(s) @0        in=[117] Draw n=1 [428.0 48.0 574.0 194.0] 6:body[428.0 48.0 574.0 194.0]
+119 | draw · 1 item(s) @0        in=[118] Draw n=1 [624.0 54.0 758.0 188.0] 7:body[624.0 54.0 758.0 188.0]
+120 | draw · 1 item(s) @0        in=[119] Draw n=1 [618.0 48.0 764.0 194.0] 8:body[618.0 48.0 764.0 194.0]
+121 | draw · 1 item(s) @0        in=[120] Draw n=1 [814.0 54.0 948.0 188.0] 9:body[814.0 54.0 948.0 188.0]
+122 | draw · 1 item(s) @0        in=[121] Draw n=1 [808.0 48.0 954.0 194.0] a:body[808.0 48.0 954.0 194.0]
+123 | draw · 1 item(s) @0        in=[122] Draw n=1 [1004.0 54.0 1138.0 188.0] b:body[1004.0 54.0 1138.0 188.0]
+124 | draw · 1 item(s) @0        in=[123] Draw n=1 [998.0 48.0 1144.0 194.0] c:body[998.0 48.0 1144.0 194.0]
+125 | draw · 1 item(s) @0        in=[124] Draw n=1 [54.0 244.0 188.0 378.0] d:body[54.0 244.0 188.0 378.0]
+126 | draw · 1 item(s) @0        in=[125] Draw n=1 [48.0 238.0 194.0 384.0] e:body[48.0 238.0 194.0 384.0]
+127 | fill of draw · 1 item(s) @0 in=[126] Halo of 44
+128   s6 inner flood at 1 @0     in=[] Draw n=1 [48.0 238.0 194.0 384.0] e:coverage[48.0 238.0 194.0 384.0]
+129   s6 inner flood @0          in=[] Draw n=1 [48.0 238.0 194.0 384.0] e:coverage[48.0 238.0 194.0 384.0]
+130   s6 down @0                 in=[129] Scale → 0.5
+131   s6 punch blur-X σ5.7 @0    in=[130] Blur σ5.7 X srgb transparent taps 193
+132   s6 punch blur-Y σ5.7 @0    in=[131] Blur σ5.7 Y srgb transparent taps 193
+133   s6 up @0                   in=[132] Scale → 0.5
+134   s6 inner band @0           in=[128, 133] EraseBy at -5.0,-6.0
+135 | s6 inner → spine @0        in=[127, 134] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+136 | fill of s6 inner → spine @0 in=[135] Halo of 52
+137   s6 inner flood @0          in=[] Draw n=1 [48.0 238.0 194.0 384.0] e:coverage[48.0 238.0 194.0 384.0]
+138   s6 down @0                 in=[137] Scale → 0.5
+139   s6 punch blur-X σ2.8 @0    in=[138] Blur σ2.8 X srgb transparent taps 193
+140   s6 punch blur-Y σ2.8 @0    in=[139] Blur σ2.8 Y srgb transparent taps 193
+141   s6 up @0                   in=[140] Scale → 0.5
+142   s6 inner band @0           in=[137, 141] EraseBy at -5.0,-6.0
+143 | s6 inner → spine @0        in=[136, 142] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+144 | draw · 1 item(s) @0        in=[143] Draw n=1 [244.0 244.0 378.0 378.0] f:body[244.0 244.0 378.0 378.0]
+145 | draw · 1 item(s) @0        in=[144] Draw n=1 [238.0 238.0 384.0 384.0] 10:body[238.0 238.0 384.0 384.0]
+146 | fill of draw · 1 item(s) @0 in=[145] Halo of 61
+147   s7 inner flood @0          in=[] Draw n=1 [238.0 238.0 384.0 384.0] 10:coverage[238.0 238.0 384.0 384.0]
+148   s7 inner band @0           in=[147, 147] EraseBy at -5.0,-6.0
+149 | s7 inner → spine @0        in=[146, 148] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+150 | draw · 1 item(s) @0        in=[149] Draw n=1 [434.0 244.0 568.0 378.0] 11:body[434.0 244.0 568.0 378.0]
+151 | draw · 1 item(s) @0        in=[150] Draw n=1 [428.0 238.0 574.0 384.0] 12:body[428.0 238.0 574.0 384.0]
+152 | draw · 1 item(s) @0        in=[151] Draw n=1 [624.0 244.0 758.0 378.0] 13:body[624.0 244.0 758.0 378.0]
+153 | draw · 1 item(s) @0        in=[152] Draw n=1 [814.0 244.0 948.0 378.0] 15:body[814.0 244.0 948.0 378.0]
+154 | draw · 1 item(s) @0        in=[153] Draw n=1 [1004.0 244.0 1138.0 378.0] 17:body[1004.0 244.0 1138.0 378.0]
+155 | draw · 1 item(s) @0        in=[154] Draw n=1 [54.0 434.0 188.0 568.0] 19:body[54.0 434.0 188.0 568.0]
+156 | halo of draw · 1 item(s) @0 in=[155] Halo of 114
+157   s12 down                   in=[156] Scale → 0.5
+158   s12 gather blur-X σ8.6     in=[157] Blur σ8.6 X linear taps 193
+159   s12 gather blur-Y σ8.6     in=[158] Blur σ8.6 Y linear taps 193
+160   s12 up                     in=[159] Scale → 1
+161   s12 gather mask            in=[] Draw n=1 [48.0 428.0 194.0 574.0] 1a:coverage[48.0 428.0 194.0 574.0]
+162 | s12 gather → spine         in=[114, 160, 161] Compose MaskedMix
+163 | draw · 1 item(s)           in=[162] Draw n=1 [48.0 428.0 194.0 574.0] 1a:body[48.0 428.0 194.0 574.0]
+164 | draw · 1 item(s)           in=[163] Draw n=1 [244.0 434.0 378.0 568.0] 1b:body[244.0 434.0 378.0 568.0]
+165   s13 drop silhouette        in=[] Draw n=1 [238.0 428.0 384.0 574.0] 1c:coverage[238.0 428.0 384.0 574.0]
+166   s13 down                   in=[165] Scale → 0.5
+167   s13 drop blur-X σ6.3       in=[166] Blur σ6.3 X srgb transparent taps 193
+168   s13 drop blur-Y σ6.3       in=[167] Blur σ6.3 Y srgb transparent taps 193
+169   s13 up                     in=[168] Scale → 1
+170 | s13 drop → spine           in=[164, 169] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+171 | draw · 3 item(s) @1        in=[] Draw n=3 [48.0 48.0 378.0 194.0] 1:body[54.0 54.0 188.0 188.0] 2:body[48.0 48.0 194.0 194.0] 3:body[244.0 54.0 378.0 188.0]
+172 | draw · 1 item(s) @1        in=[171] Draw n=1 [238.0 48.0 384.0 194.0] 4:body[238.0 48.0 384.0 194.0]
+173 | draw · 1 item(s) @1        in=[172] Draw n=1 [434.0 54.0 568.0 188.0] 5:body[434.0 54.0 568.0 188.0]
+174 | draw · 1 item(s) @1        in=[173] Draw n=1 [428.0 48.0 574.0 194.0] 6:body[428.0 48.0 574.0 194.0]
+175 | draw · 1 item(s) @1        in=[174] Draw n=1 [624.0 54.0 758.0 188.0] 7:body[624.0 54.0 758.0 188.0]
+176 | draw · 1 item(s) @1        in=[175] Draw n=1 [618.0 48.0 764.0 194.0] 8:body[618.0 48.0 764.0 194.0]
+177 | draw · 1 item(s) @1        in=[176] Draw n=1 [814.0 54.0 948.0 188.0] 9:body[814.0 54.0 948.0 188.0]
+178 | draw · 1 item(s) @1        in=[177] Draw n=1 [808.0 48.0 954.0 194.0] a:body[808.0 48.0 954.0 194.0]
+179 | draw · 1 item(s) @1        in=[178] Draw n=1 [1004.0 54.0 1138.0 188.0] b:body[1004.0 54.0 1138.0 188.0]
+180 | draw · 1 item(s) @1        in=[179] Draw n=1 [998.0 48.0 1144.0 194.0] c:body[998.0 48.0 1144.0 194.0]
+181 | draw · 1 item(s) @1        in=[180] Draw n=1 [54.0 244.0 188.0 378.0] d:body[54.0 244.0 188.0 378.0]
+182 | draw · 1 item(s) @1        in=[181] Draw n=1 [48.0 238.0 194.0 384.0] e:body[48.0 238.0 194.0 384.0]
+183 | draw · 1 item(s) @1        in=[182] Draw n=1 [244.0 244.0 378.0 378.0] f:body[244.0 244.0 378.0 378.0]
+184 | draw · 1 item(s) @1        in=[183] Draw n=1 [238.0 238.0 384.0 384.0] 10:body[238.0 238.0 384.0 384.0]
+185 | draw · 1 item(s) @1        in=[184] Draw n=1 [434.0 244.0 568.0 378.0] 11:body[434.0 244.0 568.0 378.0]
+186 | draw · 1 item(s) @1        in=[185] Draw n=1 [428.0 238.0 574.0 384.0] 12:body[428.0 238.0 574.0 384.0]
+187 | draw · 1 item(s) @1        in=[186] Draw n=1 [624.0 244.0 758.0 378.0] 13:body[624.0 244.0 758.0 378.0]
+188 | draw · 1 item(s) @1        in=[187] Draw n=1 [814.0 244.0 948.0 378.0] 15:body[814.0 244.0 948.0 378.0]
+189 | draw · 1 item(s) @1        in=[188] Draw n=1 [1004.0 244.0 1138.0 378.0] 17:body[1004.0 244.0 1138.0 378.0]
+190 | draw · 1 item(s) @1        in=[189] Draw n=1 [54.0 434.0 188.0 568.0] 19:body[54.0 434.0 188.0 568.0]
+191 | draw · 1 item(s) @1        in=[190] Draw n=1 [48.0 428.0 194.0 574.0] 1a:body[48.0 428.0 194.0 574.0]
+192 | draw · 1 item(s) @1        in=[191] Draw n=1 [244.0 434.0 378.0 568.0] 1b:body[244.0 434.0 378.0 568.0]
+193 | fill of draw · 1 item(s) @1 in=[192] Halo of 164
+194   s13 drop silhouette @1     in=[] Draw n=1 [238.0 428.0 384.0 574.0] 1c:coverage[238.0 428.0 384.0 574.0]
+195   s13 down @1                in=[194] Scale → 0.5
+196   s13 drop blur-X σ6.3 @1    in=[195] Blur σ6.3 X srgb transparent taps 193
+197   s13 drop blur-Y σ6.3 @1    in=[196] Blur σ6.3 Y srgb transparent taps 193
+198   s13 up @1                  in=[197] Scale → 0.5
+199 | s13 drop → spine @1        in=[193, 198] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+200 | halo of s13 drop → spine @1 in=[199] Halo of 170
+201   s13 down                   in=[200] Scale → 0.5
+202   s13 gather blur-X σ8.6     in=[201] Blur σ8.6 X linear taps 193
+203   s13 gather blur-Y σ8.6     in=[202] Blur σ8.6 Y linear taps 193
+204   s13 up                     in=[203] Scale → 1
+205   s13 gather mask            in=[] Draw n=1 [238.0 428.0 384.0 574.0] 1c:coverage[238.0 428.0 384.0 574.0]
+206 | s13 gather → spine         in=[170, 204, 205] Compose MaskedMix
+207 | draw · 1 item(s)           in=[206] Draw n=1 [238.0 428.0 384.0 574.0] 1c:body[238.0 428.0 384.0 574.0]
+208 | draw · 1 item(s)           in=[207] Draw n=1 [434.0 434.0 568.0 568.0] 1d:body[434.0 434.0 568.0 568.0]
+209 | draw · 3 item(s) @2        in=[] Draw n=3 [48.0 48.0 378.0 194.0] 1:body[54.0 54.0 188.0 188.0] 2:body[48.0 48.0 194.0 194.0] 3:body[244.0 54.0 378.0 188.0]
+210 | draw · 1 item(s) @2        in=[209] Draw n=1 [238.0 48.0 384.0 194.0] 4:body[238.0 48.0 384.0 194.0]
+211 | draw · 1 item(s) @2        in=[210] Draw n=1 [434.0 54.0 568.0 188.0] 5:body[434.0 54.0 568.0 188.0]
+212 | draw · 1 item(s) @2        in=[211] Draw n=1 [428.0 48.0 574.0 194.0] 6:body[428.0 48.0 574.0 194.0]
+213 | draw · 1 item(s) @2        in=[212] Draw n=1 [624.0 54.0 758.0 188.0] 7:body[624.0 54.0 758.0 188.0]
+214 | draw · 1 item(s) @2        in=[213] Draw n=1 [618.0 48.0 764.0 194.0] 8:body[618.0 48.0 764.0 194.0]
+215 | draw · 1 item(s) @2        in=[214] Draw n=1 [814.0 54.0 948.0 188.0] 9:body[814.0 54.0 948.0 188.0]
+216 | draw · 1 item(s) @2        in=[215] Draw n=1 [808.0 48.0 954.0 194.0] a:body[808.0 48.0 954.0 194.0]
+217 | draw · 1 item(s) @2        in=[216] Draw n=1 [1004.0 54.0 1138.0 188.0] b:body[1004.0 54.0 1138.0 188.0]
+218 | draw · 1 item(s) @2        in=[217] Draw n=1 [998.0 48.0 1144.0 194.0] c:body[998.0 48.0 1144.0 194.0]
+219 | draw · 1 item(s) @2        in=[218] Draw n=1 [54.0 244.0 188.0 378.0] d:body[54.0 244.0 188.0 378.0]
+220 | draw · 1 item(s) @2        in=[219] Draw n=1 [48.0 238.0 194.0 384.0] e:body[48.0 238.0 194.0 384.0]
+221 | draw · 1 item(s) @2        in=[220] Draw n=1 [244.0 244.0 378.0 378.0] f:body[244.0 244.0 378.0 378.0]
+222 | draw · 1 item(s) @2        in=[221] Draw n=1 [238.0 238.0 384.0 384.0] 10:body[238.0 238.0 384.0 384.0]
+223 | draw · 1 item(s) @2        in=[222] Draw n=1 [434.0 244.0 568.0 378.0] 11:body[434.0 244.0 568.0 378.0]
+224 | draw · 1 item(s) @2        in=[223] Draw n=1 [428.0 238.0 574.0 384.0] 12:body[428.0 238.0 574.0 384.0]
+225 | draw · 1 item(s) @2        in=[224] Draw n=1 [624.0 244.0 758.0 378.0] 13:body[624.0 244.0 758.0 378.0]
+226 | draw · 1 item(s) @2        in=[225] Draw n=1 [814.0 244.0 948.0 378.0] 15:body[814.0 244.0 948.0 378.0]
+227 | draw · 1 item(s) @2        in=[226] Draw n=1 [1004.0 244.0 1138.0 378.0] 17:body[1004.0 244.0 1138.0 378.0]
+228 | draw · 1 item(s) @2        in=[227] Draw n=1 [54.0 434.0 188.0 568.0] 19:body[54.0 434.0 188.0 568.0]
+229 | draw · 1 item(s) @2        in=[228] Draw n=1 [48.0 428.0 194.0 574.0] 1a:body[48.0 428.0 194.0 574.0]
+230 | draw · 1 item(s) @2        in=[229] Draw n=1 [244.0 434.0 378.0 568.0] 1b:body[244.0 434.0 378.0 568.0]
+231 | fill of draw · 1 item(s) @2 in=[230] Halo of 164
+232   s13 drop silhouette @2     in=[] Draw n=1 [238.0 428.0 384.0 574.0] 1c:coverage[238.0 428.0 384.0 574.0]
+233   s13 down @2                in=[232] Scale → 0.5
+234   s13 drop blur-X σ6.3 @2    in=[233] Blur σ6.3 X srgb transparent taps 193
+235   s13 drop blur-Y σ6.3 @2    in=[234] Blur σ6.3 Y srgb transparent taps 193
+236   s13 up @2                  in=[235] Scale → 1
+237 | s13 drop → spine @2        in=[231, 236] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+238 | draw · 1 item(s) @2        in=[237] Draw n=1 [238.0 428.0 384.0 574.0] 1c:body[238.0 428.0 384.0 574.0]
+239 | draw · 1 item(s) @2        in=[238] Draw n=1 [434.0 434.0 568.0 568.0] 1d:body[434.0 434.0 568.0 568.0]
+240 | halo of draw · 1 item(s) @2 in=[239] Halo of 208
+241   s14 down                   in=[240] Scale → 1
+242   s14 lens sdf               in=[] Draw n=1 [428.0 428.0 574.0 574.0] 1e:distance/146.0[428.0 428.0 574.0 574.0]
+243   s14 lens warp              in=[241, 242] Warp program 0
+244   s14 frost blur-X σ3.6      in=[243] Blur σ3.6 X srgb taps 193
+245   s14 frost blur-Y σ3.6      in=[244] Blur σ3.6 Y srgb taps 193
+246   s14 lens scatter           in=[245] Scatter
+247   s14 up                     in=[246] Scale → 1
+248   s14 lens shade             in=[247] Shade
+249   s14 lens mask-mix          in=[248, 208] MaskMix program 0
+250   s14 gather mask            in=[] Draw n=1 [428.0 428.0 574.0 574.0] 1e:coverage[428.0 428.0 574.0 574.0]
+251 | s14 gather → spine         in=[208, 249, 250] Compose MaskedMix
+252 | draw · 1 item(s)           in=[251] Draw n=1 [428.0 428.0 574.0 574.0] 1e:body[428.0 428.0 574.0 574.0]
+253 | draw · 1 item(s)           in=[252] Draw n=1 [624.0 434.0 758.0 568.0] 1f:body[624.0 434.0 758.0 568.0]
+254 | draw · 3 item(s) @3        in=[] Draw n=3 [48.0 48.0 378.0 194.0] 1:body[54.0 54.0 188.0 188.0] 2:body[48.0 48.0 194.0 194.0] 3:body[244.0 54.0 378.0 188.0]
+255 | draw · 1 item(s) @3        in=[254] Draw n=1 [238.0 48.0 384.0 194.0] 4:body[238.0 48.0 384.0 194.0]
+256 | draw · 1 item(s) @3        in=[255] Draw n=1 [434.0 54.0 568.0 188.0] 5:body[434.0 54.0 568.0 188.0]
+257 | draw · 1 item(s) @3        in=[256] Draw n=1 [428.0 48.0 574.0 194.0] 6:body[428.0 48.0 574.0 194.0]
+258 | draw · 1 item(s) @3        in=[257] Draw n=1 [624.0 54.0 758.0 188.0] 7:body[624.0 54.0 758.0 188.0]
+259 | draw · 1 item(s) @3        in=[258] Draw n=1 [618.0 48.0 764.0 194.0] 8:body[618.0 48.0 764.0 194.0]
+260 | draw · 1 item(s) @3        in=[259] Draw n=1 [814.0 54.0 948.0 188.0] 9:body[814.0 54.0 948.0 188.0]
+261 | draw · 1 item(s) @3        in=[260] Draw n=1 [808.0 48.0 954.0 194.0] a:body[808.0 48.0 954.0 194.0]
+262 | draw · 1 item(s) @3        in=[261] Draw n=1 [1004.0 54.0 1138.0 188.0] b:body[1004.0 54.0 1138.0 188.0]
+263 | draw · 1 item(s) @3        in=[262] Draw n=1 [998.0 48.0 1144.0 194.0] c:body[998.0 48.0 1144.0 194.0]
+264 | draw · 1 item(s) @3        in=[263] Draw n=1 [54.0 244.0 188.0 378.0] d:body[54.0 244.0 188.0 378.0]
+265 | draw · 1 item(s) @3        in=[264] Draw n=1 [48.0 238.0 194.0 384.0] e:body[48.0 238.0 194.0 384.0]
+266 | draw · 1 item(s) @3        in=[265] Draw n=1 [244.0 244.0 378.0 378.0] f:body[244.0 244.0 378.0 378.0]
+267 | draw · 1 item(s) @3        in=[266] Draw n=1 [238.0 238.0 384.0 384.0] 10:body[238.0 238.0 384.0 384.0]
+268 | draw · 1 item(s) @3        in=[267] Draw n=1 [434.0 244.0 568.0 378.0] 11:body[434.0 244.0 568.0 378.0]
+269 | draw · 1 item(s) @3        in=[268] Draw n=1 [428.0 238.0 574.0 384.0] 12:body[428.0 238.0 574.0 384.0]
+270 | draw · 1 item(s) @3        in=[269] Draw n=1 [624.0 244.0 758.0 378.0] 13:body[624.0 244.0 758.0 378.0]
+271 | draw · 1 item(s) @3        in=[270] Draw n=1 [814.0 244.0 948.0 378.0] 15:body[814.0 244.0 948.0 378.0]
+272 | draw · 1 item(s) @3        in=[271] Draw n=1 [1004.0 244.0 1138.0 378.0] 17:body[1004.0 244.0 1138.0 378.0]
+273 | draw · 1 item(s) @3        in=[272] Draw n=1 [54.0 434.0 188.0 568.0] 19:body[54.0 434.0 188.0 568.0]
+274 | draw · 1 item(s) @3        in=[273] Draw n=1 [48.0 428.0 194.0 574.0] 1a:body[48.0 428.0 194.0 574.0]
+275 | draw · 1 item(s) @3        in=[274] Draw n=1 [244.0 434.0 378.0 568.0] 1b:body[244.0 434.0 378.0 568.0]
+276 | draw · 1 item(s) @3        in=[275] Draw n=1 [238.0 428.0 384.0 574.0] 1c:body[238.0 428.0 384.0 574.0]
+277 | draw · 1 item(s) @3        in=[276] Draw n=1 [434.0 434.0 568.0 568.0] 1d:body[434.0 434.0 568.0 568.0]
+278 | draw · 1 item(s) @3        in=[277] Draw n=1 [428.0 428.0 574.0 574.0] 1e:body[428.0 428.0 574.0 574.0]
+279 | draw · 1 item(s) @3        in=[278] Draw n=1 [624.0 434.0 758.0 568.0] 1f:body[624.0 434.0 758.0 568.0]
+280 | halo of draw · 1 item(s) @3 in=[279] Halo of 253
+281   s15 down                   in=[280] Scale → 1
+282   s15 lens sdf               in=[] Draw n=1 [618.0 428.0 764.0 574.0] 20:distance/146.0[618.0 428.0 764.0 574.0]
+283   s15 lens warp              in=[281, 282] Warp program 0
+284   s15 frost blur-X σ3.6      in=[283] Blur σ3.6 X srgb taps 193
+285   s15 frost blur-Y σ3.6      in=[284] Blur σ3.6 Y srgb taps 193
+286   s15 lens scatter           in=[285] Scatter
+287   s15 up                     in=[286] Scale → 1
+288   s15 lens shade             in=[287] Shade
+289   s15 lens mask-mix          in=[288, 253] MaskMix program 0
+290   s15 gather mask            in=[] Draw n=1 [618.0 428.0 764.0 574.0] 20:coverage[618.0 428.0 764.0 574.0]
+291 | s15 gather → spine         in=[253, 289, 290] Compose MaskedMix
+292 | draw · 1 item(s)           in=[291] Draw n=1 [618.0 428.0 764.0 574.0] 20:body[618.0 428.0 764.0 574.0]
+293   s15 inner flood            in=[] Draw n=1 [618.0 428.0 764.0 574.0] 20:coverage[618.0 428.0 764.0 574.0]
+294   s15 down                   in=[293] Scale → 1
+295   s15 punch blur-X σ4.5      in=[294] Blur σ4.5 X srgb transparent taps 193
+296   s15 punch blur-Y σ4.5      in=[295] Blur σ4.5 Y srgb transparent taps 193
+297   s15 up                     in=[296] Scale → 1
+298   s15 inner band             in=[293, 297] EraseBy at -5.0,-6.0
+299 | s15 inner → spine          in=[292, 298] Compose Over colour [0.00, 0.00, 0.00, 0.67]
+300 | draw · 1 item(s)           in=[299] Draw n=1 [814.0 434.0 948.0 568.0] 21:body[814.0 434.0 948.0 568.0]
+301   s16 drop silhouette        in=[] Draw n=1 [808.0 428.0 954.0 574.0] 22:coverage[808.0 428.0 954.0 574.0]
+302   s16 down                   in=[301] Scale → 0.5
+303   s16 drop blur-X σ6.9       in=[302] Blur σ6.9 X srgb transparent taps 193
+304   s16 drop blur-Y σ6.9       in=[303] Blur σ6.9 Y srgb transparent taps 193
+305   s16 up                     in=[304] Scale → 1
+306 | s16 drop → spine           in=[300, 305] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+307   s16 drop silhouette        in=[] Draw n=1 [806.0 426.0 956.0 576.0] 22:coverage+2.0[806.0 426.0 956.0 576.0]
+308   s16 down                   in=[307] Scale → 1
+309   s16 drop blur-X σ3.4       in=[308] Blur σ3.4 X srgb transparent taps 193
+310   s16 drop blur-Y σ3.4       in=[309] Blur σ3.4 Y srgb transparent taps 193
+311   s16 up                     in=[310] Scale → 1
+312 | s16 drop → spine           in=[306, 311] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+313 | draw · 3 item(s) @4        in=[] Draw n=3 [48.0 48.0 378.0 194.0] 1:body[54.0 54.0 188.0 188.0] 2:body[48.0 48.0 194.0 194.0] 3:body[244.0 54.0 378.0 188.0]
+314 | draw · 1 item(s) @4        in=[313] Draw n=1 [238.0 48.0 384.0 194.0] 4:body[238.0 48.0 384.0 194.0]
+315 | draw · 1 item(s) @4        in=[314] Draw n=1 [434.0 54.0 568.0 188.0] 5:body[434.0 54.0 568.0 188.0]
+316 | draw · 1 item(s) @4        in=[315] Draw n=1 [428.0 48.0 574.0 194.0] 6:body[428.0 48.0 574.0 194.0]
+317 | draw · 1 item(s) @4        in=[316] Draw n=1 [624.0 54.0 758.0 188.0] 7:body[624.0 54.0 758.0 188.0]
+318 | draw · 1 item(s) @4        in=[317] Draw n=1 [618.0 48.0 764.0 194.0] 8:body[618.0 48.0 764.0 194.0]
+319 | draw · 1 item(s) @4        in=[318] Draw n=1 [814.0 54.0 948.0 188.0] 9:body[814.0 54.0 948.0 188.0]
+320 | draw · 1 item(s) @4        in=[319] Draw n=1 [808.0 48.0 954.0 194.0] a:body[808.0 48.0 954.0 194.0]
+321 | draw · 1 item(s) @4        in=[320] Draw n=1 [1004.0 54.0 1138.0 188.0] b:body[1004.0 54.0 1138.0 188.0]
+322 | draw · 1 item(s) @4        in=[321] Draw n=1 [998.0 48.0 1144.0 194.0] c:body[998.0 48.0 1144.0 194.0]
+323 | draw · 1 item(s) @4        in=[322] Draw n=1 [54.0 244.0 188.0 378.0] d:body[54.0 244.0 188.0 378.0]
+324 | draw · 1 item(s) @4        in=[323] Draw n=1 [48.0 238.0 194.0 384.0] e:body[48.0 238.0 194.0 384.0]
+325 | draw · 1 item(s) @4        in=[324] Draw n=1 [244.0 244.0 378.0 378.0] f:body[244.0 244.0 378.0 378.0]
+326 | draw · 1 item(s) @4        in=[325] Draw n=1 [238.0 238.0 384.0 384.0] 10:body[238.0 238.0 384.0 384.0]
+327 | draw · 1 item(s) @4        in=[326] Draw n=1 [434.0 244.0 568.0 378.0] 11:body[434.0 244.0 568.0 378.0]
+328 | draw · 1 item(s) @4        in=[327] Draw n=1 [428.0 238.0 574.0 384.0] 12:body[428.0 238.0 574.0 384.0]
+329 | draw · 1 item(s) @4        in=[328] Draw n=1 [624.0 244.0 758.0 378.0] 13:body[624.0 244.0 758.0 378.0]
+330 | draw · 1 item(s) @4        in=[329] Draw n=1 [814.0 244.0 948.0 378.0] 15:body[814.0 244.0 948.0 378.0]
+331 | draw · 1 item(s) @4        in=[330] Draw n=1 [1004.0 244.0 1138.0 378.0] 17:body[1004.0 244.0 1138.0 378.0]
+332 | draw · 1 item(s) @4        in=[331] Draw n=1 [54.0 434.0 188.0 568.0] 19:body[54.0 434.0 188.0 568.0]
+333 | draw · 1 item(s) @4        in=[332] Draw n=1 [48.0 428.0 194.0 574.0] 1a:body[48.0 428.0 194.0 574.0]
+334 | draw · 1 item(s) @4        in=[333] Draw n=1 [244.0 434.0 378.0 568.0] 1b:body[244.0 434.0 378.0 568.0]
+335 | draw · 1 item(s) @4        in=[334] Draw n=1 [238.0 428.0 384.0 574.0] 1c:body[238.0 428.0 384.0 574.0]
+336 | draw · 1 item(s) @4        in=[335] Draw n=1 [434.0 434.0 568.0 568.0] 1d:body[434.0 434.0 568.0 568.0]
+337 | draw · 1 item(s) @4        in=[336] Draw n=1 [428.0 428.0 574.0 574.0] 1e:body[428.0 428.0 574.0 574.0]
+338 | draw · 1 item(s) @4        in=[337] Draw n=1 [624.0 434.0 758.0 568.0] 1f:body[624.0 434.0 758.0 568.0]
+339 | draw · 1 item(s) @4        in=[338] Draw n=1 [618.0 428.0 764.0 574.0] 20:body[618.0 428.0 764.0 574.0]
+340 | draw · 1 item(s) @4        in=[339] Draw n=1 [814.0 434.0 948.0 568.0] 21:body[814.0 434.0 948.0 568.0]
+341 | fill of draw · 1 item(s) @4 in=[340] Halo of 300
+342   s16 drop silhouette @4     in=[] Draw n=1 [808.0 428.0 954.0 574.0] 22:coverage[808.0 428.0 954.0 574.0]
+343   s16 down @4                in=[342] Scale → 0.5
+344   s16 drop blur-X σ6.9 @4    in=[343] Blur σ6.9 X srgb transparent taps 193
+345   s16 drop blur-Y σ6.9 @4    in=[344] Blur σ6.9 Y srgb transparent taps 193
+346   s16 up @4                  in=[345] Scale → 0.5
+347 | s16 drop → spine @4        in=[341, 346] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+348 | fill of s16 drop → spine @4 in=[347] Halo of 306
+349   s16 drop silhouette @4     in=[] Draw n=1 [806.0 426.0 956.0 576.0] 22:coverage+2.0[806.0 426.0 956.0 576.0]
+350   s16 down @4                in=[349] Scale → 0.5
+351   s16 drop blur-X σ3.4 @4    in=[350] Blur σ3.4 X srgb transparent taps 193
+352   s16 drop blur-Y σ3.4 @4    in=[351] Blur σ3.4 Y srgb transparent taps 193
+353   s16 up @4                  in=[352] Scale → 0.5
+354 | s16 drop → spine @4        in=[348, 353] Compose Over colour [0.00, 0.00, 0.00, 0.59] offset 7.0,9.0
+355 | halo of s16 drop → spine @4 in=[354] Halo of 312
+356   s16 down                   in=[355] Scale → 0.5
+357   s16 gather blur-X σ6.3     in=[356] Blur σ6.3 X linear taps 193
+358   s16 gather blur-Y σ6.3     in=[357] Blur σ6.3 Y linear taps 193
+359   s16 up                     in=[358] Scale → 1
+360   s16 gather mask            in=[] Draw n=1 [808.0 428.0 954.0 574.0] 22:coverage[808.0 428.0 954.0 574.0]
+361 | s16 gather → spine         in=[312, 359, 360] Compose MaskedMix
+362   s16 body leaf              in=[] Draw n=1 [808.0 428.0 954.0 574.0] 22:body[808.0 428.0 954.0 574.0]
+363   s16 down                   in=[362] Scale → 1
+364   s16 body blur-X σ2.2       in=[363] Blur σ2.2 X linear transparent taps 193
+365   s16 body blur-Y σ2.2       in=[364] Blur σ2.2 Y linear transparent taps 193
+366   s16 up                     in=[365] Scale → 1
+367 | s16 body → spine           in=[361, 366] Compose Over
+368   s16 inner flood            in=[] Draw n=1 [808.0 428.0 954.0 574.0] 22:coverage[808.0 428.0 954.0 574.0]
+369   s16 down                   in=[368] Scale → 1
+370   s16 punch blur-X σ4.5      in=[369] Blur σ4.5 X srgb transparent taps 193
+371   s16 punch blur-Y σ4.5      in=[370] Blur σ4.5 Y srgb transparent taps 193
+372   s16 up                     in=[371] Scale → 1
+373   s16 inner band             in=[368, 372] EraseBy at -5.0,-6.0
+374 | s16 inner → spine          in=[367, 373] Compose Over colour [0.00, 0.00, 0.00, 0.67]

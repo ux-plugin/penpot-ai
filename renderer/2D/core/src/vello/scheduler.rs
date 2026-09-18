@@ -56,7 +56,7 @@ use std::collections::HashMap;
 use crate::kurbo::{Affine, Rect, Vec2};
 
 use crate::vello::bake::{self, Policy, REC_COUNT, REC_STRIDE};
-use crate::vello::frame_graph::{pad_at, reach_px, scale_rect, BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, FrameGraph, NodeId, Op};
+use crate::vello::frame_graph::{pad_at, reach_px, scale_rect, BlurAxis, ComposeMode, DrawItem, DrawStyle, EdgeClampStyle, FrameGraph, GNode, NodeId, Op};
 use crate::vello::frame_plan::{self, DrawCmd, FramePlan, Pass, Tiles, Window};
 use crate::vello::store_pack::StorePacker;
 use crate::vello::units::{BlurEdge, UnitOp};
@@ -93,7 +93,70 @@ const CLIMB_MARGIN: f32 = 1.25;
 /// and writes what it chose.
 #[must_use]
 pub fn plan(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64, memory: &mut HashMap<u128, f32>) -> FramePlan {
-    Scheduler::new(graph, width, height, max_dim, pages, memory).run()
+    let mut lowered: HashMap<NodeId, f32> = HashMap::new();
+    for last in (0..EXPANSIONS).map(|i| i + 1 == EXPANSIONS) {
+        let expanded = {
+            let mut s = Scheduler::new(graph, width, height, max_dim, pages, memory);
+            s.lowered.clone_from(&lowered);
+            if !lowered.is_empty() {
+                s.set_resolutions();
+            }
+            s.resolve();
+            lowered.extend(s.lowered.iter().map(|(&d, &k)| (d, k)));
+            match s.expanded() {
+                Some(x) => x,
+                None => return s.run(),
+            }
+        };
+        let mut t = Scheduler::new(&expanded.graph, width, height, max_dim, pages, memory);
+        t.demand_pass();
+        if t.decide() && !last {
+            for (&d, &k) in &t.lowered {
+                if let Some(o) = expanded.origin[d] {
+                    lowered.entry(o).and_modify(|v| *v = v.min(k)).or_insert(k);
+                }
+            }
+            continue;
+        }
+        if !t.lowered.is_empty() {
+            t.set_resolutions();
+            t.demand_pass();
+        }
+        return t.run();
+    }
+    unreachable!("the loop returns")
+}
+
+/// How many times a frame may be expanded and re-decided before the last expansion runs as it
+/// is: each pass lowers some pair a rung, and the ladder has this many rungs above its floor.
+const EXPANSIONS: usize = 5;
+
+/// The graph `plan` schedules for `graph` on a `width × height` frame: DAG++, the graph with every
+/// read of the frame's spine past the frame rerouted through a [`Op::Halo`] (see
+/// [`Scheduler::expanded`]); `None` when no read escapes and the graph is planned as it is.
+#[must_use]
+pub fn expanded(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64) -> Option<FrameGraph> {
+    let mut memory = HashMap::new();
+    let mut s = Scheduler::new(graph, width, height, max_dim, pages, &mut memory);
+    s.resolve();
+    s.expanded().map(|x| x.graph)
+}
+
+/// A graph expanded past the frame, with the node each of its nodes stands for in the graph it
+/// came from: itself, a clone's original, nothing for a root, a fill point or a halo.
+struct Expanded {
+    graph: FrameGraph,
+    origin: Vec<Option<NodeId>>,
+}
+
+/// One read of the frame's spine past the frame, or several at one resolution: the spine node
+/// read, the resolution the readers run at, the region they read (frame pixels), and the graph
+/// nodes whose input is rerouted to the halo.
+struct Instance {
+    of: NodeId,
+    k: f32,
+    region: Rect,
+    rewired: Vec<NodeId>,
 }
 
 /// How far past each frame edge an effect reaches, in device pixels, tile-rounded and never
@@ -380,12 +443,17 @@ impl<'a> Scheduler<'a> {
         self.pruned.clear();
     }
 
-    fn run(mut self) -> FramePlan {
+    /// Demand at the pairs' targets, the capacity decision, and demand again at what it decided.
+    fn resolve(&mut self) {
         self.demand_pass();
         if self.decide() {
             self.set_resolutions();
             self.demand_pass();
         }
+    }
+
+    /// The plan, once [`Self::resolve`] has settled every resolution and demand.
+    fn run(mut self) -> FramePlan {
         self.content_pass();
         self.build_arms();
         self.serve();
@@ -424,6 +492,17 @@ impl<'a> Scheduler<'a> {
             let live: f64 = self.values.iter().filter(|v| v.birth <= r && r <= v.last_read).map(|v| v.rect.area()).sum();
             let n = self.values.iter().filter(|v| v.birth <= r && r <= v.last_read).count();
             s.push_str(&format!("  round {r:<3} live {:>5.0}k texels in {n} values\n", live / 1000.0));
+        }
+        for (i, v) in self.values.iter().enumerate() {
+            let kind = match (&v.leaf, &v.ground) {
+                (Some(_), _) => "leaf".to_string(),
+                (None, Some(g)) => format!("ground×{}{}", g.items.len(), if g.copied { "+copy" } else { "" }),
+                (None, None) => "arm".to_string(),
+            };
+            s.push_str(&format!(
+                "  v{i:<3} {:<26} {kind:<11} rounds {}..{} page {} at {:?} rect {:?}\n",
+                self.g.nodes[v.node].label, v.birth, v.last_read, v.page, v.place, v.rect
+            ));
         }
         s
     }
@@ -831,6 +910,177 @@ impl<'a> Scheduler<'a> {
         self.arm_of.insert(h, a);
         let r = self.arm_round(a);
         self.arms[a].round = r;
+    }
+
+    /// DAG++: the graph with every read of the frame's spine past the frame rerouted through a
+    /// halo. One instance per spine node read and resolution read at: the spine from the frame's
+    /// root up to that node cloned under a root draw of its items, every chain whose footprint
+    /// reaches the region read past the frame cloned over a fill point of its level (its leaves
+    /// cloned, its pair closing at the instance's resolution and opening no higher), the other
+    /// composes passed over, and a halo of the node on top, placed before the first node that
+    /// reads it. `None` when no read escapes. Runs after [`Self::resolve`].
+    fn expanded(&self) -> Option<Expanded> {
+        let g = self.g;
+        let n = g.nodes.len();
+        let mut instances: Vec<Instance> = Vec::new();
+        for j in 0..n {
+            if !g.is_spine(j) || self.halo_value(j).is_some() || self.halo_of[j].is_some() {
+                continue;
+            }
+            for &r in &self.readers[j] {
+                if g.is_spine(r) || !self.live(r) {
+                    continue;
+                }
+                let read = tile_round(self.read_of(r, j));
+                let inside = self.frame.x0 <= read.x0 && read.x1 <= self.frame.x1 && self.frame.y0 <= read.y0 && read.y1 <= self.frame.y1;
+                if inside {
+                    continue;
+                }
+                let k = self.k[r];
+                let x = if g.nodes[r].inputs.contains(&j) {
+                    r
+                } else {
+                    g.nodes[r].inputs.iter().copied().find(|&e| self.elided[e] && g.nodes[e].inputs.contains(&j)).expect("a reader reads through an elided scale")
+                };
+                match instances.iter_mut().find(|i| i.of == j && i.k == k) {
+                    Some(i) => {
+                        i.region = i.region.union(read);
+                        if !i.rewired.contains(&x) {
+                            i.rewired.push(x);
+                        }
+                    }
+                    None => instances.push(Instance { of: j, k, region: read, rewired: vec![x] }),
+                }
+            }
+        }
+        if instances.is_empty() {
+            return None;
+        }
+        if std::env::var_os("WV_PLAN_DUMP").is_some() {
+            for inst in &instances {
+                let names: Vec<&str> = inst.rewired.iter().map(|&x| g.nodes[x].label.as_str()).collect();
+                eprintln!("expand: halo of {} at k={} over {:?} for {names:?}", g.nodes[inst.of].label, inst.k, inst.region);
+            }
+        }
+        let mut nodes: Vec<GNode> = Vec::with_capacity(n * 2);
+        let mut origin: Vec<Option<NodeId>> = Vec::with_capacity(n * 2);
+        let mut map: Vec<NodeId> = vec![usize::MAX; n];
+        let mut halos: Vec<NodeId> = vec![usize::MAX; instances.len()];
+        for i in 0..n {
+            for (ix, inst) in instances.iter().enumerate() {
+                if inst.rewired.iter().min() == Some(&i) {
+                    halos[ix] = self.emit_instance(inst, ix, &map, &mut nodes, &mut origin);
+                }
+            }
+            let node = &g.nodes[i];
+            let inputs = node
+                .inputs
+                .iter()
+                .map(|&j| match instances.iter().position(|inst| inst.of == j && inst.rewired.contains(&i)) {
+                    Some(ix) => halos[ix],
+                    None => map[j],
+                })
+                .collect();
+            map[i] = nodes.len();
+            origin.push(Some(i));
+            nodes.push(GNode { op: node.op.clone(), inputs, label: node.label.clone() });
+        }
+        Some(Expanded { graph: FrameGraph { frame: g.frame, background: g.background, nodes }, origin })
+    }
+
+    /// One instance's nodes, appended: the root, the cloned spine with its fill points and chain
+    /// clones, and the halo, whose index is returned. `map` gives the frame's nodes their new
+    /// indices for the halos' `of`.
+    fn emit_instance(&self, inst: &Instance, ix: usize, map: &[NodeId], nodes: &mut Vec<GNode>, origin: &mut Vec<Option<NodeId>>) -> NodeId {
+        let g = self.g;
+        let mut spine = vec![inst.of];
+        while let Some(&below) = g.nodes[*spine.last().expect("one node")].inputs.first() {
+            spine.push(below);
+        }
+        spine.reverse();
+        let mut region = inst.region;
+        let mut cloned = vec![false; spine.len()];
+        for (p, &s) in spine.iter().enumerate().rev() {
+            let Op::Compose { offset, .. } = &g.nodes[s].op else { continue };
+            let v = self.ext[g.nodes[s].inputs[1]] + Vec2::new(f64::from(offset[0]), f64::from(offset[1]));
+            let foot = g.nodes[s].inputs.get(2).map_or(v, |&c| v.intersect(self.ext[c]));
+            let hit = foot.intersect(outside(region, self.frame));
+            if hit.is_zero_area() {
+                continue;
+            }
+            cloned[p] = true;
+            let reach = self.chain_reach(s, inst.k);
+            region = region.union(hit.inflate(reach, reach));
+        }
+        let mut push = |node: GNode, from: Option<NodeId>| {
+            nodes.push(node);
+            origin.push(from);
+            nodes.len() - 1
+        };
+        let label = |s: NodeId| format!("{} @{ix}", g.nodes[s].label);
+        let mut top = match &g.nodes[spine[0]].op {
+            Op::Draw(_) => None,
+            _ => Some(push(GNode { op: Op::Draw(Vec::new()), inputs: vec![], label: format!("root @{ix}") }, None)),
+        };
+        for (p, &s) in spine.iter().enumerate() {
+            match &g.nodes[s].op {
+                Op::Draw(items) => {
+                    let inputs = top.map_or(Vec::new(), |t| vec![t]);
+                    top = Some(push(GNode { op: Op::Draw(items.clone()), inputs, label: label(s) }, None));
+                }
+                Op::Compose { .. } if cloned[p] => {
+                    let below = g.nodes[s].inputs[0];
+                    let fill = push(GNode { op: Op::Halo { of: map[below] }, inputs: vec![top.expect("a spine under a compose")], label: format!("fill of {} @{ix}", g.nodes[below].label) }, None);
+                    let mut clones = HashMap::new();
+                    let value = self.clone_chain(g.nodes[s].inputs[1], fill, inst.k, ix, &mut clones, &mut push);
+                    let mut inputs = vec![fill, value];
+                    if let Some(&c) = g.nodes[s].inputs.get(2) {
+                        inputs.push(self.clone_chain(c, fill, inst.k, ix, &mut clones, &mut push));
+                    }
+                    top = Some(push(GNode { op: g.nodes[s].op.clone(), inputs, label: label(s) }, Some(s)));
+                }
+                _ => {}
+            }
+        }
+        push(GNode { op: Op::Halo { of: map[inst.of] }, inputs: vec![top.expect("a spine")], label: format!("halo of {} @{ix}", g.nodes[inst.of].label) }, None)
+    }
+
+    /// Chain node `i` cloned into instance `ix` (memoised in `clones`): its spine reads go to the
+    /// instance's fill point `fill`, its pair opens no higher than `k` and closes at `k`, its
+    /// keys are the instance's own.
+    fn clone_chain(&self, i: NodeId, fill: NodeId, k: f32, ix: usize, clones: &mut HashMap<NodeId, NodeId>, push: &mut dyn FnMut(GNode, Option<NodeId>) -> NodeId) -> NodeId {
+        if self.g.is_spine(i) {
+            return fill;
+        }
+        if let Some(&c) = clones.get(&i) {
+            return c;
+        }
+        let node = &self.g.nodes[i];
+        let inputs: Vec<NodeId> = node.inputs.iter().map(|&j| self.clone_chain(j, fill, k, ix, clones, push)).collect();
+        let op = match &node.op {
+            Op::Scale { key, .. } => Op::Scale { target: if self.is_down(i) { self.k[i].min(k) } else { k }, key: key ^ ((ix as u128 + 1) << 64) },
+            op => op.clone(),
+        };
+        let c = push(GNode { op, inputs, label: format!("{} @{ix}", node.label) }, Some(i));
+        clones.insert(i, c);
+        c
+    }
+
+    /// How far, in frame pixels, the chain of compose `s` reads past its output when it runs no
+    /// higher than `k`: its heads' pads, summed.
+    fn chain_reach(&self, s: NodeId, k: f32) -> f64 {
+        let mut reach = 0.0;
+        let mut cur = self.g.nodes[s].inputs[1];
+        while !self.g.is_spine(cur) {
+            let node = &self.g.nodes[cur];
+            let kk = self.k[cur].min(k);
+            reach += f64::from(pad_at(&node.op, kk)) / f64::from(kk);
+            match node.inputs.first() {
+                Some(&j) => cur = j,
+                None => break,
+            }
+        }
+        reach
     }
 
     /// The round after which node `i`'s result can be read over `r`: an arm's own round, a leaf's
@@ -1614,7 +1864,7 @@ impl<'a> Scheduler<'a> {
             let w = &mut work[arm.round as usize];
             for &i in &arm.nodes {
                 *w |= match &self.g.nodes[i].op {
-                    Op::Scale { .. } => frame_plan::work::SCALE,
+                    Op::Scale { .. } | Op::Halo { .. } => frame_plan::work::SCALE,
                     Op::Warp(_) => frame_plan::work::WARP,
                     Op::Blur { .. } => frame_plan::work::BLUR,
                     Op::Scatter(_) => frame_plan::work::SCATTER,
@@ -1674,6 +1924,26 @@ impl<'a> Scheduler<'a> {
             cmds.push(DrawCmd::Shapes { items, transform });
             cmds.push(DrawCmd::Unclip);
             page_work.push((v.birth, 0, cmds));
+        }
+        for i in 0..self.g.nodes.len() {
+            let (Some(h), Op::Draw(_)) = (self.halo_of[i], &self.g.nodes[i].op) else { continue };
+            if self.g.nodes[i].inputs.is_empty() || !self.live(i) {
+                continue;
+            }
+            let items = self.pruned.get(&i).cloned().unwrap_or_default();
+            if items.is_empty() {
+                continue;
+            }
+            let v = self.value_of[&h];
+            let birth = self.values[v].birth;
+            let origin = self.values[v].place + Vec2::new(0.0, self.values[v].page as f64 * pitch);
+            let k = f64::from(self.k[i]);
+            let rect = self.out[i] + origin;
+            let round = self.ready(i, self.out[i]).max(birth);
+            Self::tiles_of(rect, &mut tiles[round as usize]);
+            work[round as usize] |= frame_plan::work::DRAW;
+            let transform = Affine::translate(origin) * Affine::scale(k);
+            page_work.push((round, if round > birth { 2 } else { 0 }, vec![DrawCmd::Clip { rect }, DrawCmd::Shapes { items, transform }, DrawCmd::Unclip]));
         }
         for h in 0..self.g.nodes.len() {
             let Op::Halo { of } = self.g.nodes[h].op else { continue };
@@ -2017,7 +2287,7 @@ mod tests {
         s.demand_pass();
         s.build_arms();
         assert!(!s.arm_of.contains_key(&6) && !s.arm_of.contains_key(&11), "no fill arms at k 1");
-        let p = plan(&g, 640, 480, 8192, 4.0, &mut HashMap::new());
+        let p = plan_as_is(&g);
         p.validate().unwrap_or_else(|e| panic!("{e}"));
         let mut fines = 0;
         let mut copies = Vec::new();
@@ -2040,12 +2310,64 @@ mod tests {
 
     #[test]
     fn a_halved_halo_plans_and_validates() {
-        let p = plan(&halo_graph(0.5), 640, 480, 8192, 4.0, &mut HashMap::new());
+        let p = plan_as_is(&halo_graph(0.5));
         p.validate().unwrap_or_else(|e| panic!("{e}"));
         assert!(p.passes.iter().all(|p| !matches!(p, Pass::Copy { .. })), "the fill is an arm, not a copy");
         let frame_draws = p.passes.iter().filter_map(|p| match p { Pass::Frontend { draws } => Some(draws), _ => None }).next().unwrap();
         let halved = frame_draws.iter().filter(|d| matches!(d, DrawCmd::Shapes { transform, .. } if transform.as_coeffs()[0] == 0.5)).count();
         assert_eq!(halved, 1, "the root is drawn once at half resolution");
+    }
+
+    /// The plan of `g` as it is: no expansion.
+    fn plan_as_is(g: &FrameGraph) -> FramePlan {
+        let mut memory = HashMap::new();
+        let mut s = Scheduler::new(g, 640, 480, 8192, 4.0, &mut memory);
+        s.resolve();
+        s.run()
+    }
+
+    fn halos(g: &FrameGraph) -> Vec<(NodeId, NodeId)> {
+        g.nodes.iter().enumerate().filter_map(|(i, n)| match n.op { Op::Halo { of } => Some((i, of)), _ => None }).collect()
+    }
+
+    #[test]
+    fn expansion_reroutes_the_escaping_read_through_a_halo_over_a_root_draw() {
+        let g = nested_gathers();
+        let x = expanded(&g, 640, 480, 8192, 4.0).expect("B reads A past the right edge");
+        x.validate().unwrap_or_else(|e| panic!("{e}\n{}", crate::vello::graph_build::dump(&x)));
+        let [(h, of)] = halos(&x)[..] else { panic!("one halo: {:?}", halos(&x)) };
+        assert_eq!(x.nodes[of].label, "glassA", "the halo is of glass A");
+        let root = x.spine_root(h);
+        assert!(root != 0 && matches!(x.nodes[root].op, Op::Draw(ref items) if items.len() == 1 && items[0].shape == 1), "its spine roots at a draw of the ground: {}", x.nodes[root].label);
+        assert_eq!(x.nodes[h].inputs, vec![root], "A's mask sits inside the frame, so nothing of A is cloned: the halo stands on the root");
+        let down = x.nodes.iter().position(|n| n.label == "down").unwrap();
+        assert_eq!(x.nodes[down].inputs, vec![h], "B's downscale reads the halo");
+        assert!(x.nodes.iter().all(|n| n.label != "glassA @0"), "no clone of A");
+        assert_eq!(x.nodes.len(), g.nodes.len() + 2, "a root and a halo");
+        assert_eq!(x.resolutions()[h], 0.5, "the halo runs at B's k");
+        plan(&g, 640, 480, 8192, 4.0, &mut HashMap::new()).validate().unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    #[test]
+    fn expansion_clones_the_chains_whose_footprint_reaches_past_the_frame() {
+        let mut g = nested_gathers();
+        let Op::Draw(items) = &mut g.nodes[3].op else { unreachable!() };
+        items[0].bounds = Rect::new(500.0, 100.0, 700.0, 300.0);
+        let x = expanded(&g, 640, 480, 8192, 4.0).expect("both reads escape");
+        x.validate().unwrap_or_else(|e| panic!("{e}\n{}", crate::vello::graph_build::dump(&x)));
+        let hs = halos(&x);
+        let of_a = hs.iter().filter(|&&(_, of)| x.nodes[of].label == "glassA").count();
+        let of_ground = hs.iter().filter(|&&(_, of)| x.nodes[of].label == "ground").count();
+        assert_eq!((of_a, of_ground), (1, 2), "a halo of A for B, a halo of the ground for A's own read, and the clone's fill point: {hs:?}");
+        let clone = x.nodes.iter().position(|n| n.label == "glassA @1").expect("A cloned into B's instance");
+        let fill = x.nodes[clone].inputs[0];
+        assert!(matches!(x.nodes[fill].op, Op::Halo { of } if x.nodes[of].label == "ground"), "the clone stands on a fill point of the ground");
+        let k = x.resolutions();
+        assert_eq!((k[clone], k[fill]), (0.5, 0.5), "the clone runs at B's k");
+        let mask = x.nodes[clone].inputs[2];
+        assert!(x.nodes[mask].label.starts_with("maskA @"), "the clone's mask is its own leaf: {}", x.nodes[mask].label);
+        let p = plan(&g, 640, 480, 8192, 4.0, &mut HashMap::new());
+        p.validate().unwrap_or_else(|e| panic!("{e}"));
     }
 
     #[test]

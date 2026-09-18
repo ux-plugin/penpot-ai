@@ -7,7 +7,10 @@
 //! The ceilings are the CURRENT numbers, not targets: they only ever move down, and a phase that
 //! wants to move them must say why in its commit. R4's scale pairs moved them UP once: every soft
 //! chain now runs between a down-scale round and an up-scale round, so rounds and windows doubled
-//! while the pixels each round touches halved. Run:
+//! while the pixels each round touches halved. DAG++ moved the crossing view's regions up once
+//! more: the glass reading past the left edge gets a halo whose spine clones the soft body chain
+//! composed below it (its leaf, its blur, the halo value itself) instead of a flat serve, and the
+//! background blur under it a halo of its own — four values, no extra round. Run:
 //! `cargo run --release --example wv_shape_gate` (`WV_SHAPE_PRINT=1` prints the frame lines).
 
 use render_core::kurbo::Affine;
@@ -33,7 +36,7 @@ struct Ceiling {
 fn ceilings() -> Vec<Ceiling> {
     vec![
         Ceiling { name: "glass-at-rest", pan: (0.0, 0.0), max: [12, 21, 14, 14] },
-        Ceiling { name: "glass-crossing-left", pan: (-450.0, -165.0), max: [12, 19, 14, 14] },
+        Ceiling { name: "glass-crossing-left", pan: (-450.0, -165.0), max: [15, 19, 14, 14] },
     ]
 }
 

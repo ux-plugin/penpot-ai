@@ -1,0 +1,40 @@
+frame [0.0 0.0 2560.0 1086.0] nodes 39 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 3 item(s)           in=[] Draw n=3 [-675.0 -247.5 1125.0 952.5] eb32:body[-675.0 -247.5 1125.0 952.5] eb33:body[-585.0 -157.5 165.0 352.5] eb34:body[-135.0 -22.5 345.0 457.5]
+  1   s1 body leaf               in=[] Draw n=1 [255.0 -127.5 675.0 262.5] eb35:body[255.0 -127.5 675.0 262.5]
+  2   s1 down                    in=[1] Scale → 0.5
+  3   s1 body blur-X σ7.7        in=[2] Blur σ7.7 X linear transparent taps 193
+  4   s1 body blur-Y σ7.7        in=[3] Blur σ7.7 Y linear transparent taps 193
+  5   s1 up                      in=[4] Scale → 1
+  6 | s1 body → spine            in=[0, 5] Compose Over
+  7 | draw · 7 item(s)           in=[6] Draw n=7 [-645.0 -112.5 1035.0 1132.5] eb36:body[285.0 172.5 825.0 592.5] eb37:body[-495.0 412.5 75.0 832.5] eb38:body[135.0 562.5 495.0 892.5] eb39:body[735.0 -112.5 1035.0 262.5] eb3a:body[555.0 547.5 960.0 937.5] eb3d:body[-645.0 592.5 -105.0 1132.5] +1
+  8 | draw · 3 item(s) @0        in=[] Draw n=3 [-675.0 -247.5 1125.0 952.5] eb32:body[-675.0 -247.5 1125.0 952.5] eb33:body[-585.0 -157.5 165.0 352.5] eb34:body[-135.0 -22.5 345.0 457.5]
+  9 | fill of draw · 3 item(s) @0 in=[8] Halo of 0
+ 10   s1 body leaf @0            in=[] Draw n=1 [255.0 -127.5 675.0 262.5] eb35:body[255.0 -127.5 675.0 262.5]
+ 11   s1 down @0                 in=[10] Scale → 0.5
+ 12   s1 body blur-X σ7.7 @0     in=[11] Blur σ7.7 X linear transparent taps 193
+ 13   s1 body blur-Y σ7.7 @0     in=[12] Blur σ7.7 Y linear transparent taps 193
+ 14   s1 up @0                   in=[13] Scale → 1
+ 15 | s1 body → spine @0         in=[9, 14] Compose Over
+ 16 | draw · 7 item(s) @0        in=[15] Draw n=7 [-645.0 -112.5 1035.0 1132.5] eb36:body[285.0 172.5 825.0 592.5] eb37:body[-495.0 412.5 75.0 832.5] eb38:body[135.0 562.5 495.0 892.5] eb39:body[735.0 -112.5 1035.0 262.5] eb3a:body[555.0 547.5 960.0 937.5] eb3d:body[-645.0 592.5 -105.0 1132.5] +1
+ 17 | halo of draw · 7 item(s) @0 in=[16] Halo of 7
+ 18   s2 down                    in=[17] Scale → 1
+ 19   s2 lens warp               in=[18] Warp program 0
+ 20   s2 frost blur-X σ5.4       in=[19] Blur σ5.4 X srgb taps 193
+ 21   s2 frost blur-Y σ5.4       in=[20] Blur σ5.4 Y srgb taps 193
+ 22   s2 lens scatter            in=[21] Scatter
+ 23   s2 up                      in=[22] Scale → 1
+ 24   s2 lens shade              in=[23] Shade
+ 25   s2 lens mask-mix           in=[24, 7] MaskMix program 0
+ 26   s2 gather mask             in=[] Draw n=1 [-285.0 22.5 195.0 382.5] eb40:coverage[-285.0 22.5 195.0 382.5]
+ 27 | s2 gather → spine          in=[7, 25, 26] Compose MaskedMix
+ 28 | draw · 3 item(s) @1        in=[] Draw n=3 [-675.0 -247.5 1125.0 952.5] eb32:body[-675.0 -247.5 1125.0 952.5] eb33:body[-585.0 -157.5 165.0 352.5] eb34:body[-135.0 -22.5 345.0 457.5]
+ 29 | draw · 7 item(s) @1        in=[28] Draw n=7 [-645.0 -112.5 1035.0 1132.5] eb36:body[285.0 172.5 825.0 592.5] eb37:body[-495.0 412.5 75.0 832.5] eb38:body[135.0 562.5 495.0 892.5] eb39:body[735.0 -112.5 1035.0 262.5] eb3a:body[555.0 547.5 960.0 937.5] eb3d:body[-645.0 592.5 -105.0 1132.5] +1
+ 30 | halo of s2 gather → spine @1 in=[29] Halo of 27
+ 31   s3 down                    in=[30] Scale → 0.25
+ 32   s3 gather blur-X σ16.3     in=[31] Blur σ16.3 X linear taps 193
+ 33   s3 gather blur-Y σ16.3     in=[32] Blur σ16.3 Y linear taps 193
+ 34   s3 up                      in=[33] Scale → 1
+ 35   s3 gather mask             in=[] Draw n=1 [375.0 382.5 825.0 772.5] eb41:coverage[375.0 382.5 825.0 772.5]
+ 36 | s3 gather → spine          in=[27, 34, 35] Compose MaskedMix
+ 37 | draw · 1 item(s)           in=[36] Draw n=1 [375.0 382.5 825.0 772.5] eb41:body[375.0 382.5 825.0 772.5]
+ 38 | draw · 1 item(s)           in=[37] Draw n=1 [-585.0 712.5 45.0 802.5] eb42:body[-585.0 712.5 45.0 802.5]

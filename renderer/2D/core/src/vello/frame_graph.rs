@@ -268,7 +268,8 @@ impl FrameGraph {
 
     /// The resolution each node's value runs at, as a fraction of the frame's, when every
     /// [`Op::Scale`] sits at its target: the frame's spine is 1, a `Scale` is its target, a chain
-    /// op runs at its value's resolution, a leaf runs at its readers' (a leaf is drawn straight
+    /// op runs at its value's resolution below a pair and at its reader's above one (so a chain
+    /// with no pair runs at its compose's), a leaf runs at its readers' (a leaf is drawn straight
     /// into the space that reads it), and a [`Op::Halo`] with the spine under it runs at its
     /// reader's (the halo is drawn straight into the resolution that reads it).
     #[must_use]
@@ -315,9 +316,14 @@ impl FrameGraph {
                 _ => k[node.inputs[0]],
             };
         }
-        for (i, node) in self.nodes.iter().enumerate() {
+        for (i, node) in self.nodes.iter().enumerate().rev() {
+            let scale = matches!(node.op, Op::Scale { .. });
             for &j in &node.inputs {
-                if matches!(self.nodes[j].op, Op::Draw(_)) && !self.is_spine(j) {
+                if self.is_spine(j) {
+                    continue;
+                }
+                let leaf = matches!(self.nodes[j].op, Op::Draw(_));
+                if leaf || (!scale && !matches!(self.nodes[j].op, Op::Scale { .. })) {
                     k[j] = k[i];
                 }
             }
