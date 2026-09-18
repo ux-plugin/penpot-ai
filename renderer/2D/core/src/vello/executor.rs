@@ -352,7 +352,7 @@ impl Sink {
     }
 
     /// Bake `shape`'s outline distance into the store rect its item's bounds land on under
-    /// `transform`. The rect must sit inside one store layer.
+    /// `transform`, a slice per store layer the rect crosses.
     #[expect(clippy::too_many_arguments, reason = "one bake is device context + target + shape + placement")]
     fn bake_distance<B: RasterBackend>(
         &mut self,
@@ -372,24 +372,30 @@ impl Sink {
         });
         let Some(segments) = segments else { return };
         let r = texels(transform.transform_rect_bbox(bounds));
-        let layer = r[1] / LAYER_PX;
-        assert_eq!((r[3] - 1) / LAYER_PX, layer, "a distance rect sits inside one store layer");
-        let view = store_tex.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            base_array_layer: layer,
-            array_layer_count: Some(1),
-            ..Default::default()
-        });
-        let segments: Vec<[f32; 4]> = segments
-            .iter()
-            .map(|s| [s[0], s[1] - (layer * LAYER_PX) as f32, s[2], s[3] - (layer * LAYER_PX) as f32])
-            .collect();
+        if r[3] <= r[1] || r[2] <= r[0] {
+            return;
+        }
         backend.phase_flush(enc);
         if self.sdf_baker.is_none() {
             self.sdf_baker = Some(crate::vello::sdf::SdfBaker::new(device));
         }
         let baker = self.sdf_baker.as_ref().expect("sdf baker built");
-        baker.bake_into(device, enc, &view, &segments, (r[0], r[1] - layer * LAYER_PX, r[2] - r[0], r[3] - r[1]), decode, false);
-        self.frame_transient_views.push(view);
+        // The packer places values without regard to where one store layer ends and the next
+        // begins, and a bake renders into one layer's view: a rect that straddles a boundary is
+        // baked a slice per layer. Every texel's distance depends only on its own position and
+        // the whole outline, so the slices join exactly.
+        for layer in r[1] / LAYER_PX..=(r[3] - 1) / LAYER_PX {
+            let base = layer * LAYER_PX;
+            let (y0, y1) = (r[1].max(base), r[3].min(base + LAYER_PX));
+            let view = store_tex.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                base_array_layer: layer,
+                array_layer_count: Some(1),
+                ..Default::default()
+            });
+            let local: Vec<[f32; 4]> = segments.iter().map(|s| [s[0], s[1] - base as f32, s[2], s[3] - base as f32]).collect();
+            baker.bake_into(device, enc, &view, &local, (r[0], y0 - base, r[2] - r[0], y1 - y0), decode, false);
+            self.frame_transient_views.push(view);
+        }
     }
 }
