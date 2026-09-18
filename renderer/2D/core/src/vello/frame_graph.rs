@@ -268,7 +268,7 @@ impl FrameGraph {
 
     /// The resolution each node's value runs at, as a fraction of the frame's, when every
     /// [`Op::Scale`] sits at its target: the frame's spine is 1; a scale opening a chain runs at
-    /// its target and no higher than the spine or leaf it opens from; a chain op runs at its
+    /// its target and no higher than the spine its chain composes on; a chain op runs at its
     /// value's resolution below a pair and at its reader's above one, so a scale closing a chain
     /// and the tail after it run at the compose's, and a chain with no pair does too; a leaf runs
     /// at its readers' (a leaf is drawn straight into the space that reads it); and a
@@ -285,6 +285,16 @@ impl FrameGraph {
     pub fn resolutions_with(&self, decide: &dyn Fn(NodeId, f32) -> f32) -> Vec<f32> {
         let n = self.nodes.len();
         let mut spine = vec![1.0f32; n];
+        let mut cap = vec![1.0f32; n];
+        fn cap_chain(g: &FrameGraph, cap: &mut [f32], i: NodeId, kh: f32) {
+            if g.is_spine(i) || cap[i] == kh {
+                return;
+            }
+            cap[i] = kh;
+            for &j in &g.nodes[i].inputs {
+                cap_chain(g, cap, j, kh);
+            }
+        }
         for (i, node) in self.nodes.iter().enumerate() {
             let Op::Halo { .. } = node.op else { continue };
             if self.stood_on(i) {
@@ -303,6 +313,9 @@ impl FrameGraph {
             let mut s = node.inputs[0];
             loop {
                 spine[s] = kh;
+                for &j in self.nodes[s].inputs.iter().skip(1) {
+                    cap_chain(self, &mut cap, j, kh);
+                }
                 match self.nodes[s].inputs.first() {
                     Some(&below) if self.is_spine(s) => s = below,
                     _ => break,
@@ -312,7 +325,7 @@ impl FrameGraph {
         let mut k = vec![1.0f32; n];
         for (i, node) in self.nodes.iter().enumerate() {
             k[i] = match &node.op {
-                Op::Scale { target, .. } => decide(i, *target).min(k[node.inputs[0]]),
+                Op::Scale { target, .. } => decide(i, *target).min(cap[i]),
                 _ if self.is_spine(i) => spine[i],
                 Op::Draw(_) => 1.0,
                 _ => k[node.inputs[0]],

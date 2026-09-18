@@ -97,43 +97,20 @@ const CLIMB_MARGIN: f32 = 1.25;
 /// and writes what it chose.
 #[must_use]
 pub fn plan(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64, memory: &mut HashMap<u128, f32>) -> FramePlan {
-    let mut lowered: HashMap<NodeId, f32> = HashMap::new();
-    for last in (0..EXPANSIONS).map(|i| i + 1 == EXPANSIONS) {
-        let expanded = {
-            let mut s = Scheduler::new(graph, width, height, max_dim, pages, memory);
-            s.lowered.clone_from(&lowered);
-            if !lowered.is_empty() {
-                s.set_resolutions();
-            }
-            s.resolve();
-            lowered.extend(s.lowered.iter().map(|(&d, &k)| (d, k)));
-            match s.expanded() {
-                Some(x) => x,
-                None => return s.run(),
-            }
-        };
-        let mut t = Scheduler::new(&expanded.graph, width, height, max_dim, pages, memory);
-        t.demand_pass();
-        if t.decide() && !last {
-            for (&d, &k) in &t.lowered {
-                if let Some(o) = expanded.origin[d] {
-                    lowered.entry(o).and_modify(|v| *v = v.min(k)).or_insert(k);
-                }
-            }
-            continue;
-        }
-        if !t.lowered.is_empty() {
-            t.set_resolutions();
-            t.demand_pass();
-        }
-        return t.run();
-    }
-    unreachable!("the loop returns")
+    let expanded = {
+        let mut s = Scheduler::new(graph, width, height, max_dim, pages, memory);
+        s.demand_pass();
+        s.expanded()
+    };
+    let mut t = Scheduler::new(expanded.as_ref().unwrap_or(graph), width, height, max_dim, pages, memory);
+    t.resolve();
+    t.run()
 }
 
-/// How many times a frame may be expanded and re-decided before the last expansion runs as it
-/// is: each pass lowers some pair a rung, and the ladder has this many rungs above its floor.
-const EXPANSIONS: usize = 5;
+/// The resolution the expansion sizes a chain's reach by when deciding which chains an instance
+/// clones: the lowest a pair goes in practice, so a chain that would only enter the region past
+/// the frame once lowered is cloned in advance (a clone nothing demands costs nothing).
+const MEMBERSHIP_K: f32 = 1.0 / 16.0;
 
 /// The graph `plan` schedules for `graph` on a `width × height` frame: DAG++, the graph with every
 /// read of the frame's spine past the frame rerouted through a [`Op::Halo`] (see
@@ -142,15 +119,8 @@ const EXPANSIONS: usize = 5;
 pub fn expanded(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64) -> Option<FrameGraph> {
     let mut memory = HashMap::new();
     let mut s = Scheduler::new(graph, width, height, max_dim, pages, &mut memory);
-    s.resolve();
-    s.expanded().map(|x| x.graph)
-}
-
-/// A graph expanded past the frame, with the node each of its nodes stands for in the graph it
-/// came from: itself, a clone's original, nothing for a root, a fill point or a halo.
-struct Expanded {
-    graph: FrameGraph,
-    origin: Vec<Option<NodeId>>,
+    s.demand_pass();
+    s.expanded()
 }
 
 /// One read of the frame's spine past the frame, or several at one resolution: the spine node
@@ -900,8 +870,9 @@ impl<'a> Scheduler<'a> {
     /// reaches the region read past the frame cloned over a fill point of its level (its leaves
     /// cloned, its scales verbatim), the other
     /// composes passed over, and a halo of the node on top, placed before the first node that
-    /// reads it. `None` when no read escapes. Runs after [`Self::resolve`].
-    fn expanded(&self) -> Option<Expanded> {
+    /// reads it. `None` when no read escapes. Runs on demand at the pairs' targets; the decision
+    /// comes after, on what this returns.
+    fn expanded(&self) -> Option<FrameGraph> {
         let g = self.g;
         let n = g.nodes.len();
         let mut instances: Vec<Instance> = Vec::new();
@@ -945,13 +916,12 @@ impl<'a> Scheduler<'a> {
             }
         }
         let mut nodes: Vec<GNode> = Vec::with_capacity(n * 2);
-        let mut origin: Vec<Option<NodeId>> = Vec::with_capacity(n * 2);
         let mut map: Vec<NodeId> = vec![usize::MAX; n];
         let mut halos: Vec<NodeId> = vec![usize::MAX; instances.len()];
         for i in 0..n {
             for (ix, inst) in instances.iter().enumerate() {
                 if inst.rewired.iter().min() == Some(&i) {
-                    halos[ix] = self.emit_instance(inst, ix, &map, &mut nodes, &mut origin);
+                    halos[ix] = self.emit_instance(inst, ix, &map, &mut nodes);
                 }
             }
             let node = &g.nodes[i];
@@ -964,16 +934,15 @@ impl<'a> Scheduler<'a> {
                 })
                 .collect();
             map[i] = nodes.len();
-            origin.push(Some(i));
             nodes.push(GNode { op: node.op.clone(), inputs, label: node.label.clone() });
         }
-        Some(Expanded { graph: FrameGraph { frame: g.frame, background: g.background, nodes }, origin })
+        Some(FrameGraph { frame: g.frame, background: g.background, nodes })
     }
 
     /// One instance's nodes, appended: the root, the cloned spine with its fill points and chain
     /// clones, and the halo, whose index is returned. `map` gives the frame's nodes their new
     /// indices for the halos' `of`.
-    fn emit_instance(&self, inst: &Instance, ix: usize, map: &[NodeId], nodes: &mut Vec<GNode>, origin: &mut Vec<Option<NodeId>>) -> NodeId {
+    fn emit_instance(&self, inst: &Instance, ix: usize, map: &[NodeId], nodes: &mut Vec<GNode>) -> NodeId {
         let g = self.g;
         let mut spine = vec![inst.of];
         while let Some(&below) = g.nodes[*spine.last().expect("one node")].inputs.first() {
@@ -991,46 +960,45 @@ impl<'a> Scheduler<'a> {
                 continue;
             }
             cloned[p] = true;
-            let reach = self.chain_reach(s, inst.k);
+            let reach = self.chain_reach(s, MEMBERSHIP_K);
             region = region.union(hit.inflate(reach, reach));
         }
-        let mut push = |node: GNode, from: Option<NodeId>| {
+        let mut push = |node: GNode| {
             nodes.push(node);
-            origin.push(from);
             nodes.len() - 1
         };
         let label = |s: NodeId| format!("{} @{ix}", g.nodes[s].label);
         let mut top = match &g.nodes[spine[0]].op {
             Op::Draw(_) => None,
-            _ => Some(push(GNode { op: Op::Draw(Vec::new()), inputs: vec![], label: format!("root @{ix}") }, None)),
+            _ => Some(push(GNode { op: Op::Draw(Vec::new()), inputs: vec![], label: format!("root @{ix}") })),
         };
         for (p, &s) in spine.iter().enumerate() {
             match &g.nodes[s].op {
                 Op::Draw(items) => {
                     let inputs = top.map_or(Vec::new(), |t| vec![t]);
-                    top = Some(push(GNode { op: Op::Draw(items.clone()), inputs, label: label(s) }, None));
+                    top = Some(push(GNode { op: Op::Draw(items.clone()), inputs, label: label(s) }));
                 }
                 Op::Compose { .. } if cloned[p] => {
                     let below = g.nodes[s].inputs[0];
-                    let fill = push(GNode { op: Op::Halo { of: map[below] }, inputs: vec![top.expect("a spine under a compose")], label: format!("fill of {} @{ix}", g.nodes[below].label) }, None);
+                    let fill = push(GNode { op: Op::Halo { of: map[below] }, inputs: vec![top.expect("a spine under a compose")], label: format!("fill of {} @{ix}", g.nodes[below].label) });
                     let mut clones = HashMap::new();
                     let value = self.clone_chain(g.nodes[s].inputs[1], fill, ix, &mut clones, &mut push);
                     let mut inputs = vec![fill, value];
                     if let Some(&c) = g.nodes[s].inputs.get(2) {
                         inputs.push(self.clone_chain(c, fill, ix, &mut clones, &mut push));
                     }
-                    top = Some(push(GNode { op: g.nodes[s].op.clone(), inputs, label: label(s) }, Some(s)));
+                    top = Some(push(GNode { op: g.nodes[s].op.clone(), inputs, label: label(s) }));
                 }
                 _ => {}
             }
         }
-        push(GNode { op: Op::Halo { of: map[inst.of] }, inputs: vec![top.expect("a spine")], label: format!("halo of {} @{ix}", g.nodes[inst.of].label) }, None)
+        push(GNode { op: Op::Halo { of: map[inst.of] }, inputs: vec![top.expect("a spine")], label: format!("halo of {} @{ix}", g.nodes[inst.of].label) })
     }
 
     /// Chain node `i` cloned into instance `ix` (memoised in `clones`): its spine reads go to the
     /// instance's fill point `fill`, its scales keep their targets (the resolution rules make a
     /// clone's pair open no higher than its spine and close at it), its keys are the instance's own.
-    fn clone_chain(&self, i: NodeId, fill: NodeId, ix: usize, clones: &mut HashMap<NodeId, NodeId>, push: &mut dyn FnMut(GNode, Option<NodeId>) -> NodeId) -> NodeId {
+    fn clone_chain(&self, i: NodeId, fill: NodeId, ix: usize, clones: &mut HashMap<NodeId, NodeId>, push: &mut dyn FnMut(GNode) -> NodeId) -> NodeId {
         if self.g.is_spine(i) {
             return fill;
         }
@@ -1043,7 +1011,7 @@ impl<'a> Scheduler<'a> {
             Op::Scale { target, key } => Op::Scale { target: *target, key: key ^ ((ix as u128 + 1) << 64) },
             op => op.clone(),
         };
-        let c = push(GNode { op, inputs, label: format!("{} @{ix}", node.label) }, Some(i));
+        let c = push(GNode { op, inputs, label: format!("{} @{ix}", node.label) });
         clones.insert(i, c);
         c
     }
