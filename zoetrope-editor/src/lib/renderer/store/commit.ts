@@ -15,6 +15,8 @@ import type { Change } from 'penpot-exporter/types'
 import { processChanges } from '../../worker/process-changes'
 import { useWorkspaceStore } from './workspace-store'
 import type { CommitChangesParams } from '../../changes/commit-types'
+import { expandBulkChanges } from '../../changes/bulk-changes'
+import { collectComponentEffects } from '../component/component-sync'
 import { assertValidAddObjChange } from '../../common/shape-id'
 import { docProxy, getActiveOrSinglePageId } from './doc-proxy'
 import {
@@ -144,7 +146,35 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
   const hasDocMetaChanges = docMetaRedoChanges.length > 0
   if (!hasPageChanges && !hasDocMetaChanges) return
 
-  for (const c of redoChanges) {
+  // Component sync: if this commit edits a main instance, its copies follow in
+  // the SAME frame, so one undo reverts both. Skipped on undo/redo replay —
+  // those frames already carry the copy updates recorded here. Reads the
+  // document as it still stands, before anything below applies. Returns empty
+  // immediately for a document with no components, which is the common case.
+  const componentSync = fromHistory
+    ? { redoChanges: [], undoChanges: [] }
+    : collectComponentEffects(
+        expandBulkChanges(redoChanges),
+        explicitPageId ?? getActiveOrSinglePageId(),
+      )
+  const framedRedo =
+    componentSync.redoChanges.length > 0
+      ? [...redoChanges, ...componentSync.redoChanges]
+      : redoChanges
+  // Mirrors redo backwards: the copies revert, then the main edit does.
+  const framedUndo =
+    componentSync.undoChanges.length > 0
+      ? [...componentSync.undoChanges, ...undoChanges]
+      : undoChanges
+
+  // Bulk changes are a history-frame representation only: expand them here so
+  // the reducer, the renderer sync, the worker and every other subscriber keep
+  // seeing plain per-shape changes, while the frame recorded below keeps the
+  // compact form. See changes/bulk-changes.ts.
+  const applyRedo = expandBulkChanges(framedRedo)
+  const applyUndo = expandBulkChanges(framedUndo)
+
+  for (const c of applyRedo) {
     if (c.type === 'add-obj') {
       assertValidAddObjChange(c)
     }
@@ -157,7 +187,7 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
   const pages: ChangesAppliedPagePayload[] = []
   if (hasPageChanges) {
     const fallbackPageId = explicitPageId ?? getActiveOrSinglePageId()
-    const byPage = groupChangesByPageId(redoChanges, fallbackPageId)
+    const byPage = groupChangesByPageId(applyRedo, fallbackPageId)
     for (const [pageId, pageChanges] of byPage) {
       const result = applyChangesLocally({ pageId, redoChanges: pageChanges })
       if (!result) continue
@@ -175,13 +205,13 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
 
   const resolvedFromHistory = fromHistory ?? false
   const resolvedSaveUndo =
-    saveUndo ?? (undoChanges.length > 0 || docMetaUndoChanges.length > 0)
+    saveUndo ?? (framedUndo.length > 0 || docMetaUndoChanges.length > 0)
 
   // Record the undo frame SYNCHRONOUSLY, before the async dispatch — so it
   // exists the instant docProxy is mutated and `commitChanges` yields.
   recordHistoryFrame({
-    redoChanges,
-    undoChanges,
+    redoChanges: framedRedo,
+    undoChanges: framedUndo,
     docMetaRedoChanges,
     docMetaUndoChanges,
     fromHistory: resolvedFromHistory,
@@ -190,8 +220,8 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
   })
 
   await emitChangesApplied({
-    redoChanges,
-    undoChanges,
+    redoChanges: applyRedo,
+    undoChanges: applyUndo,
     docMetaRedoChanges,
     docMetaUndoChanges,
     pages,

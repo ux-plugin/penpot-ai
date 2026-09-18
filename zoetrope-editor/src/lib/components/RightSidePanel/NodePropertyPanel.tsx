@@ -5,6 +5,7 @@ import { MotionRestSection } from './Sections/MotionRestSection'
 import { AppearanceSection } from './Sections/AppearanceSection'
 import { ShapeSection } from './Sections/ShapeSection'
 import { SlotSection } from './Sections/SlotSection'
+import { ComponentSection } from './Sections/ComponentSection'
 import { VectorEditSection } from './Sections/VectorEditSection'
 import { TypographySection } from './Sections/TypographySection'
 import { isTextNode } from './Sections/text-typography'
@@ -87,6 +88,8 @@ export function NodePropertyPanel({ nodeId, initialNode, readOnly }: NodePropert
       <ShapeSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
 
       <SlotSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
+
+      <ComponentSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
 
       <VectorEditSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
 

@@ -129,6 +129,40 @@ export function isSlotShape(shape: LocalNode | null | undefined): shape is SlotS
   return shape != null && shape.type === 'slot'
 }
 
+/**
+ * Component membership. A copy is an ordinary frame wearing the upstream
+ * component fields, so these are plain field reads rather than type narrowings —
+ * there is deliberately no `'copy'` shape type.
+ *
+ * Not to be confused with `isComponentInstance` above, which tests the exporter's
+ * `'instance'` node type. That type only ever arrives from a Figma import and
+ * carries no `componentId` from our library, so imported content never satisfies
+ * the guards below.
+ */
+
+/** Root of the *main* instance — the shape a component's library record points at. */
+export function isComponentMain(shape: PenpotNode | null | undefined): boolean {
+  return shape != null && shape.mainInstance === true && shape.componentId != null
+}
+
+/** Root of a *copy* — carries the component link but is not the main. */
+export function isComponentCopyRoot(shape: PenpotNode | null | undefined): boolean {
+  return (
+    shape != null &&
+    shape.componentRoot === true &&
+    shape.componentId != null &&
+    shape.mainInstance !== true
+  )
+}
+
+/**
+ * Any node inside a copy, root included. `shapeRef` is what every copied node
+ * carries to name its twin in the main; the main's own nodes never have one.
+ */
+export function isInComponentCopy(shape: PenpotNode | null | undefined): boolean {
+  return shape != null && shape.shapeRef != null
+}
+
 export function hasShapes(node: PenpotNode): node is PenpotNode & { shapes: string[] } {
   return 'shapes' in node && Array.isArray((node as { shapes?: unknown }).shapes)
 }

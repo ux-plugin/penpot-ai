@@ -25,6 +25,16 @@ import {
 } from '../../history/history-store'
 import { armShaderDrag, consumeShaderDragClick } from '../../renderer/signals/shader-drag'
 import { ShaderThumbnail } from '../RightSidePanel/shader-thumbnails'
+import {
+  instantiateComponent,
+  listComponents,
+} from '../../renderer/component/component-crud'
+import {
+  armComponentDrag,
+  consumeComponentDragClick,
+} from '../../renderer/signals/component-drag'
+import { setSelectedIds } from '../../renderer/store/document-selection'
+import { ComponentThumbnail } from './ComponentThumbnail'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
@@ -91,6 +101,66 @@ function ShadersSection({ selectedIds }: { selectedIds: readonly string[] }) {
   )
 }
 
+/**
+ * Components declared in this document. Clicking one places a copy on the current
+ * page, beside its main; the new copy is selected so the inspector opens on it.
+ */
+function ComponentsSection() {
+  const components = listComponents()
+
+  const place = useCallback(async (componentId: string) => {
+    const copyId = await instantiateComponent(componentId)
+    if (copyId) setSelectedIds(new Set([copyId]))
+  }, [])
+
+  return (
+    <section className="space-y-2">
+      <div className="flex items-baseline justify-between gap-2 px-1">
+        <h3 className="shrink-0 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+          Components
+        </h3>
+        <span className="truncate text-[10px] text-muted-foreground/70">
+          {components.length > 0 ? 'Click or drag' : ''}
+        </span>
+      </div>
+
+      {components.length === 0 ? (
+        <p className="px-1 text-xs text-muted-foreground">
+          None yet. Select a frame and use &ldquo;Create component&rdquo; in the right panel.
+        </p>
+      ) : (
+        <ul className="space-y-0.5">
+          {components.map((component) => (
+            <li key={component.id}>
+              <button
+                type="button"
+                onPointerDown={(e) => armComponentDrag(component, e)}
+                onClick={() => {
+                  // A press that turned into a drag suppresses the trailing click.
+                  if (consumeComponentDragClick()) return
+                  void place(component.id)
+                }}
+                title={`Place a copy of "${component.name}" — or drag it onto the canvas`}
+                className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs transition hover:bg-accent"
+              >
+                <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-card p-0.5">
+                  <ComponentThumbnail component={component} className="size-full" />
+                </span>
+                <span className="min-w-0 flex-1 truncate">{component.name}</span>
+                {component.props.length > 0 && (
+                  <span className="shrink-0 text-[10px] text-muted-foreground/70">
+                    {component.props.length} prop{component.props.length === 1 ? '' : 's'}
+                  </span>
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 /** The scrollable body of the Assets tab. More asset kinds become sibling sections. */
 export function AssetsSections() {
   const snap = useSnapshot(docProxy)
@@ -101,8 +171,9 @@ export function AssetsSections() {
 
   return (
     <div className="space-y-4">
+      <ComponentsSection />
       <ShadersSection selectedIds={selectedIds} />
-      {/* Future: 3D models, components, saved materials — each its own section. */}
+      {/* Future: 3D models, saved materials — each its own section. */}
     </div>
   )
 }

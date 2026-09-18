@@ -9,7 +9,8 @@
  */
 import type { Point } from 'penpot-exporter/types'
 import type { IndexedPage, IndexedShape } from '../../worker/types'
-import { findContainerAtPoint } from '../../components/LayersPanel/reparent'
+import { findContainerAtPoint, findSlotAtPoint } from '../../components/LayersPanel/reparent'
+import { isFrameShape } from '../../worker/geometry/shapes'
 
 type Axis = 'x' | 'y'
 
@@ -242,6 +243,54 @@ export interface DropIntent {
    * exact reflowed rect. Null for non-flex targets.
    */
   footprint: { x: number; y: number; width: number; height: number } | null
+  /** Optional caption drawn above the target — names a non-obvious drop outcome. */
+  label?: string
+}
+
+/** Caption shown while a frame is armed to become a slot's view. */
+export const SLOT_DROP_LABEL = 'Show here'
+
+/**
+ * Resolve a drag into "assign this frame as the slot's view", or null.
+ *
+ * A slot is not a container, so the ordinary reparent path skips straight past
+ * it — dragging a frame over a slot does nothing on its own, which is why this
+ * gesture has to be resolved separately rather than falling out of reparenting.
+ *
+ * Deliberately narrow, because an earlier attempt at this was reverted for being
+ * ambiguous: any frame whose centre crossed a slot got captured, so moving a
+ * frame that merely overlapped a slot became impossible. The gesture now needs
+ * all three of:
+ *  - a modifier held (the caller gates on it), leaving a plain drag untouched;
+ *  - exactly one dragged shape, since "which view is active now" has no answer
+ *    for a multi-selection;
+ *  - the *cursor* over the slot rather than the shape's centre — that's where
+ *    the user is looking, and it matches the drop-preview convention.
+ */
+export function resolveSlotDropIntent(
+  selectedIds: ReadonlySet<string>,
+  page: IndexedPage,
+  point: Point,
+): DropIntent | null {
+  if (selectedIds.size !== 1) return null
+  const objects = page.objects as Record<string, IndexedShape>
+  const draggedId = selectedIds.values().next().value as string
+  if (!isFrameShape(objects[draggedId])) return null
+
+  const slotId = findSlotAtPoint(objects, point, [draggedId])
+  if (!slotId) return null
+  const sr = objects[slotId]?.selrect
+  if (!sr) return null
+
+  return {
+    targetId: slotId,
+    hasLayout: false,
+    index: 0,
+    line: null,
+    targetRect: { x: sr.x, y: sr.y, width: sr.width ?? 0, height: sr.height ?? 0 },
+    footprint: null,
+    label: SLOT_DROP_LABEL,
+  }
 }
 
 /** First selected shape that has a selrect — used to size the ghost footprint. */

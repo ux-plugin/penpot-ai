@@ -21,6 +21,7 @@ export function useImperativeDropIntent(
   rectRef: RefObject<SVGRectElement | null>,
   lineRef: RefObject<SVGLineElement | null>,
   ghostRef: RefObject<SVGRectElement | null>,
+  labelRef?: RefObject<SVGTextElement | null>,
 ): void {
   useLayoutEffect(() => {
     return effect(() => {
@@ -30,9 +31,11 @@ export function useImperativeDropIntent(
       const r = rectRef.current
       const l = lineRef.current
       const ghost = ghostRef.current
+      const label = labelRef?.current
       if (!g || !r || !l || !ghost) return
       if (!intent || !vp || !Number.isFinite(vp.zoom) || vp.zoom <= 0) {
         g.style.display = 'none'
+        if (label) label.style.display = 'none'
         return
       }
       const zoom = vp.zoom
@@ -58,11 +61,27 @@ export function useImperativeDropIntent(
         l.style.display = 'none'
       }
 
+      // Caption for a drop whose outcome isn't obvious from the highlight alone
+      // (a slot assignment looks like a reparent otherwise). Sits just above the
+      // target; the font is scaled by 1/zoom so it stays legible at any zoom.
+      if (label) {
+        if (intent.label) {
+          label.style.display = ''
+          label.textContent = intent.label
+          const size = Math.min(13 / zoom, 40)
+          label.setAttribute('x', String(tr.x))
+          label.setAttribute('y', String(tr.y - 6 / zoom))
+          label.setAttribute('font-size', String(size))
+        } else {
+          label.style.display = 'none'
+        }
+      }
+
       // The footprint ghost is now drawn by the WASM placeholder itself (a dashed
       // outline mirroring the dragged shape), so the overlay no longer draws a rect
       // for it. `intent.footprint` is still set upstream to keep the insertion line
       // hidden while the placeholder is showing.
       ghost.style.display = 'none'
     })
-  }, [gRef, rectRef, lineRef, ghostRef])
+  }, [gRef, rectRef, lineRef, ghostRef, labelRef])
 }

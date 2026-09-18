@@ -58,6 +58,7 @@ import {
 import { usePointerDownFactory } from './usePointerDownFactory'
 import { useGradientFill } from './useGradientFill'
 import { useImperativeDropIntent } from './useImperativeDropIntent'
+import { useImperativeSlotHover } from './useImperativeSlotHover'
 
 export interface SelectionOverlayProps {
   canvasSize: { width: number; height: number }
@@ -76,11 +77,14 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   const dropRectRef = useRef<SVGRectElement>(null)
   const dropLineRef = useRef<SVGLineElement>(null)
   const dropGhostRef = useRef<SVGRectElement>(null)
+  const dropLabelRef = useRef<SVGTextElement>(null)
+  const slotHoverLabelRef = useRef<SVGTextElement>(null)
 
   useViewBoxSync(svgRef, canvasSize)
   useImperativeSelectionRect(hotGRef, selRectRef)
   useImperativeCornerHandles(cornerHandlesGRef, cornerRectRefs, cornerOverrideCursorRef, cornerPointerRef)
-  useImperativeDropIntent(dropIntentGRef, dropRectRef, dropLineRef, dropGhostRef)
+  useImperativeDropIntent(dropIntentGRef, dropRectRef, dropLineRef, dropGhostRef, dropLabelRef)
+  useImperativeSlotHover(slotHoverLabelRef)
 
   const canvasActor = useCanvasActor()
   const doc = useSnapshot(docProxy)
@@ -367,10 +371,27 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
             })()}
         </g>
       )}
+      {/* Empty-slot hover chrome: an unpainted slot is invisible by design, so
+          hovering reveals it. Only the NAME lives here — the outline is traced by
+          the renderer over the slot's real geometry (see useImperativeSlotHover).
+          Editor-only either way: never in the document. */}
+      <text
+        ref={slotHoverLabelRef}
+        fill="#7F77DD"
+        fontWeight={500}
+        style={{ display: 'none', pointerEvents: 'none', userSelect: 'none' }}
+      />
+
       <g ref={dropIntentGRef} style={{ display: 'none', pointerEvents: 'none' }}>
         <rect ref={dropRectRef} fill="none" stroke="#378ADD" rx={6} style={{ pointerEvents: 'none' }} />
         <rect ref={dropGhostRef} fill="rgba(55,138,221,0.10)" stroke="#378ADD" rx={4} style={{ pointerEvents: 'none' }} />
         <line ref={dropLineRef} stroke="#E24B4A" strokeLinecap="round" style={{ pointerEvents: 'none' }} />
+        <text
+          ref={dropLabelRef}
+          fill="#378ADD"
+          fontWeight={500}
+          style={{ display: 'none', pointerEvents: 'none', userSelect: 'none' }}
+        />
       </g>
       <g ref={hotGRef} style={{ display: 'none' }}>
         <rect

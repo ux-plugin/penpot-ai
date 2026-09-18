@@ -14,6 +14,7 @@ import { getCommittedNodeOnActivePage } from '../properties/commit-node-properti
 import { isSlotShape } from '../../worker/geometry/shapes'
 import { buildReparentChanges } from '../../components/LayersPanel/reparent'
 import { buildTransformModObjPair } from '../../changes/changes-builder'
+import { subtreeOf } from '../../common/subtree'
 import { applyTransformToNode } from '../geom/apply-transform-to-node'
 import { translateMatrix } from '../geom/matrix'
 import { setActiveView } from './slot-edit'
@@ -34,21 +35,6 @@ const VIEW_GAP = 40
 /** A `mod-obj` that merges `assign` into the node (the pipeline's 'assign' op). */
 function modObj(pageId: string, id: string, assign: Record<string, unknown>): ModObjChange {
   return { type: 'mod-obj', id, pageId, operations: [{ type: 'assign', value: assign }] }
-}
-
-/** Every descendant id of `rootId` (excluding it), depth-first. */
-function subtreeOf(objects: Record<string, IndexedShape>, rootId: string): string[] {
-  const out: string[] = []
-  const stack = [...(objects[rootId]?.shapes ?? [])]
-  while (stack.length) {
-    const id = stack.pop()
-    if (id == null) continue
-    const node = objects[id]
-    if (!node) continue
-    out.push(id)
-    for (const child of node.shapes ?? []) stack.push(child)
-  }
-  return out
 }
 
 /** Ordinal for the default name of the Nth view created for a slot. */

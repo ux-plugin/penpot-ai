@@ -44,7 +44,8 @@ import {
   collectTextGrowTypes,
   detectReparentTargets,
 } from './reparent-detection'
-import { resolveDropIntent } from './drop-intent'
+import { resolveDropIntent, resolveSlotDropIntent } from './drop-intent'
+import { setActiveView } from '../slot/slot-edit'
 import {
   createDropPlaceholder,
   positionDropPlaceholder,
@@ -134,6 +135,9 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
   // commit so the drop lands where the gap was — recomputing at release can differ
   // because the placeholder (and its gap) is gone and children snap back.
   let lastPreview: { targetId: string; index: number } | null = null
+  // The slot armed by the last frame (Alt held, cursor over a slot), or null.
+  // Read at release to assign the view instead of committing a move.
+  const slotDropRef: { current: string | null } = { current: null }
   const destroyPlaceholder = (): void => {
     if (!placeholder) return
     try {
@@ -190,11 +194,27 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
         const point = cursor ?? { x: baselineRect.center.x + worldDelta.x, y: baselineRect.center.y + worldDelta.y }
         const intent = resolveDropIntent(selectedIds, page, point)
 
+        // A slot is an ordinary drop target: cursor over it arms "fill this
+        // slot", the same way the cursor over a container arms a reparent. No
+        // modifier — that was a workaround for an ambiguity the cursor already
+        // resolves. The 2026-06-30 revert came from testing the dragged shape's
+        // *centre*, which captured any frame that merely drifted across a slot
+        // and made frames near slots unmovable; the cursor is where the user is
+        // looking, and it's the rule every other drop target uses.
+        //
+        // Everything below is left as it was — an armed slot simply presents an
+        // empty reparent map, so the existing "not over any target" path runs
+        // and the slot intent replaces the reparent one on the overlay.
+        const slotIntent = resolveSlotDropIntent(selectedIds, page, cursor ?? point)
+        slotDropRef.current = slotIntent?.targetId ?? null
+
         // Reparent detection (cursor-based) drives BOTH the faithful "held shape"
         // snapshot overlay and the flex gap preview. It returns a target only when
         // the container differs from the shape's current parent — genuine
         // reparenting, not a same-parent reorder.
-        const probeTargets = detectReparentTargets(selectedIds, page, worldDelta, cursor)
+        const probeTargets = slotIntent
+          ? new Map<string, { parentId: string; index: number }>()
+          : detectReparentTargets(selectedIds, page, worldDelta, cursor)
         const firstTarget = probeTargets.values().next().value as
           | { parentId: string; index: number }
           | undefined
@@ -309,7 +329,7 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
           destroyPlaceholder()
           lastPreview = null
         }
-        dropIntentSignal.value = intent
+        dropIntentSignal.value = slotIntent ?? intent
       }
 
       // Unified gesture push: clean → set-structure → propagate('child') → set
@@ -358,6 +378,21 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
         return
       }
       const delta = lastEventDeltaRef.current
+
+      // Released over an armed slot: the slot now *references* this frame, so
+      // there is no geometry to commit — the frame snaps back to where it was
+      // and only the slot's `views`/`activeView` change (one history frame, via
+      // the shared slot write-path).
+      const armedSlotId = slotDropRef.current
+      if (armedSlotId) {
+        const viewId = selectedIds.values().next().value as string
+        renderer.cleanModifiers()
+        renderer.flushRenderSync()
+        wasmSelRect.value = querySelectionRect(renderer, selectedIds)
+        movePreviewWorldDelta.value = { x: 0, y: 0 }
+        void setActiveView(armedSlotId, viewId)
+        return
+      }
 
       // Motion authoring: with the Motion tab open and the playhead off the rest
       // frame, a single-shape drag becomes an x/y keyframe (an offset from rest)

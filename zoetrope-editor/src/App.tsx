@@ -4,6 +4,7 @@ import { CanvasWrapper } from './lib/renderer/canvas-wrapper'
 import { ShapeToolbar } from './lib/components/ShapeToolbar'
 import { CursorHint } from './lib/components/CursorHint'
 import { ShaderDragOverlay } from './lib/components/Overlay/ShaderDragOverlay'
+import { ComponentDragOverlay } from './lib/components/Overlay/ComponentDragOverlay'
 import { LayersPanel } from './lib/components/LayersPanel/LayersPanel'
 import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { undo, redo } from './lib/page-crud'
@@ -204,6 +205,7 @@ function App() {
             <>
               {mode === 'design' && <CursorHint />}
               <ShaderDragOverlay />
+              <ComponentDragOverlay />
               <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
               {error && (
                 <div

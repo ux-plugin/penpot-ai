@@ -15,6 +15,7 @@
  */
 
 import type { Uuid } from 'penpot-exporter/types'
+import type { LocalComponent } from '../common/component'
 import type { DocumentMeta } from '../renderer/store/doc-proxy'
 import { emptyTokensLib } from '../tokens/types'
 import type { Token, TokenSet, TokenTheme, TokensLib } from '../tokens/types'
@@ -73,6 +74,22 @@ export interface SetActiveThemesChange {
   activeThemes: Uuid[]
 }
 
+// ── Component-library variants (P1) ──────────────────────────────────────────
+
+export interface AddComponentChange {
+  type: 'add-component'
+  component: LocalComponent
+}
+export interface ModComponentChange {
+  type: 'mod-component'
+  /** Replaces the record with this `component.id`. */
+  component: LocalComponent
+}
+export interface DelComponentChange {
+  type: 'del-component'
+  id: Uuid
+}
+
 export type DocMetaChange =
   | AddTokenChange
   | ModTokenChange
@@ -84,6 +101,9 @@ export type DocMetaChange =
   | ModThemeChange
   | DelThemeChange
   | SetActiveThemesChange
+  | AddComponentChange
+  | ModComponentChange
+  | DelComponentChange
 
 // Immutable helpers for the token arm — never mutate the input lib/set.
 function withTokens(meta: DocumentMeta, fn: (lib: TokensLib) => TokensLib): DocumentMeta {
@@ -165,6 +185,20 @@ export function processDocMetaChange(
       }))
     case 'set-active-themes':
       return withTokens(meta, (lib) => ({ ...lib, activeThemes: [...change.activeThemes] }))
+    case 'add-component':
+    case 'mod-component':
+      // Add and modify are the same write — the record is replaced by id. Undo of
+      // an add is a `del-component`; undo of a modify is a `mod-component` holding
+      // the previous record.
+      return {
+        ...meta,
+        components: { ...(meta.components ?? {}), [change.component.id]: change.component },
+      }
+    case 'del-component': {
+      const components = { ...(meta.components ?? {}) }
+      delete components[change.id]
+      return { ...meta, components }
+    }
     default: {
       const _exhaustive: never = change
       void _exhaustive

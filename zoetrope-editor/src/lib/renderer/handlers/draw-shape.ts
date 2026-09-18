@@ -153,14 +153,15 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
                 })
                 break
               case 'slot':
-                // An empty outlet box: light fill, dashed-looking subtle stroke.
-                // Renders as a clipped frame (translateShapeType maps slot→frame)
-                // until a view is shown in it.
-                newNode = createSlot({
-                  ...geom,
-                  fillColor: '#F5F3FF',
-                  fillOpacity: 1,
-                })
+                // An empty slot paints NOTHING: it reserves its space and stays
+                // out of the design's way, so a shell reads as the real thing
+                // rather than as a grid of placeholder boxes. It is still
+                // selectable (hit-testing is bounds-based, not fill-based) and
+                // hovering reveals its box and name — see slot/slot-hover.
+                // Giving it a fill in the inspector is how you opt into a
+                // visible placeholder, and that fill is then real content: it
+                // shows in the preview and in generated code too.
+                newNode = createSlot({ ...geom })
                 break
               case 'text':
                 newNode = createText({

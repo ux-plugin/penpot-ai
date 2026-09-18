@@ -2,7 +2,7 @@
  * Commit record for Penpot-shaped pipeline (redo/undo change vectors).
  */
 
-import type { Change } from 'penpot-exporter/types'
+import type { LocalChange } from './bulk-changes'
 import type { DocMetaChange } from './doc-meta-change'
 
 /**
@@ -13,8 +13,13 @@ import type { DocMetaChange } from './doc-meta-change'
  * page arm. A single undo reverts the whole frame atomically.
  */
 export interface CommitFrame {
-  redoChanges: Change[]
-  undoChanges: Change[]
+  /**
+   * Kept in the form the caller wrote them, bulk changes included — the frame is
+   * what the undo stack retains for the session, so compression matters here and
+   * nowhere else. `commitChanges` expands on the way out. See ./bulk-changes.
+   */
+  redoChanges: LocalChange[]
+  undoChanges: LocalChange[]
   docMetaRedoChanges?: DocMetaChange[]
   docMetaUndoChanges?: DocMetaChange[]
   /**
@@ -27,8 +32,8 @@ export interface CommitFrame {
 }
 
 export interface CommitChangesParams {
-  redoChanges: Change[]
-  undoChanges?: Change[]
+  redoChanges: LocalChange[]
+  undoChanges?: LocalChange[]
   /** Doc-meta variants applied to `docProxy.meta` (library CRUD). Optional. */
   docMetaRedoChanges?: DocMetaChange[]
   docMetaUndoChanges?: DocMetaChange[]

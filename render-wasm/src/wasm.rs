@@ -3,6 +3,7 @@ pub mod blurs;
 pub mod fills;
 pub mod fonts;
 pub mod glass;
+pub mod highlight;
 pub mod layouts;
 pub mod material;
 pub mod mem;
