@@ -240,6 +240,11 @@ struct Scheduler<'a> {
     g: &'a FrameGraph,
     frame: Rect,
     h: f64,
+    /// The store's width in texels: the frame's plus, on each side, the widest ring any chain in
+    /// the graph reads past its output at full resolution — so a value that is the frame grown by
+    /// its pads fits at k 1 and the width rule lowers nothing for the frame's own size; capped by
+    /// the device's texture dimension. Whole tiles.
+    store_w: f64,
     /// The texels of store the plan counts on below the frame.
     budget: f64,
     /// What each pair ran at last frame and runs at this one, by its key.
@@ -298,6 +303,25 @@ fn outside(r: Rect, f: Rect) -> Rect {
     bands.into_iter().filter(|b| b.x1 > b.x0 && b.y1 > b.y0).reduce(|a, b| a.union(b)).unwrap_or(Rect::ZERO)
 }
 
+/// How far, in frame pixels, the chain of compose `s` reads past its output at full resolution:
+/// its heads' pads, summed, each with the tile its read is rounded out to.
+fn chain_ring(g: &FrameGraph, s: NodeId) -> f64 {
+    let mut ring = 0.0;
+    let mut cur = g.nodes[s].inputs[1];
+    while !g.is_spine(cur) {
+        let node = &g.nodes[cur];
+        let pad = f64::from(pad_at(&node.op, 1.0));
+        if pad > 0.0 {
+            ring += pad + TILE_W;
+        }
+        match node.inputs.first() {
+            Some(&j) => cur = j,
+            None => break,
+        }
+    }
+    ring
+}
+
 fn is_head(op: &Op) -> bool {
     matches!(op, Op::Blur { .. } | Op::Warp(_) | Op::Scatter(_) | Op::Scale { .. })
 }
@@ -311,6 +335,10 @@ impl<'a> Scheduler<'a> {
         let frame = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
         let pitch = (f64::from(height) / TILE_H).ceil() * TILE_H;
         let rows = (f64::from(max_dim) - pitch).max(0.0).min(pages * pitch);
+        let ring = (0..g.nodes.len()).filter(|&s| matches!(g.nodes[s].op, Op::Compose { .. })).map(|s| chain_ring(g, s)).fold(0.0, f64::max);
+        let margin = ((ring + TILE_W) / TILE_W).ceil() * TILE_W;
+        let frame_w = (frame.x1 / TILE_W).ceil() * TILE_W;
+        let store_w = (frame_w + 2.0 * margin).min((f64::from(max_dim) / TILE_W).floor() * TILE_W).max(frame_w);
         let n = g.nodes.len();
         let mut halo_of = vec![None; n];
         for i in 0..n {
@@ -333,7 +361,8 @@ impl<'a> Scheduler<'a> {
             g,
             frame,
             h: f64::from(height),
-            budget: rows * (frame.x1 / TILE_W).ceil() * TILE_W * STORE_FILL,
+            store_w,
+            budget: rows * store_w * STORE_FILL,
             memory,
             lowered: HashMap::new(),
             ext: Vec::new(),
@@ -1369,10 +1398,9 @@ impl<'a> Scheduler<'a> {
         }
     }
 
-    /// The store's width: the frame's, rounded up to whole tiles so a value against the right edge
-    /// keeps its last column.
+    /// The store's width: the frame's plus the widest chain ring on each side, whole tiles.
     fn store_width(&self) -> f64 {
-        (self.frame.x1 / TILE_W).ceil() * TILE_W
+        self.store_w
     }
 
     /// How many pages the frame rents below its own rows: enough for the lowest value's rows.
@@ -1796,7 +1824,7 @@ impl<'a> Scheduler<'a> {
 
         let mut passes = vec![Pass::Clear { rect: self.frame, colour: self.g.background.components }];
         if pages > 0 {
-            passes.push(Pass::Clear { rect: Rect::new(0.0, self.h, self.frame.x1, store_h), colour: [0.0; 4] });
+            passes.push(Pass::Clear { rect: Rect::new(0.0, self.h, self.store_width(), store_h), colour: [0.0; 4] });
         }
         passes.push(Pass::Frontend { draws });
         for (r, list) in tiles.iter_mut().enumerate() {
@@ -1878,7 +1906,7 @@ mod tests {
         let g = graph();
         let p = plan(&g, 640, 480, 8192, 4.0, &mut HashMap::new());
         p.validate().unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(p.store, (640, 480 * 2));
+        assert_eq!(p.store, (640 + 2 * 96, 480 * 2), "the frame plus the shadow's two blur rings and their rounding on each side, whole tiles; two pages");
         let fines: Vec<&Pass> = p.passes.iter().filter(|p| matches!(p, Pass::Fine { .. })).collect();
         assert_eq!(fines.len(), 4, "rounds 0..3");
         for (r, f) in fines.iter().enumerate() {
@@ -2216,7 +2244,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_wider_than_the_store_is_lowered_until_it_fits() {
+    fn the_store_is_as_wide_as_the_frame_plus_the_widest_ring_so_only_area_lowers_a_run() {
         let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
         let g = FrameGraph {
             frame,
@@ -2235,18 +2263,22 @@ mod tests {
         let mut memory = HashMap::new();
         let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut memory);
         s.demand_pass();
-        assert!(s.out[2].width() > 640.0, "at target 1 the backdrop the blur needs is wider than the store: {:?}", s.out[2]);
-        assert!(s.decide());
+        assert_eq!(s.store_width(), 640.0 + 2.0 * 672.0, "two σ100 blurs read 308 px past their output each, plus a tile of rounding per read: the store grows by that ring on both sides");
+        assert!(s.out[2].width() > 640.0 && s.out[2].width() <= s.store_width(), "at target 1 the backdrop the blur needs is wider than the frame and no wider than the store: {:?}", s.out[2]);
+        assert!(s.decide(), "the pair's two links together exceed the store's texels");
         s.set_resolutions();
         s.demand_pass();
-        assert_eq!(s.k[2], 0.25, "two rungs down fit");
-        assert!(s.out[1].width() <= 640.0 && s.out[2].width() <= 640.0, "{:?} {:?}", s.out[1], s.out[2]);
+        assert_eq!(s.k[2], 0.5, "one rung down fits");
+        assert!(s.out[1].area() + s.out[2].area() <= s.budget, "{:?} {:?}", s.out[1], s.out[2]);
         assert!(!s.elided[1], "the pair is now real");
-        assert_eq!(memory.get(&7), Some(&0.25), "the pair remembers what it ran at");
-        let mut memory = HashMap::from([(7u128, 0.25f32)]);
+        assert_eq!(memory.get(&7), Some(&0.5), "the pair remembers what it ran at");
+        let mut memory = HashMap::from([(7u128, 0.5f32)]);
         let s2 = Scheduler::new(&g, 640, 480, 8192, 4.0, &mut memory);
         drop(s2);
-        assert_eq!(memory.get(&7), Some(&0.25), "an untouched memory keeps last frame");
+        assert_eq!(memory.get(&7), Some(&0.5), "an untouched memory keeps last frame");
+        let mut capped = HashMap::new();
+        let c = Scheduler::new(&g, 640, 480, 640, 4.0, &mut capped);
+        assert_eq!(c.store_width(), 640.0, "a device that cannot hold the ring caps the store at the frame's width, never below it");
     }
 
     #[test]
