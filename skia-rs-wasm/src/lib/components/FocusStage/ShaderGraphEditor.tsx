@@ -352,25 +352,39 @@ function toRfNodes(
   const view = graph.nodes[viewId]
 
   // A leaf view (a shader that is a single function — e.g. any imported code)
-  // has no children to draw. Rendering only the boundary cards left an empty
-  // canvas with the whole shader invisible. Show the node itself instead; its
-  // own params and output are the boundary, so no cards are needed.
+  // has no children to draw. Show the node itself, flanked by its Inputs and
+  // Output cards so the boundary is visible here exactly as it is inside a
+  // group: Inputs → node → Output. The params are drawn as wired (fed by the
+  // Inputs card), so their meaningless inline controls stay hidden.
   if (view && view.body !== undefined) {
-    return [
-      {
-        id: view.id,
-        type: 'shaderNode',
-        position: view.position,
-        data: {
-          node: view,
-          wired: Object.values(graph.edges)
-            .filter((e) => e.to.node === view.id)
-            .map((e) => e.to.port),
-          group: false,
-          ...handlers,
-        },
+    const nodePos = view.position
+    const node: AnyRFNode = {
+      id: view.id,
+      type: 'shaderNode',
+      position: nodePos,
+      data: {
+        node: view,
+        wired: view.params.map((p) => p.name),
+        group: false,
+        ...handlers,
       },
-    ]
+    }
+    const out: AnyRFNode = {
+      id: OUT_CARD,
+      type: 'boundary',
+      position: { x: nodePos.x + 240, y: nodePos.y },
+      deletable: false,
+      data: { kind: 'output', ports: [{ name: OUT, type: view.returns }] },
+    }
+    if (view.params.length === 0) return [node, out]
+    const inputs: AnyRFNode = {
+      id: IN_CARD,
+      type: 'boundary',
+      position: { x: nodePos.x - 200, y: nodePos.y },
+      deletable: false,
+      data: { kind: 'inputs', ports: view.params },
+    }
+    return [inputs, node, out]
   }
 
   const kids = childrenOf(graph, viewId)
@@ -418,6 +432,31 @@ function toRfNodes(
 
 /** Edges visible at this level, with the group's own endpoints mapped to cards. */
 function toRfEdges(graph: ShaderGraph, viewId: string): RFEdge[] {
+  const view = graph.nodes[viewId]
+
+  // A leaf view has no model edges — its wires to the boundary cards are drawn
+  // synthetically, matching the synthetic Inputs/Output cards in toRfNodes. They
+  // are not deletable: they are the boundary, not a connection you made.
+  if (view && view.body !== undefined) {
+    const wires: RFEdge[] = view.params.map((p) => ({
+      id: `__b__in.${p.name}`,
+      source: IN_CARD,
+      sourceHandle: p.name,
+      target: view.id,
+      targetHandle: p.name,
+      deletable: false,
+    }))
+    wires.push({
+      id: '__b__out',
+      source: view.id,
+      sourceHandle: OUT,
+      target: OUT_CARD,
+      targetHandle: OUT,
+      deletable: false,
+    })
+    return wires
+  }
+
   const inside = new Set(childrenOf(graph, viewId).map((n) => n.id))
   return Object.values(graph.edges)
     .filter(
