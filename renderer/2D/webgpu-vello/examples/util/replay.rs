@@ -102,6 +102,14 @@ pub fn replay(path: &str) -> Replayed {
             "set_children_2" => {
                 abi::set_children_2(u(0), u(1), u(2), u(3), u(4), u(5), u(6), u(7));
             }
+            "set_children_3" => abi::set_children_3(u(0), u(1), u(2), u(3), u(4), u(5), u(6), u(7), u(8), u(9), u(10), u(11)),
+            "set_children_4" => abi::set_children_4(
+                u(0), u(1), u(2), u(3), u(4), u(5), u(6), u(7), u(8), u(9), u(10), u(11), u(12), u(13), u(14), u(15),
+            ),
+            "set_children_5" => abi::set_children_5(
+                u(0), u(1), u(2), u(3), u(4), u(5), u(6), u(7), u(8), u(9), u(10), u(11), u(12), u(13), u(14), u(15), u(16),
+                u(17), u(18), u(19),
+            ),
             "set_shape_corners" => abi::set_shape_corners(f(0), f(1), f(2), f(3)),
             "clear_shape_blur" => abi::clear_shape_blur(),
             "clear_shape_texture" => abi::clear_shape_texture(),
@@ -171,7 +179,9 @@ pub fn replay(path: &str) -> Replayed {
             "render_sync" => abi::render_sync(),
             "render" => abi::render(i32a(0)),
             "clean_up" => abi::clean_up(),
-            other => panic!("replay: unmapped ABI entry point {other:?} — add it to util/replay.rs"),
+            // The browser facade stubs any entry point this backend lacks, so a recording carries
+            // calls the live session also turned into no-ops. Skip them the same way, but say so.
+            other => eprintln!("replay: skipping unmapped ABI entry point {other:?}"),
         }
         applied += 1;
     }

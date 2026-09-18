@@ -423,15 +423,30 @@ fn field_refract(t: f32, thick: f32, n2: f32, kind: i32) -> f32 {
 /// visible artifact and guessing high is only blit area.
 #[must_use]
 pub fn lens_warp_slack(g: &Glass, scale: f32, half_diag_dev: f32) -> f32 {
-    let kind = g.surface_type as i32;
+    warp_slack(g.surface_type, g.thickness, g.refractive_index, g.edge_boost, g.zoom, g.chromatic_aberration, scale, half_diag_dev)
+}
+
+/// [`lens_warp_slack`] read off a lens warp's device field — the payload [`lens_device_field`]
+/// lays out, at the resolution it was built for. How far the frame graph's lens warp reads past
+/// its output: a magnifying lens samples up to `|1/zoom − 1|` of its half-diagonal toward its
+/// centre, so a flat allowance under-covers it and the taps land on stale rows.
+#[must_use]
+pub fn lens_warp_reach(u: &[f32]) -> f32 {
+    let at = |i: usize| u.get(i).copied().unwrap_or(0.0);
+    let half_diag = at(4).hypot(at(5));
+    warp_slack(at(7) as i32, at(9), at(10), at(14), at(15), at(17), at(16), half_diag)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn warp_slack(kind: i32, thickness: f32, n: f32, edge_boost: f32, zoom: f32, ca: f32, scale: f32, half_diag_dev: f32) -> f32 {
     let mut refr: f32 = 0.0;
     for i in 1..512 {
         let t = i as f32 / 512.0;
-        refr = refr.max(field_refract(t, g.thickness, g.refractive_index, kind).abs());
+        refr = refr.max(field_refract(t, thickness, n, kind).abs());
     }
-    let warp = refr * 1.15 * scale * (1.0 + g.edge_boost.max(0.0));
-    let zoom_term = half_diag_dev * (1.0 / g.zoom.max(0.1) - 1.0).abs();
-    warp + zoom_term + g.chromatic_aberration.max(0.0) + 1.0
+    let warp = refr * 1.15 * scale * (1.0 + edge_boost.max(0.0));
+    let zoom_term = half_diag_dev * (1.0 / zoom.max(0.1) - 1.0).abs();
+    warp + zoom_term + ca.max(0.0) + 1.0
 }
 
 /// The largest offset (device px) the frost SCATTER jitters its draft taps by — the shader's
@@ -530,6 +545,24 @@ mod tests {
             acceptable_downscale: 1.0,
             tile_mode: crate::model::TileMode::Decal,
         }
+    }
+
+    #[test]
+    fn lens_reach_from_the_payload_matches_the_slack_and_grows_with_magnification() {
+        let geom = LensGeometry { center: Point::new(400.0, 300.0), width: 600.0, height: 300.0, corner_radius: 12.0, is_circle: false };
+        let view = Affine::scale(2.0);
+        for zoom in [1.0, 2.45] {
+            let g = Glass { zoom, chromatic_aberration: 3.0, ..glass() };
+            // The graph builder stamps the chromatic shift into slot 17 of the warp's payload.
+            let mut u = lens_device_field(&g, geom, (1600, 1200), (0.0, 0.0), view, 1.0);
+            u[17] = g.chromatic_aberration;
+            let half_diag = (300.0f32 * 2.0).hypot(150.0 * 2.0);
+            let want = lens_warp_slack(&g, 2.0, half_diag);
+            assert!((lens_warp_reach(&u) - want).abs() < 1e-3, "zoom {zoom}: {} vs {want}", lens_warp_reach(&u));
+        }
+        // A 245% lens reaches most of the way to its centre: far past a flat 24 px allowance.
+        let u = lens_device_field(&Glass { zoom: 2.45, ..glass() }, geom, (1600, 1200), (0.0, 0.0), view, 1.0);
+        assert!(lens_warp_reach(&u) > 350.0, "{}", lens_warp_reach(&u));
     }
 
     #[test]

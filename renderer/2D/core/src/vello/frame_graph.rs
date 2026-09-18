@@ -158,8 +158,8 @@ pub fn pad_at(op: &Op, k: f32) -> f32 {
 }
 
 /// The distance, in frame pixels, that `op` reads past its output — the real content an input
-/// must hold, independent of the grid it is computed on (a blur reaches `3σ`, a lens `24`, a
-/// noise warp its own reach). This is [`pad_at`] without the texel sampling ring: a served
+/// must hold, independent of the grid it is computed on (a blur reaches `3σ`, a lens its
+/// refraction, magnification and chromatic shift — at least `24` — a noise warp its own reach). This is [`pad_at`] without the texel sampling ring: a served
 /// ground needs only this many frame pixels of backdrop; the ring is a store-sampling concern,
 /// not a content one.
 #[must_use]
@@ -169,7 +169,9 @@ pub fn reach_px(op: &Op) -> f32 {
         Op::Warp(u) if u.get(crate::vello::bake::PAYLOAD_PROGRAM_SLOT).copied() == Some(crate::vello::bake::PROGRAM_NOISE) => {
             u.get(2).copied().unwrap_or(0.0)
         }
-        Op::Warp(_) | Op::Scatter(_) => 24.0,
+        // A lens warp: its true displacement, floored at the old flat allowance so no read shrinks.
+        Op::Warp(u) => crate::effect_graph::lens_warp_reach(u).max(24.0),
+        Op::Scatter(_) => 24.0,
         _ => 0.0,
     }
 }
