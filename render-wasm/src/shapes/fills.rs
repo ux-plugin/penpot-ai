@@ -13,15 +13,18 @@ fn lerp_color(a: Color, b: Color, t: f32) -> Color {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Public so the backend-neutral projection (`crate::model_export`) can read a gradient
+/// without going through Skia. `colors` and `offsets` are parallel and must stay the same
+/// length — `add_stops` is the only thing that appends to them.
 pub struct Gradient {
-    start: (f32, f32),
-    end: (f32, f32),
-    opacity: u8,
+    pub start: (f32, f32),
+    pub end: (f32, f32),
+    pub opacity: u8,
     /// For radial/diamond: (scalar_width, 0.0).
     /// For angular: (pointAt90_x, pointAt90_y) — the full second axis endpoint.
-    width: (f32, f32),
-    colors: Vec<Color>,
-    offsets: Vec<f32>,
+    pub width: (f32, f32),
+    pub colors: Vec<Color>,
+    pub offsets: Vec<f32>,
 }
 
 impl Gradient {
@@ -361,6 +364,14 @@ impl ImageFill {
 
     pub fn opacity(&self) -> u8 {
         self.opacity
+    }
+
+    pub fn width(&self) -> i32 {
+        self.width
+    }
+
+    pub fn height(&self) -> i32 {
+        self.height
     }
 
     pub fn keep_aspect_ratio(&self) -> bool {

@@ -1,4 +1,4 @@
-use macros::ToJs;
+use render_macros::ToJs;
 
 use crate::shapes::{FillRule, StrokeLineCap, StrokeLineJoin, SvgAttrs};
 use crate::{with_current_shape_mut, STATE};

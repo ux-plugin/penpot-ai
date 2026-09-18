@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds WASM, skia-rs-wasm, plugin (debug) and fills cdn/content/ (no Docker). Run from repo root or figma_plugin_fe.
+# Builds WASM, zoetrope-editor, plugin (debug) and fills cdn/content/ (no Docker). Run from repo root or figma_plugin_fe.
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

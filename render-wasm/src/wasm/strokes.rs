@@ -1,4 +1,4 @@
-use macros::ToJs;
+use render_macros::ToJs;
 
 use crate::mem;
 use crate::shapes::{self, StrokeCap, StrokeLineCap, StrokeLineJoin, StrokeStyle};
@@ -121,7 +121,7 @@ pub extern "C" fn add_shape_outer_stroke(width: f32, style: u8, cap_start: u8, c
 pub extern "C" fn add_shape_stroke_fill() {
     with_current_shape_mut!(state, |shape: &mut Shape| {
         let bytes = mem::bytes();
-        let raw_fill = super::fills::RawFillData::try_from(&bytes[..]).expect("Invalid fill data");
+        let raw_fill = super::fills::raw_fill_from_slice(&bytes[..]).expect("Invalid fill data");
         shape
             .set_stroke_fill(raw_fill.into())
             .expect("could not add stroke fill");

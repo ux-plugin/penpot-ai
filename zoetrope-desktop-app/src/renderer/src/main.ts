@@ -3,7 +3,7 @@ import './index.css'
 const root = document.querySelector<HTMLDivElement>('#app')!
 
 /**
- * Probe WebGL2 the same way skia-rs-wasm will (high-performance GPU preference).
+ * Probe WebGL2 the same way zoetrope-editor will (high-performance GPU preference).
  * This is the boot smoke test for landmine #4 — if Electron fell back to SwiftShader,
  * the unmasked renderer string says so and we flag it loudly.
  */
@@ -32,7 +32,7 @@ root.innerHTML = `
   <main class="boot">
     <div class="logo">◎</div>
     <h1>Zoetrope <span>Desktop</span></h1>
-    <p class="tag">Electron shell · skia-rs-wasm renderer host</p>
+    <p class="tag">Electron shell · zoetrope-editor renderer host</p>
     <dl class="diag">
       <div><dt>WebGL2</dt><dd class="${gpu.webgl2 ? 'ok' : 'bad'}">${gpu.webgl2 ? 'available' : 'unavailable'}</dd></div>
       <div><dt>GPU</dt><dd class="${gpu.software ? 'warn' : 'ok'}">${gpu.name}${gpu.software ? ' — software fallback' : ''}</dd></div>
@@ -41,6 +41,6 @@ root.innerHTML = `
       <div><dt>Chromium</dt><dd>${d?.versions.chrome ?? '—'}</dd></div>
       <div><dt>Platform</dt><dd>${d?.platform ?? '—'}</dd></div>
     </dl>
-    <p class="next">Next slice: mount the skia-rs-wasm canvas here.</p>
+    <p class="next">Next slice: mount the zoetrope-editor canvas here.</p>
   </main>
 `

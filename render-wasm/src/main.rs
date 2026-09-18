@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 #[allow(unused_imports)]
 use crate::error::{Error, Result};
-use macros::wasm_error;
+use render_macros::wasm_error;
 use math::{Bounds, Matrix};
 use mem::SerializableResult;
 use shapes::{StructureEntry, StructureEntryType, TransformEntry};
@@ -700,6 +700,32 @@ pub extern "C" fn set_shape_corners(r1: f32, r2: f32, r3: f32, r4: f32) -> Resul
         shape.set_corners((r1, r2, r3, r4));
     });
     Ok(())
+}
+
+/// A fingerprint of everything this backend would draw — the Skia half of the differential
+/// harness, and the counterpart to render-vello's export of the same name.
+///
+/// Both backends compute it from `render_core::model::Scene::digest`, but reach the model by
+/// different routes: render-vello builds it directly from the wire, render-wasm projects its
+/// Skia shapes through `model_export`. Replay one recorded byte stream into both and an equal
+/// digest means they agree on what the document *is* — which is the question a pixel diff
+/// cannot answer, because two rasterisers always disagree slightly on antialiasing.
+///
+/// Committed geometry only. `shapes.iter()` walks the pool directly rather than going through
+/// `shapes.get()`, so modifiers are deliberately not applied: mid-drag the two backends are
+/// *meant* to differ from the document, and a digest that moved during a gesture would compare
+/// two moving targets.
+///
+/// Folded to 32 bits to cross the ABI as a plain `i32`; a 64-bit return arrives in JS as a
+/// `BigInt`, which buys nothing at this collision domain.
+#[no_mangle]
+#[wasm_error]
+pub extern "C" fn scene_digest() -> Result<i32> {
+    with_state!(state, {
+        let scene = model_export::scene_from_shapes(state.shapes.iter());
+        let full = scene.digest();
+        Ok(((full as u32) ^ ((full >> 32) as u32)) as i32)
+    })
 }
 
 #[no_mangle]

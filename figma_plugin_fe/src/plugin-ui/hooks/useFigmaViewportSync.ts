@@ -4,7 +4,7 @@ import {
   useSignalCoalesced,
   setViewport,
   zoomAt,
-} from "skia-rs-wasm";
+} from "zoetrope-editor";
 import {
   syncCanvasWithFigma,
   type Viewport as FigmaCanvasViewport,

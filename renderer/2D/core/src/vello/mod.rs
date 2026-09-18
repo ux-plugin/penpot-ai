@@ -1,0 +1,53 @@
+//! Backend-agnostic Vello layer — the device-generic wgpu effect executor shared by the
+//! vello_hybrid and classic-vello sinks.
+//!
+//! Nothing here touches a specific Vello renderer or the neutral-model ABI. It runs *our own* wgpu
+//! pipelines — the SrcOver compositor and blit ([`blend`]), the frosted-glass pass-graph
+//! ([`glass`]), the separable/pyramid Gaussian blur and the custom-WGSL pass runner ([`graph`]) —
+//! against any `wgpu::Device`, driven by the render-core effect-graph IR
+//! (`crate::effect_graph`). [`prof`] is the per-phase sink profiler.
+//!
+//! This is Phase 1 of the classic-Vello third-backend carve: because these pipelines are generic
+//! over the device (not the Vello flavor), both sinks reuse them unchanged — the classic backend
+//! only has to supply its own scene rasterization, not re-implement effects.
+//!
+//! [`abi`] is the exception to "nothing touches the neutral-model ABI": the C-style FFI shell + host
+//! scene-state singleton (over `crate::host::SceneState`) + wire decoders live here so BOTH
+//! backend cdylibs export the identical host interface from ONE source. It is backend-neutral (pure
+//! render-core + `vello_common::paint::ImageId` for the atlas hand-off; no Vello renderer type).
+
+pub mod abi;
+pub mod bake;
+pub mod blend;
+pub mod bump_watch;
+pub mod draw;
+pub mod editor;
+pub mod executor;
+pub mod fx;
+pub mod fine_field;
+pub mod frame_graph;
+pub mod graph_build;
+pub(crate) mod arms;
+pub(crate) mod emit;
+pub(crate) mod halo;
+pub(crate) mod params;
+pub mod frame_plan;
+pub mod frame_log;
+pub mod units;
+pub mod gputime;
+pub mod graph;
+pub mod prof;
+pub mod rasterize;
+pub(crate) mod resolve;
+pub(crate) mod schedule;
+pub mod scheduler;
+pub mod sdf;
+pub mod store;
+pub mod store_pack;
+pub mod rich_editor;
+pub mod svg;
+/// The GPU production sink — executes a `crate::schedule::Schedule` on a Vello backend. Generic
+/// over [`rasterize::RasterBackend`], so both flavors run this one copy; it holds only wgpu + the
+/// shared compositor/effect executor + the cross-frame tile cache, never a concrete backend type.
+pub mod sink;
+pub mod text;

@@ -1,0 +1,241 @@
+//! Pure geometry for the scene draw path — the paths a node fills, clips to, and casts a shadow
+//! from.
+//!
+//! These are plain kurbo constructions over the neutral model, with no Vello or wasm dependency, so
+//! they live in render-core and are shared by both Vello draw paths: the hybrid backend's
+//! `scene.rs` and the backend-neutral `render_vello_core::draw`. Host-testable.
+
+use crate::kurbo::{
+    Affine, BezPath, Ellipse, Rect, RoundedRect, RoundedRectRadii, Shape as _, Stroke, StrokeOpts,
+    stroke as stroke_expand,
+};
+use crate::model as m;
+
+/// The device-space blur-sigma ceiling, mirroring render-wasm's shadow/layer-blur cap.
+///
+/// render-wasm clamps `sigma_device = min(radius_to_sigma(blur)·scale, margins.width / 3)`
+/// (`get_drop_shadow_filter_capped` in render-wasm's `shapes/shadows.rs`); its tile margin is
+/// `TILE_SIZE(512) · TILE_SIZE_MULTIPLIER(2) / 4 = 256` device px, so the ceiling is `256 / 3`. The
+/// Skia backend deliberately refuses to build a larger blur — the kernel must fit the tile margin —
+/// so mirroring it is *parity*, not a workaround. It also keeps render-vello out of the fork's
+/// many-decimation regime, where the Gaussian pyramid loses energy and a zoomed-in shadow fades to
+/// nothing instead of staying dark.
+pub const MAX_DEVICE_SIGMA: f64 = 256.0 / 3.0;
+
+/// Clamp a user-space blur sigma so that, after the fork scales it to device space by `matrix`, it
+/// stays within [`MAX_DEVICE_SIGMA`].
+///
+/// The fork's `transform_blur_params` multiplies the sigma by the transform's mean axis scale, so
+/// capping the user-space value at `MAX_DEVICE_SIGMA / scale` bounds the device sigma to
+/// `MAX_DEVICE_SIGMA` — the same `min(…, max_dev_sigma / scale)` render-wasm applies. `scale` is the
+/// mean of the two column norms, which equals the fork's SVD-derived scale for an unrotated
+/// transform and is a close bound otherwise. A degenerate (zero-scale) matrix leaves the sigma
+/// untouched rather than dividing by zero.
+pub fn cap_sigma_to_device(sigma_user: f32, matrix: Affine) -> f32 {
+    let [a, b, c, d, _, _] = matrix.as_coeffs();
+    let scale = ((a * a + b * b).sqrt() + (c * c + d * d).sqrt()) / 2.0;
+    if scale <= f64::EPSILON {
+        return sigma_user;
+    }
+    sigma_user.min((MAX_DEVICE_SIGMA / scale) as f32)
+}
+
+/// Cap the blur ([`cap_sigma_to_device`]) and return the capped sigma together with the factor it
+/// was scaled by (`1.0` when under the cap, `< 1.0` once clamped).
+///
+/// The caller multiplies the shadow's **offset** by the same factor. The blur cap alone freezes the
+/// softness at the ceiling while the offset keeps growing with zoom, so the offset drifts away from
+/// the blur and the shadow's shape changes as you zoom — very visible for an inner shadow, whose
+/// dark band thickness *is* the offset. Scaling the offset by the same factor makes the whole shadow
+/// plateau together past the cap, so it keeps its shape (render-wasm caps only the blur, which is
+/// fine only while the offset is small next to it).
+pub fn cap_shadow_blur(sigma_user: f32, matrix: Affine) -> (f32, f64) {
+    let capped = cap_sigma_to_device(sigma_user, matrix);
+    let ratio = if sigma_user > 0.0 {
+        f64::from(capped / sigma_user)
+    } else {
+        1.0
+    };
+    (capped, ratio)
+}
+
+/// Flattening tolerance for turning analytic shapes into bézier paths, in page pixels.
+pub const TOLERANCE: f64 = 0.1;
+
+/// The node's geometry as a path — what it fills, and what it clips its children to.
+///
+/// Mirrors render-wasm's clip construction: a rounded rect when corners are set, an oval for a
+/// circle, the vector path for a path, and the bounds rectangle for anything else (including a
+/// path whose geometry has not arrived).
+pub fn outline(node: &m::Node) -> BezPath {
+    match node.kind {
+        m::ShapeKind::Circle => ellipse_path(node.bounds),
+        m::ShapeKind::Path => node
+            .path
+            .clone()
+            .unwrap_or_else(|| node.bounds.to_path(TOLERANCE)),
+        _ => match node.corners {
+            Some(radii) => RoundedRect::from_rect(node.bounds, radii).to_path(TOLERANCE),
+            None => node.bounds.to_path(TOLERANCE),
+        },
+    }
+}
+
+fn ellipse_path(r: Rect) -> BezPath {
+    Ellipse::new(r.center(), (r.width() * 0.5, r.height() * 0.5), 0.0).to_path(TOLERANCE)
+}
+
+/// The node's silhouette grown outward by `spread` — the drop-shadow spread, matching Skia's
+/// morphological `dilate((spread, spread))` on the shadow's alpha.
+///
+/// For the analytic shapes the growth is exact and fills once: a rect (and its corner radii) and an
+/// oval each expand by `spread`. A general vector path grows by its Minkowski sum with a disk of
+/// radius `spread` — a round-join stroke of width `2·spread` unioned with the interior. The union is
+/// a plain concatenation filled under non-zero winding: in the stroked band only the band winds
+/// (±1 → covered), and over the interior only the original path winds, so every covered pixel is
+/// painted exactly once. That matters because shadows are usually semi-transparent, and a second
+/// coverage over the same pixel would darken it.
+///
+/// Only positive spread grows the shape; render-wasm likewise dilates only for `spread > 0`, and the
+/// caller never invokes this otherwise.
+pub fn spread_outline(node: &m::Node, spread: f64) -> BezPath {
+    let bounds = node.bounds.inflate(spread, spread);
+    match node.kind {
+        m::ShapeKind::Circle => ellipse_path(bounds),
+        m::ShapeKind::Path => {
+            let base = node
+                .path
+                .clone()
+                .unwrap_or_else(|| node.bounds.to_path(TOLERANCE));
+            let stroke = Stroke::new(2.0 * spread);
+            let mut grown = stroke_expand(base.iter(), &stroke, &StrokeOpts::default(), TOLERANCE);
+            grown.extend(base.iter());
+            grown
+        }
+        _ => match node.corners {
+            Some(radii) => {
+                RoundedRect::from_rect(bounds, grow_radii(radii, spread)).to_path(TOLERANCE)
+            }
+            None => bounds.to_path(TOLERANCE),
+        },
+    }
+}
+
+/// Each corner radius grown by `spread` — the rounded-rect analogue of inflating the rect.
+fn grow_radii(radii: RoundedRectRadii, spread: f64) -> RoundedRectRadii {
+    RoundedRectRadii::new(
+        radii.top_left + spread,
+        radii.top_right + spread,
+        radii.bottom_right + spread,
+        radii.bottom_left + spread,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(kind: m::ShapeKind) -> m::Node {
+        let mut n = m::Node::new(1, kind);
+        n.bounds = Rect::new(100.0, 100.0, 200.0, 180.0);
+        n
+    }
+
+    /// Spread grows a rect by `spread` on every side — its bounding box inflates symmetrically, so
+    /// the drop shadow reads as a larger silhouette (matching Skia's `dilate`).
+    #[test]
+    fn spread_inflates_a_rect_on_every_side() {
+        let base = outline(&node(m::ShapeKind::Rect)).bounding_box();
+        let grown = spread_outline(&node(m::ShapeKind::Rect), 12.0).bounding_box();
+
+        assert_eq!(grown.x0, base.x0 - 12.0);
+        assert_eq!(grown.y0, base.y0 - 12.0);
+        assert_eq!(grown.x1, base.x1 + 12.0);
+        assert_eq!(grown.y1, base.y1 + 12.0);
+    }
+
+    /// A circle grows the same way — the oval widens by `spread` on each axis.
+    #[test]
+    fn spread_inflates_a_circle() {
+        let base = outline(&node(m::ShapeKind::Circle)).bounding_box();
+        let grown = spread_outline(&node(m::ShapeKind::Circle), 9.0).bounding_box();
+
+        assert!((grown.width() - (base.width() + 18.0)).abs() < 0.5);
+        assert!((grown.height() - (base.height() + 18.0)).abs() < 0.5);
+    }
+
+    /// Rounded corners grow with the rect, so the spread stays a uniform outward band rather than
+    /// squaring off the corners.
+    #[test]
+    fn spread_grows_the_corner_radius() {
+        let mut n = node(m::ShapeKind::Rect);
+        n.corners = Some(RoundedRectRadii::from_single_radius(8.0));
+        let grown = spread_outline(&n, 5.0);
+        let bbox = grown.bounding_box();
+
+        assert_eq!(bbox.x0, 95.0);
+        assert_eq!(bbox.x1, 205.0);
+        assert_eq!(bbox.y0, 95.0);
+        assert_eq!(bbox.y1, 185.0);
+    }
+
+    /// At scale 1 a modest blur passes through untouched — the cap only bites large device sigmas.
+    #[test]
+    fn cap_leaves_a_small_blur_unchanged_at_unit_scale() {
+        assert_eq!(cap_sigma_to_device(12.0, Affine::IDENTITY), 12.0);
+    }
+
+    /// Zooming in scales the device sigma, so the user-space value is capped to
+    /// `MAX_DEVICE_SIGMA / zoom`: a 40px user sigma at 100× would be 4000px in device space, far
+    /// past the ceiling, so it clamps to ~0.85 (= 85.3 / 100).
+    #[test]
+    fn cap_clamps_a_large_device_sigma_under_zoom() {
+        let capped = cap_sigma_to_device(40.0, Affine::scale(100.0));
+        let expected = (MAX_DEVICE_SIGMA / 100.0) as f32;
+        assert!((capped - expected).abs() < 1e-4, "{capped} vs {expected}");
+        assert!((f64::from(capped) * 100.0 - MAX_DEVICE_SIGMA).abs() < 1e-3);
+    }
+
+    /// A degenerate zero-scale transform must not divide by zero — the sigma passes through.
+    #[test]
+    fn cap_survives_a_zero_scale_matrix() {
+        assert_eq!(cap_sigma_to_device(7.0, Affine::scale(0.0)), 7.0);
+    }
+
+    /// Under the cap the ratio is 1 (the offset is untouched); once clamped it matches the sigma's
+    /// own shrink factor, so offset and blur stay proportional.
+    #[test]
+    fn cap_ratio_is_one_below_the_cap_and_shrinks_with_the_sigma() {
+        let (s0, r0) = cap_shadow_blur(12.0, Affine::IDENTITY);
+        assert_eq!(s0, 12.0);
+        assert_eq!(r0, 1.0);
+
+        let (s1, r1) = cap_shadow_blur(40.0, Affine::scale(100.0));
+        assert!((r1 - f64::from(s1 / 40.0)).abs() < 1e-6);
+        assert!(r1 < 1.0, "clamped, so the offset shrinks with the blur");
+        assert!((10.0 * r1 * 100.0 - f64::from(s1) * 100.0 / 40.0 * 10.0).abs() < 1e-3);
+    }
+
+    /// A vector path grows by its Minkowski sum with a disk: the stroked band pushes the outline out
+    /// by `spread` all round, so the grown bounding box exceeds the original by roughly `spread` per
+    /// side. The disk sweep is round, so the exact extent is `≈ spread` at the corners; assert it
+    /// grew outward without over-constraining the round-join geometry.
+    #[test]
+    fn spread_grows_a_path_outward() {
+        let mut n = node(m::ShapeKind::Path);
+        let mut p = BezPath::new();
+        p.move_to((110.0, 170.0));
+        p.line_to((190.0, 170.0));
+        p.line_to((150.0, 110.0));
+        p.close_path();
+        n.path = Some(p.clone());
+
+        let base = p.bounding_box();
+        let grown = spread_outline(&n, 10.0).bounding_box();
+
+        assert!(grown.x0 <= base.x0 - 9.0, "left: {} vs {}", grown.x0, base.x0);
+        assert!(grown.y0 <= base.y0 - 9.0, "top: {} vs {}", grown.y0, base.y0);
+        assert!(grown.x1 >= base.x1 + 9.0, "right: {} vs {}", grown.x1, base.x1);
+        assert!(grown.y1 >= base.y1 + 9.0, "bottom: {} vs {}", grown.y1, base.y1);
+    }
+}

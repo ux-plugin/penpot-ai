@@ -1,0 +1,39 @@
+[package]
+name = "render-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0 OR MIT"
+description = "The 2D renderer core: geometry/color atoms, scene model, document state and the tile/SSA scheduler, plus the backend-agnostic Vello layer (device-generic wgpu effect executor, neutral drawer, production sink, FFI shell). Shared by the webgl-vello and webgpu-vello backends."
+publish = false
+
+[features]
+default = ["tiled-scheduler"]
+tiled-scheduler = []
+
+[lib]
+
+[dependencies]
+rustc-hash = "2"
+kurbo = "0.13.1"
+peniko = "0.6.1"
+render-macros = { path = "macros" }
+
+wgpu = { version = "29.0.3" }
+bytemuck = "1.25.0"
+log = "0.4.29"
+
+vello_common = { path = "../vello/sparse_strips/vello_common", default-features = false }
+vello_example_scenes = { path = "../vello/sparse_strips/vello_example_scenes" }
+
+usvg = { version = "0.47", default-features = false }
+
+parley = { version = "0.11.0", default-features = false, features = ["std"] }
+glifo = { path = "../vello/glifo" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3.91", features = ["Window", "Performance", "console"] }
+wasm-bindgen = "0.2"
+
+[dev-dependencies]
+naga = { version = "29.0.4", features = ["wgsl-in"] }

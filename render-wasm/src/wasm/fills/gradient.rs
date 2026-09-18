@@ -1,57 +1,17 @@
 use crate::shapes::{Color, Gradient};
 
-const MAX_GRADIENT_STOPS: usize = 16;
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-#[repr(C)]
-#[repr(align(4))]
-pub struct RawGradientData {
-    start_x: f32,
-    start_y: f32,
-    end_x: f32,
-    end_y: f32,
-    opacity: u8,
-    // 24-bit padding here, reserved for future use
-    width_x: f32,
-    width_y: f32,
-    stop_count: u8,
-    stops: [RawStopData; MAX_GRADIENT_STOPS],
-}
-
-impl RawGradientData {
-    pub fn start(&self) -> (f32, f32) {
-        (self.start_x, self.start_y)
-    }
-
-    pub fn end(&self) -> (f32, f32) {
-        (self.end_x, self.end_y)
-    }
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-#[repr(C)]
-struct RawStopData {
-    color: u32,
-    offset: f32,
-}
-
-impl RawStopData {
-    pub fn color(&self) -> Color {
-        Color::from(self.color)
-    }
-
-    pub fn offset(&self) -> f32 {
-        self.offset
-    }
-}
+// Layout in render-core (D17), Skia-facing conversion here. Re-exported so
+// `gradient::RawGradientData` still resolves for existing call sites.
+pub use render_core::abi::RawGradientData;
 
 impl From<RawGradientData> for Gradient {
     fn from(raw_gradient: RawGradientData) -> Self {
+        // `active_stops` clamps to the array bound, so a malformed `stop_count` off the wire
+        // truncates rather than reading past the fixed-size tail.
         let stops = raw_gradient
-            .stops
+            .active_stops()
             .iter()
-            .take(raw_gradient.stop_count as usize)
-            .map(|stop| (stop.color(), stop.offset()))
+            .map(|stop| (Color::from(stop.color), stop.offset))
             .collect::<Vec<_>>();
 
         Gradient::new(

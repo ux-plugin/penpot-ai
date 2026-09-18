@@ -1,0 +1,536 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>vello bench</title>
+<style>
+  body { margin: 0; background: #111; color: #eee; font: 13px ui-monospace, monospace; }
+  #c { display: block; }
+  #out { position: fixed; top: 8px; left: 8px; white-space: pre; background: #000c; padding: 8px; max-height: 96vh; overflow: auto; }
+</style>
+<canvas id="c"></canvas>
+<div id="out">booting…</div>
+<script type="module">
+
+const q = new URLSearchParams(location.search)
+const BACKEND = q.get('backend') ?? 'hybrid'
+const N = Number(q.get('n') ?? 20000)
+const FRAMES = Number(q.get('frames') ?? 40)
+const DIRTY_EVERY = Number(q.get('dirtyEvery') ?? 0)
+const W = Number(q.get('w') ?? 1600)
+const H = Number(q.get('h') ?? 1000)
+const DEPTH = Number(q.get('depth') ?? 0)
+const NEST_TYPE = q.get('nestType') ?? 'frame'
+const EFFECTS = q.get('effects') ?? 'none'
+const EFFECT_EVERY = Number(q.get('effectEvery') ?? 10)
+const RADIUS = Number(q.get('radius') ?? 6)
+const GLASS_BLUR = q.has('glassBlur') ? Number(q.get('glassBlur')) : RADIUS
+const GLASS_FROST = q.has('glassFrost') ? Number(q.get('glassFrost')) : 3
+const GLASS_DOWNSCALE = q.has('glassDownscale') ? Number(q.get('glassDownscale')) : 1
+const STACK = Number(q.get('stack') ?? 0)
+const STACK_FX = q.get('stackFx') ?? 'bgblur'
+const STACK_SHAPES = Number(q.get('stackShapes') ?? 0)
+const STACK_HALF = Number(q.get('stackHalf') ?? 220)
+const STACKS = Number(q.get('stacks') ?? 1)
+const STACK_BETWEEN = Number(q.get('stackBetween') ?? 0)
+const STACK_SPREAD = Number(q.get('stackSpread') ?? 0)
+const LENS_FX = q.get('lensFx') ?? STACK_FX
+const LENSES = Number(q.get('lenses') ?? 0)
+const BGFILL = Number(q.get('bgFill') ?? 0)
+const LENS_TINT = Number(q.get('lensTint') ?? 0)
+const LENS_RADII = Number(q.get('lensRadii') ?? 1)
+const LENS_FRINGE = Number(q.get('lensFringe') ?? 0)
+const PACE = q.get('pace') ?? 'raf'
+const REPLAY = q.get('replay')
+const ZOOM0 = Number(q.get('zoom') ?? 1)
+const PAN0 = (q.get('pan') ?? '0,0').split(',').map(Number)
+const PRESET_ROWS = Number(q.get('preset') ?? 0)
+const PAGES = Number(q.get('pages') ?? 4)
+
+const out = document.getElementById('out')
+const log = (s) => { out.textContent = s }
+
+const URLS = {
+  hybrid: '/wasm-vello/render-vello.js',
+  classic: '/wasm-vello-gpu/render-vello-gpu.js',
+}
+
+const REC = 164
+const CELL = 40
+
+function main() {
+  const url = URLS[BACKEND]
+  if (!url) { log('unknown backend ' + BACKEND); return }
+  if (!navigator.gpu) {
+    log('ERROR: WebGPU unavailable — navigator.gpu is undefined.\n' +
+        'Most likely cause: this page is served over plain http from a non-localhost host,\n' +
+        'and browsers only expose WebGPU in secure contexts (https or localhost).\n' +
+        'Fix: open via an https tunnel, or on this machine set\n' +
+        'chrome://flags/#unsafely-treat-insecure-origin-as-secure to ' + location.origin + ' and relaunch.')
+    return
+  }
+
+  import( url).then(async (mod) => {
+    const X = await mod.default()
+    window.X = X
+
+    const canvas = document.getElementById('c')
+    const dpr = 1
+    canvas.width = W; canvas.height = H
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px'
+
+    X.init(W, H)
+    X.set_render_options(0, dpr)
+    X.set_scheduler(1)
+    X.set_tile_effects(1)
+    if (X.set_effect_preset) X.set_effect_preset(PRESET_ROWS, Math.round(PAGES * 1000))
+    if (X.set_sink_batch) X.set_sink_batch(Number(q.get('batch') ?? 32))
+    if (X.set_gather_batch && q.get('gatherBatch') !== null) X.set_gather_batch(Number(q.get('gatherBatch')))
+    if (X.set_fuse_gathers && q.get('fuseGathers') !== null) X.set_fuse_gathers(Number(q.get('fuseGathers')))
+    if (X.set_no_fuse && q.get('noFuse') !== null) X.set_no_fuse(Number(q.get('noFuse')))
+    if (X.set_whole_viewport && q.get('wholeViewport') !== null) X.set_whole_viewport(Number(q.get('wholeViewport')))
+    if (X.set_wv_phased && q.get('wvPhased') !== null) X.set_wv_phased(Number(q.get('wvPhased')))
+    if (X.set_flat_walk && q.get('flatWalk') !== null) X.set_flat_walk(Number(q.get('flatWalk')))
+    if (X.set_wv_scope && q.get('wvScope') !== null) X.set_wv_scope(Number(q.get('wvScope')))
+    if (X.set_wv_atlas && q.get('wvAtlas') !== null) X.set_wv_atlas(Number(q.get('wvAtlas')))
+    if (X.set_cmd_effect && q.get('cmdEffect') !== null) X.set_cmd_effect(Number(q.get('cmdEffect')))
+    if (X.set_prof_passes && q.get('profPasses') !== null) X.set_prof_passes(Number(q.get('profPasses')))
+    if (X.set_canvas_background && q.get('canvasBg')) X.set_canvas_background(parseInt(q.get('canvasBg'), 16) >>> 0)
+    if (X.set_present_on_demand && q.get('presentOnDemand') !== null) X.set_present_on_demand(Number(q.get('presentOnDemand')))
+    if (X.set_zoom_proxy && q.get('zoomProxy') !== null) X.set_zoom_proxy(Number(q.get('zoomProxy')))
+
+    window.__X__ = X
+    const renderer = await mod.create_focus_renderer(canvas)
+    window.__R__ = renderer
+
+    const SCENE = q.get('scene')
+    if (REPLAY) {
+      const raw = await (await fetch(REPLAY)).text()
+      const rec = JSON.parse(raw.trim().startsWith('"') ? JSON.parse(raw) : raw)
+      const skip = new Set(['init', 'set_render_options', 'resize_viewbox', 'render', 'clean_up', 'store_font', 'is_font_uploaded', 'calculate_position_data'])
+      const missing = new Set()
+      let ptr = 0, applied = 0
+      for (const call of rec.calls) {
+        if (skip.has(call.fn)) continue
+        const fn = X[call.fn]
+        if (typeof fn !== 'function') { missing.add(call.fn); continue }
+        if (call.fn === 'alloc_bytes') { ptr = fn(...call.args); continue }
+        if (call.buffer !== undefined) {
+          const bin = atob(call.buffer)
+          const bytes = new Uint8Array(bin.length)
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+          new Uint8Array(X.memory.buffer).set(bytes, ptr)
+          ptr = 0
+        }
+        fn(...call.args)
+        applied++
+      }
+      if (X.set_canvas_background) X.set_canvas_background(0xffffffff)
+      window.__REPLAYED__ = { applied, missing: [...missing] }
+    }
+    if (!REPLAY && SCENE !== 'scale' && (SCENE === 'parity' || SCENE === 'showcase' || SCENE === 'image' || SCENE === 'path-shadow' || SCENE === 'layer-blur' || (SCENE && SCENE.startsWith('scope')))) {
+      const cells =
+        SCENE === 'showcase' ? X.load_showcase_scene()
+        : SCENE === 'scope' ? X.load_scope_scene()
+        : SCENE === 'scope-nobg' ? X.load_scope_scene_nobg()
+        : SCENE === 'scope-nolens' ? X.load_scope_scene_nolens()
+        : SCENE === 'scope-blur' ? X.load_scope_scene_blur()
+        : SCENE === 'scope-black' ? X.load_scope_scene_black()
+        : SCENE === 'scope-clamp' ? X.load_scope_scene_clamp()
+        : SCENE === 'image' ? X.load_image_test_scene()
+        : SCENE === 'path-shadow' ? X.load_path_shadow_scene()
+        : SCENE === 'layer-blur' ? X.load_layer_blur_scene()
+        : X.load_parity_scene()
+      if ((SCENE === 'path-shadow' || SCENE === 'layer-blur') && X.set_canvas_background) X.set_canvas_background(0xffffffff)
+      if (SCENE.startsWith('scope') && X.set_canvas_background) X.set_canvas_background(0xff4a4a52)
+      if (q.get('canvasBg') && X.set_canvas_background) X.set_canvas_background(parseInt(q.get('canvasBg'), 16) >>> 0)
+      X.set_view(1, 0, 0)
+      renderer.render()
+      log(SCENE + ': ' + cells + ' shapes rendered (' + BACKEND + ', ' + W + 'x' + H + ')')
+      window.__PARITY_DONE__ = true
+      return
+    }
+
+    if (SCENE === 'scale') {
+      const N = parseInt(q.get('shapes') || '4000', 10)
+      const EVERY = parseInt(q.get('effectEvery') || '25', 10)
+      const FRAMES = parseInt(q.get('frames') || '20', 10)
+      const STEP = parseFloat(q.get('step') || '26')
+      const SIZE = parseFloat(q.get('size') || '1.9')
+      const OP_EVERY = parseInt(q.get('opEvery') || '7', 10)
+      const cells = X.load_scale_scene_sized
+        ? X.load_scale_scene_sized(N, EVERY, STEP, SIZE, OP_EVERY)
+        : X.load_scale_scene(N, EVERY)
+      if (X.set_canvas_background) X.set_canvas_background(0xffffffff)
+      const FIT = parseFloat(q.get('zoom') || '0.5')
+
+      function drag(count, dx, dy) {
+        const ptr = X.alloc_bytes(count * 40)
+        const view = new DataView(X.memory.buffer)
+        for (let i = 0; i < count; i++) {
+          const o = ptr + i * 40
+          view.setUint32(o, 0, true); view.setUint32(o + 4, 0, true)
+          view.setUint32(o + 8, 0, true); view.setUint32(o + 12, i + 1, true)
+          view.setFloat32(o + 16, 1, true); view.setFloat32(o + 20, 0, true)
+          view.setFloat32(o + 24, 0, true); view.setFloat32(o + 28, 1, true)
+          view.setFloat32(o + 32, dx, true); view.setFloat32(o + 36, dy, true)
+        }
+        X.set_modifiers()
+      }
+
+      const phases = [
+        ['static', (t) => { X.set_view(FIT, 0, 0); X.mark_dirty() }],
+        ['zoom',   (t) => X.set_view(FIT * (1 + 0.03 * (t % 8)), 0, 0)],
+        ['pan',    (t) => X.set_view(FIT, -12 * (t % 10), -7 * (t % 10))],
+        ['drag',   (t) => { X.set_view(FIT, 0, 0); drag(200, t * 1.5, t * -1.1) }],
+      ]
+      const results = []
+      let pi = 0, frame = 0, times = []
+
+      log('scale: ' + cells + ' shapes, 1 in ' + EVERY + ' with effects (' + BACKEND + ', ' + W + 'x' + H + ')')
+      function step() {
+        if (pi >= phases.length) {
+          let out = 'phase      median ms   fps\n'
+          for (const r of results) {
+            out += r.name.padEnd(10) + String(r.median.toFixed(1)).padStart(9) +
+                   String((1000 / r.median).toFixed(1)).padStart(6) + '\n'
+          }
+          log(out)
+          window.__PERF__ = results
+          window.__PERF_DONE__ = true
+          if (X.clean_modifiers) X.clean_modifiers()
+          return
+        }
+        const [name, setup] = phases[pi]
+        setup(frame)
+        const t0 = performance.now()
+        renderer.render()
+        const dt = performance.now() - t0
+        if (frame >= 3) times.push(dt)
+        frame++
+        if (frame >= FRAMES + 3) {
+          times.sort((a, b) => a - b)
+          results.push({ name, median: times[times.length >> 1] })
+          log(name + ': ' + times[times.length >> 1].toFixed(1) + ' ms')
+          if (X.clean_modifiers) X.clean_modifiers()
+          pi++; frame = 0; times = []
+        }
+        requestAnimationFrame(step)
+      }
+      requestAnimationFrame(step)
+      return
+    }
+
+    const u8 = () => new Uint8Array(X.memory.buffer)
+    const dv = () => new DataView(X.memory.buffer)
+
+    function solidFill(color) {
+      const size = 4 + REC
+      const ptr = X.alloc_bytes(size)
+      u8().fill(0, ptr, ptr + size)
+      u8()[ptr] = 1
+      u8()[ptr + 4] = 0x00
+      dv().setUint32(ptr + 8, color, true)
+      X.set_shape_fills()
+    }
+
+    const cols = Math.ceil(Math.sqrt(N))
+    const shapeXY = (i) => [(i % cols) * CELL, Math.floor(i / cols) * CELL]
+
+    const STACK_TOTAL = STACKS * STACK * (1 + STACK_BETWEEN + (STACK_SHAPES ? 1 : 0))
+    if (!REPLAY) {
+    X.init_shapes_pool(N + DEPTH + STACK + LENSES + 200 + STACK_TOTAL + 32)
+
+    if (BGFILL) {
+      const id = N + DEPTH + STACK + LENSES + 5
+      X.use_shape(0, 0, 0, id)
+      X.set_shape_type(3)
+      X.set_shape_selrect(0, 0, W, H)
+      solidFill(0xff202028)
+      X.use_shape(0, 0, 0, 0)
+      X.add_shape_child(0, 0, 0, id)
+    }
+
+    const FRAME_BASE = N + 1
+    let parent = [0, 0, 0, 0]
+    for (let d = 0; d < DEPTH; d++) {
+      const id = FRAME_BASE + d
+      X.use_shape(0, 0, 0, id)
+      if (NEST_TYPE === 'group') {
+        X.set_shape_type(1)
+        X.set_shape_selrect(0, 0, cols * CELL, cols * CELL)
+      } else {
+        X.set_shape_type(0)
+        X.set_shape_selrect(0, 0, cols * CELL, cols * CELL)
+        X.set_shape_clip_content(false)
+      }
+      X.use_shape(...parent)
+      X.add_shape_child(0, 0, 0, id)
+      parent = [0, 0, 0, id]
+    }
+
+    for (let i = 0; i < N; i++) {
+      const [cx, cy] = shapeXY(i)
+      X.use_shape(0, 0, 0, i + 1)
+      X.set_shape_type(3)
+      X.set_shape_selrect(cx + 2, cy + 2, cx + CELL - 2, cy + CELL - 2)
+      const isEffect = EFFECTS !== 'none' && i % EFFECT_EVERY === 0
+      const isGatherLens = isEffect && (EFFECTS === 'bgblur' || EFFECTS === 'glass')
+      if (!isGatherLens) solidFill(0xff000000 | (i * 2654435761 & 0xffffff))
+      if (isEffect) {
+        if (EFFECTS === 'shadow' || EFFECTS === 'both') X.add_shape_shadow(0x80000000, 8, 0, 4, 4, 0, false)
+        if (EFFECTS === 'blur' || EFFECTS === 'both') X.set_shape_blur(0, false, RADIUS)
+        if (EFFECTS === 'bgblur') X.set_shape_blur(1, false, RADIUS)
+        if (EFFECTS === 'glass') X.set_shape_glass(0, 4, 8, 1.5, 0, 0.4, 1, 0.1, 0, 0, 0, 1, GLASS_BLUR, GLASS_FROST, GLASS_DOWNSCALE, 0)
+        if (EFFECTS === 'texture') X.set_shape_texture(20, 30, 0, 0)
+      }
+      X.use_shape(...parent)
+      X.add_shape_child(0, 0, 0, i + 1)
+    }
+
+    let stackId = N + DEPTH + STACK + LENSES + 100
+    const newId = () => stackId++
+    const gc = Math.max(1, Math.ceil(Math.sqrt(STACKS)))
+    for (let g = 0; g < STACKS; g++) {
+      const gcx = ((g % gc) + 0.5) * W / gc
+      const gcy = (Math.floor(g / gc) + 0.5) * H / gc
+      for (let s = 0; s < STACK; s++) {
+        const half = STACK_HALF - s * 18
+        if (STACK_SHAPES) {
+          const sid = newId()
+          X.use_shape(0, 0, 0, sid)
+          X.set_shape_type(3)
+          X.set_shape_selrect(gcx - half + 8, gcy - half + 8, gcx + half - 8, gcy + half - 8)
+          solidFill(0xff000000 | ((s * 0x9e3779b1) & 0xffffff))
+          X.use_shape(...parent)
+          X.add_shape_child(0, 0, 0, sid)
+        }
+        for (let k = 0; k < STACK_BETWEEN; k++) {
+          const id = newId()
+          const span = Math.max(1, 2 * half - 48)
+          const rx = gcx - half + 12 + ((k * 53) % span)
+          const ry = gcy - half + 12 + ((k * 97) % span)
+          X.use_shape(0, 0, 0, id)
+          X.set_shape_type(3)
+          X.set_shape_selrect(rx, ry, rx + 26, ry + 26)
+          solidFill(0xff000000 | ((g * 7919 + s * 104729 + k * 40503) & 0xffffff))
+          if (STACK_SPREAD) X.add_shape_shadow(0x80000000, 8, 0, 4, 4, 0, false)
+          X.use_shape(...parent)
+          X.add_shape_child(0, 0, 0, id)
+        }
+        const id = newId()
+        X.use_shape(0, 0, 0, id)
+        X.set_shape_type(3)
+        X.set_shape_selrect(gcx - half, gcy - half, gcx + half, gcy + half)
+        if (STACK_FX === 'glass') X.set_shape_glass(0, 4, 8, 1.5, 0, 0.4, 1, 0.2, 0, 0, 0, 1, GLASS_BLUR, GLASS_FROST, GLASS_DOWNSCALE, 0)
+        else X.set_shape_blur(1, false, RADIUS)
+        X.use_shape(...parent)
+        X.add_shape_child(0, 0, 0, id)
+      }
+    }
+
+    const LENS_BASE = N + DEPTH + STACK + 2
+    if (LENSES > 0) {
+      const lc = Math.ceil(Math.sqrt(LENSES))
+      const cw = W / lc, ch = H / lc
+      const half = Math.min(cw, ch) * 0.28
+      for (let s = 0; s < LENSES; s++) {
+        const id = LENS_BASE + s
+        const gx = (s % lc + 0.5) * cw, gy = (Math.floor(s / lc) + 0.5) * ch
+        X.use_shape(0, 0, 0, id)
+        X.set_shape_type(3)
+        X.set_shape_selrect(gx - half, gy - half, gx + half, gy + half)
+        if (LENS_TINT) solidFill(0x30ffffff)
+        const radius = RADIUS + (s % LENS_RADII) * 4
+        if (LENS_FX === 'glass') X.set_shape_glass(0, 4, 8, 1.5, 0, 0.4, 1, 0.2, 0, 0, 0, 1, GLASS_BLUR, GLASS_FROST, GLASS_DOWNSCALE, 0)
+        else X.set_shape_blur(1, false, radius)
+        X.use_shape(...parent)
+        X.add_shape_child(0, 0, 0, id)
+        if (LENS_FRINGE) {
+          const reach = 3 * (0.5 * radius + 0.5)
+          const fid = LENS_BASE + LENSES + s
+          X.use_shape(0, 0, 0, fid)
+          X.set_shape_type(3)
+          X.set_shape_selrect(gx + half + reach * 0.2, gy - half - reach * 0.8, gx + half + reach * 0.8, gy - half - reach * 0.2)
+          solidFill(0xff202020)
+          X.use_shape(...parent)
+          X.add_shape_child(0, 0, 0, fid)
+        }
+      }
+    }
+
+    }
+
+    const chan = new MessageChannel()
+    const raf = PACE === 'msg'
+      ? () => new Promise((r) => { chan.port1.onmessage = () => r(); chan.port2.postMessage(0) })
+      : () => new Promise((r) => requestAnimationFrame(r))
+    const ZOOMS = [0.5, 0.8, 1.1, 1.4, 0.65, 0.95, 1.25, 1.55]
+
+    function moveShape(id, dx, dy) {
+      const [cx, cy] = shapeXY(id - 1)
+      X.use_shape(0, 0, 0, id)
+      X.set_shape_selrect(cx + 2 + dx, cy + 2 + dy, cx + CELL - 2 + dx, cy + CELL - 2 + dy)
+    }
+
+    const MODES = {
+      idle: () => { X.set_view(ZOOM0, PAN0[0], PAN0[1]) },
+      pan: (i) => { X.set_view(1, (i * 13) % 2000, (i * 7) % 1200) },
+      zoom: (i) => { X.set_view(ZOOMS[i % ZOOMS.length], 0, 0) },
+      edit1: (i) => { X.set_view(1, 0, 0); moveShape(8, i % 40, i % 40) },
+      editFar: (i) => { X.set_view(1, 0, 0); moveShape(8, (i % 6) * 600, (i % 3) * 600) },
+      editMulti: (i) => {
+        X.set_view(1, 0, 0)
+        for (let k = 0; k < 50; k++) moveShape(1 + ((k * 137) % N), (i % 20) * 30, (i % 20) * 30)
+      },
+    }
+
+    async function runMode(name) {
+      const apply = MODES[name]
+      if (q.get('oneShot') !== null) {
+        const n = Math.max(1, Number(q.get('oneShot')) || 4)
+        for (let i = 0; i < n; i++) { apply(i); renderer.render(); await raf() }
+        return { oneShot: n, mode: name }
+      }
+      for (let i = 0; i < 8; i++) { apply(i); renderer.render(); await raf() }
+      X.prof_reset()
+      let sum = 0, worst = 0, rendered = 0, reused = 0
+      for (let i = 0; i < FRAMES; i++) {
+        apply(i)
+        if (DIRTY_EVERY && i % DIRTY_EVERY === 0 && X.mark_dirty) X.mark_dirty()
+        const t0 = performance.now()
+        renderer.render()
+        const dt = performance.now() - t0
+        sum += dt; if (dt > worst) worst = dt
+        const s = X.last_tile_stats()
+        rendered += (s >>> 16); reused += (s & 0xffff)
+        await raf()
+      }
+      const b = [0, 1, 2, 3, 4, 5, 6].map((i) => X.prof_read(i))
+      const plan = X.prof_read(15), blit = X.prof_read(16), present = X.prof_read(17)
+      const gpuMs = X.prof_read(18), gpuN = X.prof_read(19)
+      const kinds = {
+        paints: +(X.prof_read(10) / FRAMES).toFixed(1),
+        composites: +(X.prof_read(11) / FRAMES).toFixed(1),
+        gathers: +(X.prof_read(12) / FRAMES).toFixed(1),
+        submits: +(X.prof_read(13) / FRAMES).toFixed(1),
+        renders: +(X.prof_read(7) / FRAMES).toFixed(1),
+        poolHit: +(X.prof_read(8) / FRAMES).toFixed(1),
+        poolMiss: +(X.prof_read(9) / FRAMES).toFixed(1),
+        graphRuns: +(X.prof_read(14) / FRAMES).toFixed(1),
+      }
+      const gather = {
+        total: X.prof_read(108), deferrable: X.prof_read(109),
+        estPasses: X.prof_read(110), batchedDispatches: X.prof_read(111),
+      }
+      const dbg = { cands: X.prof_read(100), widest: X.prof_read(101), tallest: X.prof_read(102), declined: X.prof_read(103), atlasH: X.prof_read(104) }
+      const src = {
+        atlasEffects: X.prof_read(105), atlasFuse: X.prof_read(106), atlasPrepass: X.prof_read(107),
+        schedSteps: X.prof_read(112), schedPaints: X.prof_read(113), schedComposites: X.prof_read(114),
+      }
+      const cpuBreakdown = {
+        graphBuild_ms: +(X.prof_read(126) / FRAMES).toFixed(3),
+        schedule_ms: +(X.prof_read(127) / FRAMES).toFixed(3),
+        passesRecord_ms: +(X.prof_read(129) / FRAMES).toFixed(3),
+        sceneEncode_ms: +(X.prof_read(130) / FRAMES).toFixed(3),
+        frontendRecord_ms: +(X.prof_read(131) / FRAMES).toFixed(3),
+      }
+      const pf = X.prof_read(128)
+      const rb = (id) => +(X.prof_read(id) / pf).toFixed(3)
+      let passes = null
+      if (pf > 0) {
+        const fine = { scale: rb(140), warp: rb(141), blur: rb(142), scatter: rb(143), pointwise: rb(144), draw: rb(145), paint: rb(146), mixed: rb(147) }
+        const fineTotal = +Object.values(fine).reduce((a, b) => a + b, 0).toFixed(3)
+        const frame = gpuN > 0 ? gpuMs / gpuN : 0
+        passes = {
+          profiledFrames: pf,
+          fineTotal_ms: fineTotal,
+          frontendAndRest_ms: +(frame - fineTotal).toFixed(3),
+          fine,
+        }
+      }
+      const bump = {
+        overflowFrames: X.prof_read(148),
+        tileRecordsSizedFor: X.prof_read(149),
+        binWordsSizedFor: X.prof_read(150),
+      }
+      let frames = 0, sustainCpu = 0
+      const t1 = performance.now()
+      const sustainMs = Math.min(Math.max(0, Number(q.get('sustainMs') ?? 1500)), 3000)
+      while (performance.now() - t1 < sustainMs) {
+        apply(frames)
+        if (DIRTY_EVERY && frames % DIRTY_EVERY === 0 && X.mark_dirty) X.mark_dirty()
+        const s0 = performance.now()
+        renderer.render()
+        sustainCpu += performance.now() - s0
+        frames++
+        await raf()
+      }
+      const fps = +(frames / ((performance.now() - t1) / 1000)).toFixed(1)
+      const sustainCpuMs = sustainCpu / (frames || 1)
+      return {
+        cpuMsPerFrame: +(sum / FRAMES).toFixed(3),
+        worstMs: +worst.toFixed(2),
+        skippedFrames: X.prof_read(124),
+        proxyFrames: X.prof_read(125),
+        tilesRendered: +(rendered / FRAMES).toFixed(2),
+        tilesReused: +(reused / FRAMES).toFixed(2),
+        phases_ms: {
+          build: +(b[0] / FRAMES).toFixed(3), scene: +(b[1] / FRAMES).toFixed(3),
+          render: +(b[2] / FRAMES).toFixed(3), submit: +(b[3] / FRAMES).toFixed(3),
+          tex: +(b[4] / FRAMES).toFixed(3),
+          plan: +(plan / FRAMES).toFixed(3), blit: +(blit / FRAMES).toFixed(3),
+          present: +(present / FRAMES).toFixed(3),
+          acquire: +(X.prof_read(115) / FRAMES).toFixed(3),
+          other: +((sum - b[0] - b[1] - b[2] - b[3] - b[4] - plan - blit - present) / FRAMES).toFixed(3),
+        },
+        gpuMsPerFrame: gpuN > 0 ? +(gpuMs / gpuN).toFixed(3) : null,
+        gpuSamples: gpuN,
+        texturesCreated: +(b[6] / FRAMES).toFixed(1),
+        stepsPerFrame: +(b[5] / FRAMES).toFixed(1),
+        kinds,
+        gather,
+        dbg,
+        src,
+        passes,
+        bump,
+        cpuBreakdown,
+        sustainedFps: fps,
+        sustainCpuMs: +sustainCpuMs.toFixed(3),
+        framePeriodMs: +(1000 / fps).toFixed(2),
+        nonCpuMs: +(1000 / fps - sustainCpuMs).toFixed(2),
+      }
+    }
+
+    const res = { backend: BACKEND, shapes: N, depth: DEPTH, effects: EFFECTS, radius: RADIUS, effectEvery: EFFECT_EVERY, stack: STACK, stackFx: STACK_FX, stacks: STACKS, stackBetween: STACK_BETWEEN, stackSpread: STACK_SPREAD, lenses: LENSES, lensFx: LENS_FX, bgFill: BGFILL, pace: PACE, canvas: W + 'x' + H, modes: {} }
+    const capMode = q.get('capture')
+    if (capMode && MODES[capMode]) {
+      const apply = MODES[capMode]
+      const frames = Number(q.get('capFrames') ?? 8)
+      X.prof_reset()
+      for (let i = 0; i < frames; i++) { apply(i); renderer.render(); await raf() }
+      res.capture = { mode: capMode, frames, renders: X.prof_read(7), atlasFuse: X.prof_read(106) }
+      window.__RESULT__ = res
+      log(JSON.stringify(res.capture, null, 2))
+      return
+    }
+    if (Number(q.get('once') ?? 0)) {
+      X.prof_reset()
+      X.set_view(1, 0, 0)
+      renderer.render()
+      await raf()
+      res.once = { graphRuns: X.prof_read(14), gatherTotal: X.prof_read(108), deferrable: X.prof_read(109) }
+      window.__RESULT__ = res
+      log(JSON.stringify(res, null, 2))
+      return
+    }
+    const modeList = q.get('modes') ? q.get('modes').split(',') : ['idle', 'pan', 'zoom', 'edit1', 'editFar', 'editMulti']
+    for (const name of modeList) {
+      log(JSON.stringify(res, null, 2) + '\n\nrunning ' + name + '…')
+      res.modes[name] = await runMode(name)
+    }
+    window.__RESULT__ = res
+    log(JSON.stringify(res, null, 2))
+  }).catch((e) => { window.__ERR__ = String(e && e.stack || e); log('ERROR ' + e) })
+}
+
+main()
+</script>

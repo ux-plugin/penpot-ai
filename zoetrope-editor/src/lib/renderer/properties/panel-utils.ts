@@ -1,0 +1,138 @@
+import type { Blur, Fill, Glass, PenpotNode, Shadow, Stroke } from 'penpot-exporter/types'
+import type { Material } from '../api/material'
+
+export const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
+
+export const DEFAULT_FILL: Fill = { fillColor: '#3B82F6', fillOpacity: 1 }
+
+/** Max stacked fills per shape (matches Penpot `types.fills/MAX-FILLS`). */
+export const MAX_FILLS = 8
+
+export const DEFAULT_STROKE: Stroke = {
+  strokeColor: '#000000',
+  strokeOpacity: 1,
+  strokeWidth: 1,
+  strokeAlignment: 'center',
+  strokeStyle: 'solid',
+}
+
+/** Max stacked strokes per shape. */
+export const MAX_STROKES = 8
+
+export const DEFAULT_SHADOW: Shadow = {
+  id: null,
+  style: 'drop-shadow',
+  offsetX: 4,
+  offsetY: 4,
+  blur: 4,
+  spread: 0,
+  hidden: false,
+  color: { color: '#000000', opacity: 0.2 },
+}
+
+export const DEFAULT_BLUR: Blur = {
+  type: 'layer-blur',
+  value: 4,
+  hidden: false,
+}
+
+export const DEFAULT_BACKGROUND_BLUR: Blur = {
+  type: 'background-blur',
+  value: 4,
+  hidden: false,
+}
+
+export const DEFAULT_GLASS: Glass = {
+  surfaceType: 1,           // squircle
+  bezelWidth: 40,           // pixels
+  glassThickness: 1.2,      // multiplier
+  refractiveIndex: 1.5,     // physical index
+  specularAngle: -60,       // degrees
+  specularOpacity: 0.5,     // 0–1
+  specularSaturation: 4,    // 0=white, 9=vivid prismatic
+  chromaticAberration: 3,   // pixels
+  splay: 1.0,               // dome
+  tiltAngle: 0,             // degrees
+  edgeBoost: 0,             // 0–5
+  zoom: 100,                // percentage (100% = no zoom)
+  blur: 0,                  // sigma
+  frost: 0,                 // 0–1
+  hidden: false,
+}
+
+export type Texture = {
+  noiseSize: number
+  radius: number
+  clipToShape: boolean
+  hidden: boolean
+}
+
+export const DEFAULT_TEXTURE: Texture = {
+  noiseSize: 100,
+  radius: 0,
+  clipToShape: true,
+  hidden: false,
+}
+
+/**
+ * A custom SkSL shader material (post-body overlay effect). `Material` is
+ * defined next to the WASM bridge (`api/material.ts`) and reused here so the
+ * panel and the renderer share one type. The starter source is a UV gradient
+ * — `u_resolution` (engine-supplied) is the shape size in px.
+ */
+export const DEFAULT_MATERIAL: Material = {
+  source: `// Engine-supplied uniforms must still be declared to use them.
+uniform float2 u_resolution; // shape size in px (filled by the engine)
+// Declaring a clock uniform makes this material animate: the preview gains
+// transport (play/scrub/loop). u_phase runs 0->1 over the loop, so a full
+// cycle wraps seamlessly with no hand-kept LOOP constant. (u_time, raw
+// seconds, is also available.) Delete the clock uniform for a static shader.
+uniform float u_phase;       // 0 -> 1 over one loop
+
+const float TAU = 6.2831853;
+
+half4 main(float2 p) {
+  float2 uv = p / u_resolution;
+  float pulse = 0.5 + 0.5 * sin(TAU * u_phase);
+  return half4(uv.x, uv.y, pulse, 1.0);
+}`,
+  language: 'sksl',
+  uniforms: [],
+  hidden: false,
+}
+
+/** Max stacked effects (shadows + blur + glass + texture + material) per shape. */
+export const MAX_EFFECTS = 8
+
+export type EffectKind =
+  | 'drop-shadow'
+  | 'inner-shadow'
+  | 'layer-blur'
+  | 'background-blur'
+  | 'glass'
+  | 'texture'
+  | 'material'
+
+export type EffectItem =
+  | { kind: 'drop-shadow'; shadow: Shadow }
+  | { kind: 'inner-shadow'; shadow: Shadow }
+  | { kind: 'layer-blur'; blur: Blur }
+  | { kind: 'background-blur'; blur: Blur }
+  | { kind: 'glass'; glass: Glass }
+  | { kind: 'texture'; texture: Texture }
+  | { kind: 'material'; material: Material }
+
+export function normalizeHex(input: string): string {
+  let s = input.trim()
+  if (!s.startsWith('#')) s = `#${s}`
+  if (/^#[0-9A-Fa-f]{3}$/.test(s)) {
+    const r = s[1]
+    const g = s[2]
+    const b = s[3]
+    s = `#${r}${r}${g}${g}${b}${b}`
+  }
+  if (/^#[0-9A-Fa-f]{6}$/.test(s)) return s
+  return '#FFFFFF'
+}
+
+export type RectLikeNode = PenpotNode & { x?: number; y?: number; width?: number; height?: number }

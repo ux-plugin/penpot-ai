@@ -1,6 +1,6 @@
-use macros::{wasm_error, ToJs};
+use render_macros::{wasm_error, ToJs};
 
-use super::RawSegmentData;
+use super::raw_segment_from;
 use crate::math;
 use crate::shapes::BoolType;
 use crate::uuid::Uuid;
@@ -68,7 +68,7 @@ pub extern "C" fn calculate_bool(raw_bool_type: u8) -> Result<*mut u8> {
             .segments()
             .iter()
             .copied()
-            .map(RawSegmentData::from_segment)
+            .map(raw_segment_from)
             .collect();
     });
     Ok(mem::write_vec(result))

@@ -1,0 +1,186 @@
+frame [0.0 0.0 1192.0 622.0] nodes 185 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 64 item(s)          in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+  1 | draw · 64 item(s) @0       in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+  2 | halo of draw · 64 item(s) @0 in=[1] Halo of 0
+  3   s1 down                    in=[2] Scale → 1
+  4   s1 lens warp               in=[3] Warp program 0
+  5   s1 frost blur-X σ3.6       in=[4] Blur σ3.6 X srgb taps 193
+  6   s1 frost blur-Y σ3.6       in=[5] Blur σ3.6 Y srgb taps 193
+  7   s1 lens scatter            in=[6] Scatter
+  8   s1 up                      in=[7] Scale → 1
+  9   s1 lens shade              in=[8] Shade
+ 10   s1 lens mask-mix           in=[9, 0] MaskMix program 0
+ 11   s1 gather mask             in=[] Draw n=1 [99.3 51.8 198.7 103.7] 41:coverage[99.3 51.8 198.7 103.7]
+ 12 | s1 gather → spine          in=[0, 10, 11] Compose MaskedMix
+ 13 | draw · 64 item(s) @1       in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+ 14 | halo of s1 gather → spine @1 in=[13] Halo of 12
+ 15   s2 down                    in=[14] Scale → 1
+ 16   s2 lens warp               in=[15] Warp program 0
+ 17   s2 frost blur-X σ3.6       in=[16] Blur σ3.6 X srgb taps 193
+ 18   s2 frost blur-Y σ3.6       in=[17] Blur σ3.6 Y srgb taps 193
+ 19   s2 lens scatter            in=[18] Scatter
+ 20   s2 up                      in=[19] Scale → 1
+ 21   s2 lens shade              in=[20] Shade
+ 22   s2 lens mask-mix           in=[21, 12] MaskMix program 0
+ 23   s2 gather mask             in=[] Draw n=1 [397.3 51.8 496.7 103.7] 42:coverage[397.3 51.8 496.7 103.7]
+ 24 | s2 gather → spine          in=[12, 22, 23] Compose MaskedMix
+ 25 | draw · 64 item(s) @2       in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+ 26 | halo of s2 gather → spine @2 in=[25] Halo of 24
+ 27   s3 down                    in=[26] Scale → 1
+ 28   s3 lens warp               in=[27] Warp program 0
+ 29   s3 frost blur-X σ3.6       in=[28] Blur σ3.6 X srgb taps 193
+ 30   s3 frost blur-Y σ3.6       in=[29] Blur σ3.6 Y srgb taps 193
+ 31   s3 lens scatter            in=[30] Scatter
+ 32   s3 up                      in=[31] Scale → 1
+ 33   s3 lens shade              in=[32] Shade
+ 34   s3 lens mask-mix           in=[33, 24] MaskMix program 0
+ 35   s3 gather mask             in=[] Draw n=1 [695.3 51.8 794.7 103.7] 43:coverage[695.3 51.8 794.7 103.7]
+ 36 | s3 gather → spine          in=[24, 34, 35] Compose MaskedMix
+ 37 | draw · 64 item(s) @3       in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+ 38 | halo of s3 gather → spine @3 in=[37] Halo of 36
+ 39   s4 down                    in=[38] Scale → 1
+ 40   s4 lens warp               in=[39] Warp program 0
+ 41   s4 frost blur-X σ3.6       in=[40] Blur σ3.6 X srgb taps 193
+ 42   s4 frost blur-Y σ3.6       in=[41] Blur σ3.6 Y srgb taps 193
+ 43   s4 lens scatter            in=[42] Scatter
+ 44   s4 up                      in=[43] Scale → 1
+ 45   s4 lens shade              in=[44] Shade
+ 46   s4 lens mask-mix           in=[45, 36] MaskMix program 0
+ 47   s4 gather mask             in=[] Draw n=1 [993.3 51.8 1092.7 103.7] 44:coverage[993.3 51.8 1092.7 103.7]
+ 48 | s4 gather → spine          in=[36, 46, 47] Compose MaskedMix
+ 49 | draw · 64 item(s) @4       in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+ 50 | halo of s4 gather → spine @4 in=[49] Halo of 48
+ 51   s5 down                    in=[50] Scale → 1
+ 52   s5 lens warp               in=[51] Warp program 0
+ 53   s5 frost blur-X σ3.6       in=[52] Blur σ3.6 X srgb taps 193
+ 54   s5 frost blur-Y σ3.6       in=[53] Blur σ3.6 Y srgb taps 193
+ 55   s5 lens scatter            in=[54] Scatter
+ 56   s5 up                      in=[55] Scale → 1
+ 57   s5 lens shade              in=[56] Shade
+ 58   s5 lens mask-mix           in=[57, 48] MaskMix program 0
+ 59   s5 gather mask             in=[] Draw n=1 [99.3 207.3 198.7 259.2] 45:coverage[99.3 207.3 198.7 259.2]
+ 60 | s5 gather → spine          in=[48, 58, 59] Compose MaskedMix
+ 61   s6 down                    in=[60] Scale → 1
+ 62   s6 lens warp               in=[61] Warp program 0
+ 63   s6 frost blur-X σ3.6       in=[62] Blur σ3.6 X srgb taps 193
+ 64   s6 frost blur-Y σ3.6       in=[63] Blur σ3.6 Y srgb taps 193
+ 65   s6 lens scatter            in=[64] Scatter
+ 66   s6 up                      in=[65] Scale → 1
+ 67   s6 lens shade              in=[66] Shade
+ 68   s6 lens mask-mix           in=[67, 60] MaskMix program 0
+ 69   s6 gather mask             in=[] Draw n=1 [397.3 207.3 496.7 259.2] 46:coverage[397.3 207.3 496.7 259.2]
+ 70 | s6 gather → spine          in=[60, 68, 69] Compose MaskedMix
+ 71   s7 down                    in=[70] Scale → 1
+ 72   s7 lens warp               in=[71] Warp program 0
+ 73   s7 frost blur-X σ3.6       in=[72] Blur σ3.6 X srgb taps 193
+ 74   s7 frost blur-Y σ3.6       in=[73] Blur σ3.6 Y srgb taps 193
+ 75   s7 lens scatter            in=[74] Scatter
+ 76   s7 up                      in=[75] Scale → 1
+ 77   s7 lens shade              in=[76] Shade
+ 78   s7 lens mask-mix           in=[77, 70] MaskMix program 0
+ 79   s7 gather mask             in=[] Draw n=1 [695.3 207.3 794.7 259.2] 47:coverage[695.3 207.3 794.7 259.2]
+ 80 | s7 gather → spine          in=[70, 78, 79] Compose MaskedMix
+ 81 | draw · 64 item(s) @5       in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+ 82 | halo of s7 gather → spine @5 in=[81] Halo of 80
+ 83   s8 down                    in=[82] Scale → 1
+ 84   s8 lens warp               in=[83] Warp program 0
+ 85   s8 frost blur-X σ3.6       in=[84] Blur σ3.6 X srgb taps 193
+ 86   s8 frost blur-Y σ3.6       in=[85] Blur σ3.6 Y srgb taps 193
+ 87   s8 lens scatter            in=[86] Scatter
+ 88   s8 up                      in=[87] Scale → 1
+ 89   s8 lens shade              in=[88] Shade
+ 90   s8 lens mask-mix           in=[89, 80] MaskMix program 0
+ 91   s8 gather mask             in=[] Draw n=1 [993.3 207.3 1092.7 259.2] 48:coverage[993.3 207.3 1092.7 259.2]
+ 92 | s8 gather → spine          in=[80, 90, 91] Compose MaskedMix
+ 93 | draw · 64 item(s) @6       in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+ 94 | halo of s8 gather → spine @6 in=[93] Halo of 92
+ 95   s9 down                    in=[94] Scale → 1
+ 96   s9 lens warp               in=[95] Warp program 0
+ 97   s9 frost blur-X σ3.6       in=[96] Blur σ3.6 X srgb taps 193
+ 98   s9 frost blur-Y σ3.6       in=[97] Blur σ3.6 Y srgb taps 193
+ 99   s9 lens scatter            in=[98] Scatter
+100   s9 up                      in=[99] Scale → 1
+101   s9 lens shade              in=[100] Shade
+102   s9 lens mask-mix           in=[101, 92] MaskMix program 0
+103   s9 gather mask             in=[] Draw n=1 [99.3 362.8 198.7 414.7] 49:coverage[99.3 362.8 198.7 414.7]
+104 | s9 gather → spine          in=[92, 102, 103] Compose MaskedMix
+105   s10 down                   in=[104] Scale → 1
+106   s10 lens warp              in=[105] Warp program 0
+107   s10 frost blur-X σ3.6      in=[106] Blur σ3.6 X srgb taps 193
+108   s10 frost blur-Y σ3.6      in=[107] Blur σ3.6 Y srgb taps 193
+109   s10 lens scatter           in=[108] Scatter
+110   s10 up                     in=[109] Scale → 1
+111   s10 lens shade             in=[110] Shade
+112   s10 lens mask-mix          in=[111, 104] MaskMix program 0
+113   s10 gather mask            in=[] Draw n=1 [397.3 362.8 496.7 414.7] 4a:coverage[397.3 362.8 496.7 414.7]
+114 | s10 gather → spine         in=[104, 112, 113] Compose MaskedMix
+115   s11 down                   in=[114] Scale → 1
+116   s11 lens warp              in=[115] Warp program 0
+117   s11 frost blur-X σ3.6      in=[116] Blur σ3.6 X srgb taps 193
+118   s11 frost blur-Y σ3.6      in=[117] Blur σ3.6 Y srgb taps 193
+119   s11 lens scatter           in=[118] Scatter
+120   s11 up                     in=[119] Scale → 1
+121   s11 lens shade             in=[120] Shade
+122   s11 lens mask-mix          in=[121, 114] MaskMix program 0
+123   s11 gather mask            in=[] Draw n=1 [695.3 362.8 794.7 414.7] 4b:coverage[695.3 362.8 794.7 414.7]
+124 | s11 gather → spine         in=[114, 122, 123] Compose MaskedMix
+125 | draw · 64 item(s) @7       in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+126 | halo of s11 gather → spine @7 in=[125] Halo of 124
+127   s12 down                   in=[126] Scale → 1
+128   s12 lens warp              in=[127] Warp program 0
+129   s12 frost blur-X σ3.6      in=[128] Blur σ3.6 X srgb taps 193
+130   s12 frost blur-Y σ3.6      in=[129] Blur σ3.6 Y srgb taps 193
+131   s12 lens scatter           in=[130] Scatter
+132   s12 up                     in=[131] Scale → 1
+133   s12 lens shade             in=[132] Shade
+134   s12 lens mask-mix          in=[133, 124] MaskMix program 0
+135   s12 gather mask            in=[] Draw n=1 [993.3 362.8 1092.7 414.7] 4c:coverage[993.3 362.8 1092.7 414.7]
+136 | s12 gather → spine         in=[124, 134, 135] Compose MaskedMix
+137 | draw · 64 item(s) @8       in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+138 | halo of s12 gather → spine @8 in=[137] Halo of 136
+139   s13 down                   in=[138] Scale → 1
+140   s13 lens warp              in=[139] Warp program 0
+141   s13 frost blur-X σ3.6      in=[140] Blur σ3.6 X srgb taps 193
+142   s13 frost blur-Y σ3.6      in=[141] Blur σ3.6 Y srgb taps 193
+143   s13 lens scatter           in=[142] Scatter
+144   s13 up                     in=[143] Scale → 1
+145   s13 lens shade             in=[144] Shade
+146   s13 lens mask-mix          in=[145, 136] MaskMix program 0
+147   s13 gather mask            in=[] Draw n=1 [99.3 518.3 198.7 570.2] 4d:coverage[99.3 518.3 198.7 570.2]
+148 | s13 gather → spine         in=[136, 146, 147] Compose MaskedMix
+149 | draw · 64 item(s) @9       in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+150 | halo of s13 gather → spine @9 in=[149] Halo of 148
+151   s14 down                   in=[150] Scale → 1
+152   s14 lens warp              in=[151] Warp program 0
+153   s14 frost blur-X σ3.6      in=[152] Blur σ3.6 X srgb taps 193
+154   s14 frost blur-Y σ3.6      in=[153] Blur σ3.6 Y srgb taps 193
+155   s14 lens scatter           in=[154] Scatter
+156   s14 up                     in=[155] Scale → 1
+157   s14 lens shade             in=[156] Shade
+158   s14 lens mask-mix          in=[157, 148] MaskMix program 0
+159   s14 gather mask            in=[] Draw n=1 [397.3 518.3 496.7 570.2] 4e:coverage[397.3 518.3 496.7 570.2]
+160 | s14 gather → spine         in=[148, 158, 159] Compose MaskedMix
+161 | draw · 64 item(s) @10      in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+162 | halo of s14 gather → spine @10 in=[161] Halo of 160
+163   s15 down                   in=[162] Scale → 1
+164   s15 lens warp              in=[163] Warp program 0
+165   s15 frost blur-X σ3.6      in=[164] Blur σ3.6 X srgb taps 193
+166   s15 frost blur-Y σ3.6      in=[165] Blur σ3.6 Y srgb taps 193
+167   s15 lens scatter           in=[166] Scatter
+168   s15 up                     in=[167] Scale → 1
+169   s15 lens shade             in=[168] Shade
+170   s15 lens mask-mix          in=[169, 160] MaskMix program 0
+171   s15 gather mask            in=[] Draw n=1 [695.3 518.3 794.7 570.2] 4f:coverage[695.3 518.3 794.7 570.2]
+172 | s15 gather → spine         in=[160, 170, 171] Compose MaskedMix
+173 | draw · 64 item(s) @11      in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
+174 | halo of s15 gather → spine @11 in=[173] Halo of 172
+175   s16 down                   in=[174] Scale → 1
+176   s16 lens warp              in=[175] Warp program 0
+177   s16 frost blur-X σ3.6      in=[176] Blur σ3.6 X srgb taps 193
+178   s16 frost blur-Y σ3.6      in=[177] Blur σ3.6 Y srgb taps 193
+179   s16 lens scatter           in=[178] Scatter
+180   s16 up                     in=[179] Scale → 1
+181   s16 lens shade             in=[180] Shade
+182   s16 lens mask-mix          in=[181, 172] MaskMix program 0
+183   s16 gather mask            in=[] Draw n=1 [993.3 518.3 1092.7 570.2] 50:coverage[993.3 518.3 1092.7 570.2]
+184 | s16 gather → spine         in=[172, 182, 183] Compose MaskedMix

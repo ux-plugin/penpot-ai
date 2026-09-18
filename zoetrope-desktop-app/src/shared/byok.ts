@@ -1,7 +1,7 @@
 /**
  * Shared contract for the desktop BYOK (bring-your-own-key) bridge.
  *
- * The renderer (skia-rs-wasm) manages a provider API key by talking to the Electron
+ * The renderer (zoetrope-editor) manages a provider API key by talking to the Electron
  * main process over these IPC channels. The key is encrypted at rest with the OS
  * keychain (`safeStorage`) and held only in the main process: the renderer sends the
  * key in once (on save) and otherwise sees only non-secret status/metadata. The

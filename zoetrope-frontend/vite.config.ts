@@ -6,7 +6,7 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    // 5173-5176 are taken on this machine (skia-rs-wasm, figma_plugin_fe,
+    // 5173-5176 are taken on this machine (zoetrope-editor, figma_plugin_fe,
     // demo-app, etc). Pin to a stable port for the admin-app launch config.
     port: 5181,
     strictPort: true,

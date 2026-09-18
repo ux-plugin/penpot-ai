@@ -57,13 +57,13 @@ export default defineConfig(({ command, mode }) => {
       }),
       tailwindcss(),
       viteSingleFile(),
-      // Copy skia-rs-wasm WASM assets to dist for plugin
+      // Copy zoetrope-editor WASM assets to dist for plugin
       {
         name: "copy-wasm",
         closeBundle() {
           try {
             const __dirname = dirname(fileURLToPath(import.meta.url));
-            const src = join(__dirname, "..", "skia-rs-wasm", "public", "wasm");
+            const src = join(__dirname, "..", "zoetrope-editor", "public", "wasm");
             const dest = join(__dirname, "dist", "wasm");
             mkdirSync(dest, { recursive: true });
             for (const name of readdirSync(src)) {
@@ -71,7 +71,7 @@ export default defineConfig(({ command, mode }) => {
             }
           } catch (e) {
             console.warn(
-              "[copy-wasm] Skip copying WASM (e.g. skia-rs-wasm not present):",
+              "[copy-wasm] Skip copying WASM (e.g. zoetrope-editor not present):",
               e,
             );
           }
@@ -248,13 +248,13 @@ export default defineConfig(({ command, mode }) => {
         // Penpot-exporter (workspace) aliases – so Vite can resolve when transforming that package’s source
         "@common": fileURLToPath(
           new URL(
-            "../skia-rs-wasm/packages/penpot-exporter-figma-plugin/common",
+            "../zoetrope-editor/packages/penpot-exporter-figma-plugin/common",
             import.meta.url,
           ),
         ),
         "@plugin": fileURLToPath(
           new URL(
-            "../skia-rs-wasm/packages/penpot-exporter-figma-plugin/plugin-src",
+            "../zoetrope-editor/packages/penpot-exporter-figma-plugin/plugin-src",
             import.meta.url,
           ),
         ),

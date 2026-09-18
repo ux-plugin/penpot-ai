@@ -1,0 +1,20 @@
+frame [0.0 0.0 1192.0 242.0] nodes 19 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 0 item(s)           in=[] Draw n=0 [0.0 0.0 0.0 0.0] 
+  1   s1 drop silhouette         in=[] Draw n=1 [44.0 44.0 198.0 198.0] 1:coverage+4.0[44.0 44.0 198.0 198.0]
+  2 | s1 drop → spine            in=[0, 1] Compose Over colour [0.00, 0.00, 0.00, 0.71] offset 16.0,20.0
+  3 | draw · 1 item(s)           in=[2] Draw n=1 [48.0 48.0 194.0 194.0] 1:body[48.0 48.0 194.0 194.0]
+  4   s2 drop silhouette         in=[] Draw n=1 [236.0 46.0 386.0 196.0] 2:coverage+2.0[236.0 46.0 386.0 196.0]
+  5 | s2 drop → spine            in=[3, 4] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 18.0,22.0
+  6   s2 drop silhouette         in=[] Draw n=1 [238.0 48.0 384.0 194.0] 2:coverage[238.0 48.0 384.0 194.0]
+  7 | s2 drop → spine            in=[5, 6] Compose Over colour [0.71, 0.16, 0.08, 0.78] offset -14.0,10.0
+  8 | draw · 1 item(s)           in=[7] Draw n=1 [238.0 48.0 384.0 194.0] 2:body[238.0 48.0 384.0 194.0]
+  9   s3 drop silhouette         in=[] Draw n=1 [428.0 48.0 574.0 194.0] 3:coverage[428.0 48.0 574.0 194.0]
+ 10   s3 down                    in=[9] Scale → 0.5
+ 11   s3 drop blur-X σ8.6        in=[10] Blur σ8.6 X srgb transparent taps 193
+ 12   s3 drop blur-Y σ8.6        in=[11] Blur σ8.6 Y srgb transparent taps 193
+ 13   s3 up                      in=[12] Scale → 1
+ 14 | s3 drop → spine            in=[8, 13] Compose Over colour [0.12, 0.24, 0.55, 0.59] offset -8.0,14.0
+ 15   s3 drop silhouette         in=[] Draw n=1 [425.0 45.0 577.0 197.0] 3:coverage+3.0[425.0 45.0 577.0 197.0]
+ 16 | s3 drop → spine            in=[14, 15] Compose Over colour [0.00, 0.00, 0.00, 0.75] offset 16.0,18.0
+ 17 | draw · 1 item(s)           in=[16] Draw n=1 [428.0 48.0 574.0 194.0] 3:body[428.0 48.0 574.0 194.0]
+ 18 | draw · 1 item(s)           in=[17] Draw n=1 [618.0 48.0 764.0 194.0] 4:body[618.0 48.0 764.0 194.0]

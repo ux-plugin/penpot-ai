@@ -7,7 +7,7 @@ import {
   MessageSquare,
   Bug,
 } from "lucide-react";
-import { docProxy, documentModel, useSnapshot } from 'skia-rs-wasm';
+import { docProxy, documentModel, useSnapshot } from 'zoetrope-editor';
 import { useUserSettingsStore } from '@/plugin-ui/stores/useUserSettingsStore.ts';
 import { useAuthenticationStore } from "@/plugin-ui/stores/useAuthenticationStore.ts";
 import { useUserConfigQuery } from "@/plugin-ui/api/user/fetchUserConfig.ts";

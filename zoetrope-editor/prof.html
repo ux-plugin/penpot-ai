@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>sink profiler</title>
+<style>body{margin:0;background:#111;color:#ddd;font:13px/1.5 monospace}#c{width:1280px;height:800px;display:block}#s{position:fixed;right:8px;top:8px;background:#000;color:#0f0;padding:8px 10px;white-space:pre}</style>
+</head><body><canvas id="c" width="1280" height="800"></canvas><div id="s">loading…</div>
+<script type="module">
+import { loadVelloModule } from '/src/lib/renderer/vello-module.ts'
+import { setContextInitialized } from '/src/lib/renderer/api/context.ts'
+import { setObject } from '/src/lib/renderer/api/orchestration.ts'
+import { createRect, createEllipse } from '/src/lib/renderer/node-factory.ts'
+import { setShapeChildren } from '/src/lib/renderer/api/shape.ts'
+import { setCanvasBackground } from '/src/lib/renderer/api/canvas.ts'
+
+const q = new URLSearchParams(location.search)
+const N = +(q.get('n') || 150), K = +(q.get('k') || 60), EFFECTS = q.get('effects') === '1'
+const s = m => document.getElementById('s').textContent = m
+
+async function main() {
+  const canvas = document.getElementById('c'); setContextInitialized(true)
+  const m = await loadVelloModule(); await m.velloBackend.attachCanvas(canvas)
+  m._set_render_options(0, 1); m._set_scheduler(1); m._set_tile_effects(1)
+  m._set_view(1, 0, 0); setCanvasBackground(m, '#ffffff')
+  const PAL = ['#3d7bfd','#f5c518','#e63946','#2a9d8f','#a06bd8','#ef8a3a']
+  const cols = Math.ceil(Math.sqrt(N)); const ids = []
+  for (let i = 0; i < N; i++) {
+    const x = 40 + (i % cols) * 80, y = 40 + Math.floor(i / cols) * 70
+    const node = (i % 2 === 0) ? createRect({ x, y, width: 60, height: 60, fillColor: PAL[i % PAL.length] })
+                               : createEllipse({ x, y, width: 60, height: 60, fillColor: PAL[i % PAL.length] })
+    if (EFFECTS) { node.blur = { type:'layer-blur', value:8, hidden:false }; node.shadow = [{ id:null, style:'drop-shadow', offsetX:5, offsetY:6, blur:9, spread:0, hidden:false, color:{ color:'#101828', opacity:0.45 } }] }
+    setObject(m, node); ids.push(node.id)
+  }
+  m._use_shape(0, 0, 0, 0); setShapeChildren(m, ids)
+
+  // Zoom wobbles every frame → the tile cache (scale-variant) drops, so every measured frame is a
+  // cold full redraw — the raw draw+effect cost, not the cached-pan cost.
+  const zoom = i => 1 + 0.08 * Math.sin(i * 0.3)
+  for (let i = 0; i < 20; i++) { m._set_view(zoom(i), Math.sin(i) * 20, 0); m.velloBackend.renderNow() }   // warmup
+
+  m._prof_reset()
+  const t0 = performance.now()
+  for (let i = 0; i < K; i++) { m._set_view(zoom(i), Math.sin(i * 0.1) * 40, Math.cos(i * 0.1) * 25); m.velloBackend.renderNow() }
+  const wall = (performance.now() - t0) / K
+  const R = w => m._prof_read(w) / K
+  const build = R(0), scene = R(1), render = R(2), submit = R(3), tex = R(4)
+  const steps = m._prof_read(5) / K, texn = m._prof_read(6) / K, renders = m._prof_read(7) / K
+  const sum = build + scene + render + submit + tex
+  const pc = x => Math.round(100 * x / sum)
+  window.__PROF__ = { n:N, k:K, effects:EFFECTS, wallMsPerFrame:+wall.toFixed(2), rendersPerFrame:+renders.toFixed(1), stepsPerFrame:Math.round(steps), texPerFrame:Math.round(texn),
+    ms:{ build:+build.toFixed(2), scene:+scene.toFixed(2), render:+render.toFixed(2), submit:+submit.toFixed(2), tex:+tex.toFixed(2), measuredSum:+sum.toFixed(2), gpuGap:+(wall-sum).toFixed(2) },
+    pct:{ build:pc(build), scene:pc(scene), render:pc(render), submit:pc(submit), tex:pc(tex) } }
+  s(`N=${N}  steps/frame=${Math.round(steps)}  tex/frame=${Math.round(texn)}
+wall/frame=${wall.toFixed(1)}ms   phase-sum=${sum.toFixed(1)}ms
+build  ${build.toFixed(1)}ms (${pc(build)}%)
+scene  ${scene.toFixed(1)}ms (${pc(scene)}%)
+render ${render.toFixed(1)}ms (${pc(render)}%)
+submit ${submit.toFixed(1)}ms (${pc(submit)}%)
+tex    ${tex.toFixed(1)}ms (${pc(tex)}%)
+DONE`)
+}
+main().catch(e => { s('ERR ' + (e?.message || e)); window.__PROF_ERR__ = String(e?.stack || e); console.error(e) })
+</script></body></html>

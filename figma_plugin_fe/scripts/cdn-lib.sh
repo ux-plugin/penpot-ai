@@ -4,7 +4,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$PLUGIN_DIR/.." && pwd)"
-SKIA_DIR="$REPO_ROOT/skia-rs-wasm"
+SKIA_DIR="$REPO_ROOT/zoetrope-editor"
 CONTENT_DIR="$PLUGIN_DIR/cdn/content"
 
 # Load .env so VITE_* and other vars are used by build_plugin and child processes
@@ -34,9 +34,9 @@ build_wasm() {
 
 
 build_skia_rs_wasm() {
-  echo "[cdn] Building skia-rs-wasm (library + worker)..."
-  (cd "$REPO_ROOT" && pnpm --filter skia-rs-wasm run build)
-  echo "[cdn] skia-rs-wasm build done"
+  echo "[cdn] Building zoetrope-editor (library + worker)..."
+  (cd "$REPO_ROOT" && pnpm --filter zoetrope-editor run build)
+  echo "[cdn] zoetrope-editor build done"
 }
 
 build_exporter() {
@@ -52,7 +52,7 @@ build_figma_adapter() {
 
 build_worker() {
   echo "[cdn] Building worker..."
-  pnpm --filter skia-rs-wasm run build:worker
+  pnpm --filter zoetrope-editor run build:worker
 }
 
 build_plugin() {
@@ -91,10 +91,10 @@ prepare_content() {
   else
     echo "[cdn] WARN: redirect.html not found (build plugin first)" >&2
   fi
-  # WASM artifacts: canonical source is skia-rs-wasm/public/wasm (populated by render-wasm build)
+  # WASM artifacts: canonical source is zoetrope-editor/public/wasm (populated by render-wasm build)
   if [ -f "$SKIA_DIR/public/wasm/render-wasm.js" ] && [ -f "$SKIA_DIR/public/wasm/render-wasm.wasm" ]; then
     cp -r "$SKIA_DIR/public/wasm/"* "$CONTENT_DIR/wasm/"
-    echo "[cdn] Copied wasm/ from skia-rs-wasm/public/wasm (render-wasm build output)"
+    echo "[cdn] Copied wasm/ from zoetrope-editor/public/wasm (render-wasm build output)"
     copied_any=1
   else
     echo "[cdn] WARN: WASM artifacts not found in $SKIA_DIR/public/wasm (run wasm build first)" >&2
@@ -104,7 +104,7 @@ prepare_content() {
     echo "[cdn] Copied worker.js"
     copied_any=1
   else
-    echo "[cdn] WARN: skia-rs-wasm/dist/worker.js not found (run skia build first)" >&2
+    echo "[cdn] WARN: zoetrope-editor/dist/worker.js not found (run skia build first)" >&2
   fi
   if [ "$copied_any" -eq 0 ]; then
     echo "[cdn] WARN: No content was copied; build at least wasm+skia or plugin first" >&2

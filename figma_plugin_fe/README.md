@@ -39,9 +39,9 @@ To serve WASM and the worker from a CDN so the plugin can load them in Figma:
 
 To run the plugin UI from nginx so the iframe has a real origin (fixes "Script cannot be accessed from origin 'null'" for the worker):
 
-1. **Build for nginx** (build skia-rs-wasm and plugin with remote UI URL). Set **VITE_CDN_URL** to the same URL so the worker and WASM load from the same origin:
+1. **Build for nginx** (build zoetrope-editor and plugin with remote UI URL). Set **VITE_CDN_URL** to the same URL so the worker and WASM load from the same origin:
    ```bash
-   pnpm -F skia-rs-wasm run build
+   pnpm -F zoetrope-editor run build
    VITE_PLUGIN_UI_URL=http://localhost:8082 VITE_CDN_URL=http://localhost:8082 pnpm -F figma_plugin_fe run build
    ```
    This produces `dist/index.html`, `dist/redirect.html`, and `dist/manifest.json` (with `"ui": "redirect.html"`).
@@ -70,7 +70,7 @@ If you see `LinkError: Import "env" "invoke_viiiiifffi": function import require
 pnpm -F figma_plugin_fe run cdn:publish
 ```
 
-With no arguments this runs: render-wasm build (Docker) → skia-rs-wasm → exporter → figma-adapter → plugin → prepare content.
+With no arguments this runs: render-wasm build (Docker) → zoetrope-editor → exporter → figma-adapter → plugin → prepare content.
 
 **Then restart the CDN** so it serves the new content:
 

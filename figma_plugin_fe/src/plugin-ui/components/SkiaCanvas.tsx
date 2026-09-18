@@ -1,8 +1,8 @@
 /**
  * SkiaCanvas Component
  *
- * Renders the design using skia-rs-wasm (WASM renderer + worker).
- * Document data comes from the plugin main thread via SET_PENPOT_PAGE, ADD_PENPOT_PAGE, and APPLY_PENPOT_CHANGES (skia-rs-wasm page-crud).
+ * Renders the design using zoetrope-editor (WASM renderer + worker).
+ * Document data comes from the plugin main thread via SET_PENPOT_PAGE, ADD_PENPOT_PAGE, and APPLY_PENPOT_CHANGES (zoetrope-editor page-crud).
  * Supports pan/zoom and syncs viewport with Figma when provided.
  */
 
@@ -16,8 +16,8 @@ import {
   docProxy,
   useSnapshot,
   EditorOverlays,
-} from 'skia-rs-wasm';
-import type { WorkspaceState } from 'skia-rs-wasm';
+} from 'zoetrope-editor';
+import type { WorkspaceState } from 'zoetrope-editor';
 import { useFigmaViewportSync } from '@/plugin-ui/hooks/useFigmaViewportSync';
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher';
 import {

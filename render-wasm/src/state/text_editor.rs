@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use macros::ToJs;
+use render_macros::ToJs;
 
 use crate::shapes::{
     Fill, FontFamily, FontStyle, Paragraph, SolidColor, TextAlign, TextContent, TextDecoration,

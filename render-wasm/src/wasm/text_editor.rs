@@ -1,4 +1,4 @@
-use macros::{wasm_error, ToJs};
+use render_macros::{wasm_error, ToJs};
 
 use crate::math::{Matrix, Point, Rect};
 use crate::mem;
@@ -913,13 +913,13 @@ pub extern "C" fn text_editor_get_current_styles() -> *mut u8 {
         for fill in &styles.fills {
             if let Ok(raw_fill) = RawFillData::try_from(fill) {
                 fill_bytes
-                    .extend_from_slice(&<[u8; std::mem::size_of::<RawFillData>()]>::from(raw_fill));
+                    .extend_from_slice(&crate::wasm::fills::raw_fill_to_bytes(raw_fill));
                 fill_count += 1;
             }
         }
 
         // Style-data buffer contract (consumed by the TS decoder in
-        // skia-rs-wasm api/text-editor.ts and the cljs text_editor.cljs).
+        // zoetrope-editor api/text-editor.ts and the cljs text_editor.cljs).
         // All little-endian. Two fixed sections then a fills array:
         //   - header: u32 indices 0..=12 (bytes 0..52) — vertical_align (0),
         //     per-property state words (1..=10; 0=Undefined/1=Single/2=Multiple),

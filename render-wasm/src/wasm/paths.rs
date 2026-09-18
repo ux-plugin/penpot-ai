@@ -1,61 +1,39 @@
 #![allow(unused_mut, unused_variables)]
-use macros::{wasm_error, ToJs};
 use mem::SerializableResult;
-use std::mem::size_of;
+use render_macros::wasm_error;
 use std::sync::{Mutex, OnceLock};
 
 use crate::error::{Error, Result};
 use crate::shapes::{stroke_to_path, Path, Segment, ToPath};
 use crate::{mem, with_current_shape, with_current_shape_mut, STATE};
 
-const RAW_SEGMENT_DATA_SIZE: usize = size_of::<RawSegmentData>();
+// D17: the layout and the codec live in `render_core::abi` so that the Vello module parses
+// identical bytes through identical definitions. What stays here is the Skia-facing half —
+// the conversions to and from this engine's `Segment`.
+use render_core::abi::{
+    decode_path, encode_segment, RawCurveCommand, RawLineCommand, RawMoveCommand,
+};
+pub use render_core::abi::{RawSegmentData, RAW_SEGMENT_DATA_SIZE};
 
 pub mod bools;
 
-#[repr(C, u16, align(4))]
-#[derive(Debug, PartialEq, Clone, Copy, ToJs)]
-#[allow(dead_code)]
-enum RawSegmentData {
-    MoveTo(RawMoveCommand) = 0x01,
-    LineTo(RawLineCommand) = 0x02,
-    CurveTo(RawCurveCommand) = 0x03,
-    Close = 0x04,
-}
-
-impl RawSegmentData {
-    pub fn from_segment(segment: Segment) -> Self {
-        match segment {
-            Segment::MoveTo(to) => RawSegmentData::MoveTo(RawMoveCommand::new(to)),
-            Segment::LineTo(to) => RawSegmentData::LineTo(RawLineCommand::new(to)),
-            Segment::CurveTo((c1, c2, to)) => {
-                RawSegmentData::CurveTo(RawCurveCommand::new(c1, c2, to))
-            }
-            Segment::Close => RawSegmentData::Close,
-        }
+pub(super) fn raw_segment_from(segment: Segment) -> RawSegmentData {
+    match segment {
+        Segment::MoveTo(to) => RawSegmentData::MoveTo(RawMoveCommand::new(to)),
+        Segment::LineTo(to) => RawSegmentData::LineTo(RawLineCommand::new(to)),
+        Segment::CurveTo((c1, c2, to)) => RawSegmentData::CurveTo(RawCurveCommand::new(c1, c2, to)),
+        Segment::Close => RawSegmentData::Close,
     }
 }
 
-impl From<[u8; size_of::<RawSegmentData>()]> for RawSegmentData {
-    fn from(bytes: [u8; size_of::<RawSegmentData>()]) -> Self {
-        unsafe { std::mem::transmute(bytes) }
-    }
-}
-
-impl TryFrom<&[u8]> for RawSegmentData {
-    type Error = Error;
-    fn try_from(bytes: &[u8]) -> Result<Self> {
-        let data: [u8; RAW_SEGMENT_DATA_SIZE] = bytes
-            .get(0..RAW_SEGMENT_DATA_SIZE)
-            .and_then(|slice| slice.try_into().ok())
-            .ok_or(Error::CriticalError("Invalid path data".to_string()))?;
-        Ok(RawSegmentData::from(data))
-    }
-}
-
-impl From<RawSegmentData> for [u8; RAW_SEGMENT_DATA_SIZE] {
-    fn from(value: RawSegmentData) -> Self {
-        unsafe { std::mem::transmute(value) }
-    }
+/// Decode a packed segment buffer into this engine's `Segment`s.
+///
+/// Errors rather than dropping malformed records. The code this replaces printed a warning and
+/// carried on, which turns a framing bug into silently wrong geometry.
+fn segments_from_bytes(bytes: &[u8]) -> Result<Vec<Segment>> {
+    let raw = decode_path(bytes)
+        .map_err(|e| Error::CriticalError(format!("Invalid path data: {}", e)))?;
+    Ok(raw.into_iter().map(Segment::from).collect())
 }
 
 impl SerializableResult for RawSegmentData {
@@ -64,67 +42,7 @@ impl SerializableResult for RawSegmentData {
     // The generic trait doesn't know the size of the array. This is why the
     // clone needs to be here even if it could be generic.
     fn clone_to_slice(&self, slice: &mut [u8]) {
-        let bytes = Self::BytesType::from(*self);
-        slice.clone_from_slice(&bytes);
-    }
-}
-
-#[repr(C, align(4))]
-#[derive(Debug, PartialEq, Clone, Copy)]
-struct RawMoveCommand {
-    _padding: [u32; 4],
-    x: f32,
-    y: f32,
-}
-impl RawMoveCommand {
-    pub fn new((x, y): (f32, f32)) -> Self {
-        Self {
-            _padding: [0u32; 4],
-            x,
-            y,
-        }
-    }
-}
-
-#[repr(C, align(4))]
-#[derive(Debug, PartialEq, Clone, Copy)]
-struct RawLineCommand {
-    _padding: [u32; 4],
-    x: f32,
-    y: f32,
-}
-
-impl RawLineCommand {
-    pub fn new((x, y): (f32, f32)) -> Self {
-        Self {
-            _padding: [0u32; 4],
-            x,
-            y,
-        }
-    }
-}
-
-#[repr(C, align(4))]
-#[derive(Debug, PartialEq, Clone, Copy)]
-struct RawCurveCommand {
-    c1_x: f32,
-    c1_y: f32,
-    c2_x: f32,
-    c2_y: f32,
-    x: f32,
-    y: f32,
-}
-
-impl RawCurveCommand {
-    pub fn new((c1_x, c1_y): (f32, f32), (c2_x, c2_y): (f32, f32), (x, y): (f32, f32)) -> Self {
-        Self {
-            c1_x,
-            c1_y,
-            c2_x,
-            c2_y,
-            x,
-            y,
-        }
+        encode_segment(self, slice).expect("segment slice is sized by RAW_SEGMENT_DATA_SIZE");
     }
 }
 
@@ -185,18 +103,7 @@ pub extern "C" fn set_shape_path_buffer() -> Result<()> {
     let mut buffer = buffer
         .lock()
         .map_err(|_| Error::CriticalError("Failed to lock path buffer".to_string()))?;
-    let chunk_size = size_of::<RawSegmentData>();
-    if !buffer.len().is_multiple_of(chunk_size) {
-        // FIXME
-        println!("Warning: buffer length is not a multiple of chunk size!");
-    }
-    let mut segments = Vec::new();
-    for (i, chunk) in buffer.chunks(chunk_size).enumerate() {
-        match RawSegmentData::try_from(chunk) {
-            Ok(seg) => segments.push(Segment::from(seg)),
-            Err(e) => println!("Error at segment {}: {}", i, e),
-        }
-    }
+    let segments = segments_from_bytes(&buffer)?;
 
     with_current_shape_mut!(state, |shape: &mut Shape| {
         shape.set_path_segments(segments);
@@ -210,11 +117,7 @@ pub extern "C" fn set_shape_path_buffer() -> Result<()> {
 pub extern "C" fn set_shape_path_content() {
     with_current_shape_mut!(state, |shape: &mut Shape| {
         let bytes = mem::bytes();
-        let segments = bytes
-            .chunks(size_of::<RawSegmentData>())
-            .map(|chunk| RawSegmentData::try_from(chunk).expect("Invalid path data"))
-            .map(Segment::from)
-            .collect();
+        let segments = segments_from_bytes(&bytes).expect("Invalid path data");
         shape.set_path_segments(segments);
     });
 }
@@ -228,7 +131,7 @@ pub extern "C" fn current_to_path() -> *mut u8 {
             .segments()
             .iter()
             .copied()
-            .map(RawSegmentData::from_segment)
+            .map(raw_segment_from)
             .collect();
     });
 
@@ -260,7 +163,7 @@ pub extern "C" fn convert_stroke_to_path(stroke_index: i32) -> *mut u8 {
                     .segments()
                     .iter()
                     .copied()
-                    .map(RawSegmentData::from_segment)
+                    .map(raw_segment_from)
                     .collect();
             }
         }
@@ -272,15 +175,16 @@ pub extern "C" fn convert_stroke_to_path(stroke_index: i32) -> *mut u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use render_core::abi::decode_segment;
 
     #[test]
     fn test_move_command_deserialization() {
-        let mut bytes = [0x00; size_of::<RawSegmentData>()];
+        let mut bytes = [0x00; RAW_SEGMENT_DATA_SIZE];
         bytes[0..2].copy_from_slice(&0x01_u16.to_le_bytes());
         bytes[20..24].copy_from_slice(&1.0_f32.to_le_bytes());
         bytes[24..28].copy_from_slice(&2.0_f32.to_le_bytes());
 
-        let raw_segment = RawSegmentData::try_from(&bytes[..]).unwrap();
+        let raw_segment = decode_segment(&bytes).unwrap();
         let segment = Segment::from(raw_segment);
 
         assert_eq!(segment, Segment::MoveTo((1.0, 2.0)));
@@ -288,12 +192,12 @@ mod tests {
 
     #[test]
     fn test_line_command_deserialization() {
-        let mut bytes = [0x00; size_of::<RawSegmentData>()];
+        let mut bytes = [0x00; RAW_SEGMENT_DATA_SIZE];
         bytes[0..2].copy_from_slice(&0x02_u16.to_le_bytes());
         bytes[20..24].copy_from_slice(&3.0_f32.to_le_bytes());
         bytes[24..28].copy_from_slice(&4.0_f32.to_le_bytes());
 
-        let raw_segment = RawSegmentData::try_from(&bytes[..]).unwrap();
+        let raw_segment = decode_segment(&bytes).unwrap();
         let segment = Segment::from(raw_segment);
 
         assert_eq!(segment, Segment::LineTo((3.0, 4.0)));
@@ -301,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_curve_command_deserialization() {
-        let mut bytes = [0x00; size_of::<RawSegmentData>()];
+        let mut bytes = [0x00; RAW_SEGMENT_DATA_SIZE];
         bytes[0..2].copy_from_slice(&0x03_u16.to_le_bytes());
         bytes[4..8].copy_from_slice(&1.0_f32.to_le_bytes());
         bytes[8..12].copy_from_slice(&2.0_f32.to_le_bytes());
@@ -310,7 +214,7 @@ mod tests {
         bytes[20..24].copy_from_slice(&5.0_f32.to_le_bytes());
         bytes[24..28].copy_from_slice(&6.0_f32.to_le_bytes());
 
-        let raw_segment = RawSegmentData::try_from(&bytes[..]).unwrap();
+        let raw_segment = decode_segment(&bytes).unwrap();
         let segment = Segment::from(raw_segment);
 
         assert_eq!(
@@ -321,10 +225,10 @@ mod tests {
 
     #[test]
     fn test_close_command_deserialization() {
-        let mut bytes = [0x00; size_of::<RawSegmentData>()];
+        let mut bytes = [0x00; RAW_SEGMENT_DATA_SIZE];
         bytes[0..2].copy_from_slice(&0x04_u16.to_le_bytes());
 
-        let raw_segment = RawSegmentData::try_from(&bytes[..]).unwrap();
+        let raw_segment = decode_segment(&bytes).unwrap();
         let segment = Segment::from(raw_segment);
 
         assert_eq!(segment, Segment::Close);

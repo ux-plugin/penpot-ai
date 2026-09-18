@@ -1,0 +1,9 @@
+frame [0.0 0.0 1192.0 242.0] nodes 8 background [1.0, 1.0, 1.0, 1.0]
+  0 | draw · 23 item(s)          in=[] Draw n=23 [178.0 -12.0 444.0 254.0] 1:body[178.0 -12.0 444.0 0.0] 2:body[178.0 0.0 444.0 12.0] 3:body[178.0 12.0 444.0 24.0] 4:body[178.0 24.0 444.0 36.0] 5:body[178.0 36.0 444.0 48.0] 6:body[178.0 48.0 444.0 60.0] +17
+  1   s1 drop silhouette         in=[] Draw n=1 [238.0 48.0 384.0 194.0] 18:coverage[238.0 48.0 384.0 194.0]
+  2   s1 down                    in=[1] Scale → 0.5
+  3   s1 drop blur-X σ7.4        in=[2] Blur σ7.4 X srgb transparent taps 193
+  4   s1 drop blur-Y σ7.4        in=[3] Blur σ7.4 Y srgb transparent taps 193
+  5   s1 up                      in=[4] Scale → 1
+  6 | s1 drop → spine            in=[0, 5] Compose Over colour [0.00, 0.00, 0.00, 0.78] offset 16.0,20.0
+  7 | draw · 1 item(s)           in=[6] Draw n=1 [238.0 48.0 384.0 194.0] 18:body[238.0 48.0 384.0 194.0]

@@ -1,0 +1,88 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>gather spatial check</title>
+<style>
+  body{margin:0;background:#111;color:#dfe6ee;font:13px ui-monospace,monospace}
+  #c{display:block;position:absolute;left:0;top:0}
+  #out{position:absolute;left:0;top:920px;white-space:pre;color:#8fa;padding:8px}
+</style>
+<canvas id="c" width="900" height="900"></canvas>
+<div id="out">booting…</div>
+<script type="module">
+// Four big flat quadrants (red / green / blue / yellow) with a background-blur lens straddling BOTH
+// the quadrant boundary (450) and the tile boundary (512). Inside the lens, well away from any
+// boundary, the blur MUST still read as the colour of the quadrant it covers. If the backdrop is
+// composed at the wrong offset, the lens shows a different quadrant's colour — the "red square,
+// blue blur" symptom.
+const q = new URLSearchParams(location.search)
+const BE = q.get('backend') ?? 'classic'
+const R = Number(q.get('radius') ?? 16)
+const LENS_ON = Number(q.get('lens') ?? 1)
+// The canvas can be grown past the 900² scene (`?w=`) so a 1:1 debug-atlas overlay fits on it.
+const W = Number(q.get('w') ?? 900), H = Number(q.get('w') ?? 900), REC = 164
+const URLS = { hybrid: '/wasm-vello/render-vello.js', classic: '/wasm-vello-gpu/render-vello-gpu.js' }
+const out = document.getElementById('out')
+
+async function boot(url) {
+  const ns = await import(/* @vite-ignore */ url)
+  const X = await ns.default(); const api = {}
+  for (const k in X) api[k] = X[k]; api.memory = X.memory; api.create_focus_renderer = ns.create_focus_renderer
+  return api
+}
+const X = await boot(URLS[BE])
+const canvas = document.getElementById('c')
+canvas.width = W; canvas.height = H   // the backing store must match init(W,H) or the surplus stays black
+X.init(W, H); X.set_render_options(0, 1); X.set_scheduler(1); X.set_tile_effects(1)
+// two=1 needs the batched path on to reproduce the bug (it now ships OFF by default).
+if (X.set_gather_batch) X.set_gather_batch(Number(q.get('gatherBatch') ?? (Number(q.get('two') ?? 0) ? 1 : 0)))
+// debugAtlas: 1 = backdrop atlas, 2 = blurred atlas, 3 = mask atlas, drawn over the frame at 1:1.
+if (X.set_debug_atlas) X.set_debug_atlas(Number(q.get('debugAtlas') ?? 0))
+const r = await X.create_focus_renderer(canvas)
+const u8 = () => new Uint8Array(X.memory.buffer), dv = () => new DataView(X.memory.buffer)
+const solid = (c) => { const s = 4 + REC, p = X.alloc_bytes(s); u8().fill(0, p, p + s); u8()[p] = 1; u8()[p + 4] = 0; dv().setUint32(p + 8, c, true); X.set_shape_fills() }
+const rect = (id, x0, y0, x1, y1, c) => { X.use_shape(0,0,0,id); X.set_shape_type(3); X.set_shape_selrect(x0,y0,x1,y1); if (c != null) solid(c) }
+const child = (id) => { X.use_shape(0,0,0,0); X.add_shape_child(0,0,0,id) }
+
+X.init_shapes_pool(8)
+// Quadrants split at 450; the tile boundary sits at 512 (TILE_SIZE, dpr 1).
+rect(1, 0,   0,   450, 450, 0xffff0000); child(1)   // TL red
+rect(2, 450, 0,   900, 450, 0xff00c000); child(2)   // TR green
+rect(3, 0,   450, 450, 900, 0xff0000ff); child(3)   // BL blue
+rect(4, 450, 450, 900, 900, 0xffffe000); child(4)   // BR yellow
+// TWO lenses => the batched atlas path engages (GATHER_MIN = 2). Lens A sits deep in the RED
+// quadrant, lens B deep in the YELLOW quadrant. Each must show a blur of the colour beneath IT.
+// If the atlas mismaps cells, A shows yellow-ish / B shows red-ish.
+const TWO = Number(q.get('two') ?? 0)
+if (LENS_ON && TWO) {
+  rect(5, 60, 60, 380, 380, null); X.set_shape_blur(1, false, R); child(5)      // A: over RED
+  rect(7, 520, 520, 840, 840, null); X.set_shape_blur(1, false, R); child(7)    // B: over YELLOW
+} else if (LENS_ON) { rect(5, 250, 250, 800, 800, null); X.set_shape_blur(1, false, R); child(5) }  // lens over the cross
+// A small mover that is edited every frame. It dirties only the tiles it touches, so the frame is a
+// PARTIAL-dirty frame — the condition under which the bench tears. Kept OUTSIDE the lens so it can
+// never be confused with the lens' own content.
+const EDIT = Number(q.get('edit') ?? 0)
+if (EDIT) { rect(6, 20, 20, 120, 120, 0xff000000); child(6) }
+X.set_view(1, 0, 0)
+const raf = () => new Promise((res) => requestAnimationFrame(res))
+for (let i = 0; i < 8; i++) { r.render(); await raf() }
+if (EDIT) {
+  // Walk the mover across the canvas, one edit per frame, so successive frames dirty different tiles.
+  for (let i = 0; i < 24; i++) {
+    const x = 20 + (i * 35) % 700, y = 20 + (i * 23) % 700
+    X.use_shape(0, 0, 0, 6); X.set_shape_selrect(x, y, x + 100, y + 100)
+    r.render(); await raf()
+  }
+}
+// The gather atlas is only built on a frame that actually re-renders; idle frames come from the
+// tile cache and would show no overlay. Force a full redraw on the last frame by changing the zoom
+// bucket, so the atlas is rebuilt and the debug overlay lands on what we screenshot.
+if (Number(q.get('debugAtlas') ?? 0)) {
+  // Exactly ONE frame: the atlas is only rebuilt on the frame that re-renders, and any further
+  // cached frame would paint over the debug overlay.
+  X.set_view(1.25, 0, 0)
+  r.render(); await raf()
+}
+out.textContent = `${BE} · radius=${R} · lens=${LENS_ON} · quadrant split @450, tile boundary @512\n`
+  + `Inside the lens: (350,350) must be RED, (700,350) GREEN, (350,700) BLUE, (700,700) YELLOW.`
+window.__DONE__ = true
+</script>

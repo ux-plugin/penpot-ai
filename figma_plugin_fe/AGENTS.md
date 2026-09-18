@@ -1,6 +1,6 @@
 # Agent guide for `figma_plugin_fe`
 
-AI-assistant Figma plugin. Provides a React UI (iframe) + Figma plugin main-thread code (widget). Lets designers interact with an AI backend through voice/text, renders a live Penpot canvas via `skia-rs-wasm`, and manages Figma node synchronisation.
+AI-assistant Figma plugin. Provides a React UI (iframe) + Figma plugin main-thread code (widget). Lets designers interact with an AI backend through voice/text, renders a live Penpot canvas via `zoetrope-editor`, and manages Figma node synchronisation.
 
 ## Commands
 
@@ -18,7 +18,7 @@ npm run cdn:up         # Spin up local nginx CDN container (docker-compose)
 
 ## Build system
 
-- **UI** (`vite.config.ts`): Vite 6 + React + Tailwind 4 + `vite-plugin-singlefile` (bundles UI into a single `dist/index.html`). CSS via `lightningcss`; JS via Terser (2 compression passes). Custom plugins: `copy-wasm` (copies WASM from `skia-rs-wasm`), `remote-ui-artifacts`, `bundle-size-logger`.
+- **UI** (`vite.config.ts`): Vite 6 + React + Tailwind 4 + `vite-plugin-singlefile` (bundles UI into a single `dist/index.html`). CSS via `lightningcss`; JS via Terser (2 compression passes). Custom plugins: `copy-wasm` (copies WASM from `zoetrope-editor`), `remote-ui-artifacts`, `bundle-size-logger`.
 - **Widget** (main thread): esbuild bundles `src/widget/code.ts` → `dist/code.js` (ES2015 IIFE, minified in prod).
 - **TypeScript**: `tsconfig.json` (strict, ES2022, ESNext modules).
 - **Environment** (`.env.development.local`):
@@ -109,7 +109,7 @@ RSocket connection lifecycle is managed inside `useAuthenticationStore` (connect
 
 ## WASM canvas (`src/plugin-ui/components/SkiaCanvas.tsx`)
 
-Embeds the `skia-rs-wasm` renderer. Syncs pan/zoom with the Figma viewport via `useFigmaViewportSync`. Receives incremental changes from the AI backend (add pages, modify nodes) and applies them through the `skia-rs-wasm` commit pipeline.
+Embeds the `zoetrope-editor` renderer. Syncs pan/zoom with the Figma viewport via `useFigmaViewportSync`. Receives incremental changes from the AI backend (add pages, modify nodes) and applies them through the `zoetrope-editor` commit pipeline.
 
 ## Key technologies
 
@@ -120,7 +120,7 @@ Embeds the `skia-rs-wasm` renderer. Syncs pan/zoom with the Figma viewport via `
 | Styling | Tailwind CSS 4, shadcn/ui, Lucide React |
 | Build | Vite 6.3, esbuild 0.25, TypeScript 5.5, Terser |
 | Real-time | RSocket, WebSockets |
-| Rendering | skia-rs-wasm (WASM Penpot renderer) |
+| Rendering | zoetrope-editor (WASM Penpot renderer) |
 | Error tracking | Sentry |
 | Security | @noble/ciphers (encryption) |
 
