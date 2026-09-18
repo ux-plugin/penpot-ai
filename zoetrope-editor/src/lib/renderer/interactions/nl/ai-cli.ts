@@ -131,7 +131,7 @@ async function byokComplete(prompt: string): Promise<string | null> {
   const chat = getDesktopChat()
   if (!chat) return null
   const status = await getKeyStore()?.getStatus()
-  if (!status?.hasKey) return null
+  if (!status || Object.keys(status.keys).length === 0) return null
   const { text } = await chat.complete({ prompt })
   return text
 }

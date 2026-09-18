@@ -17,34 +17,174 @@ export const PROVIDER_LABELS: Record<LlmProvider, string> = {
   google: 'Google',
 }
 
-/** Non-secret view of the stored key. */
+/** Non-secret metadata for one stored key. */
+export interface StoredKeyInfo {
+  provider: LlmProvider
+  last4: string
+}
+
+/** Non-secret view of the vault — stored keys keyed by provider-row id. */
 export interface KeyStoreStatus {
   available: boolean
-  hasKey: boolean
-  provider?: LlmProvider
-  model?: string
-  last4?: string
+  keys: Record<string, StoredKeyInfo>
 }
 
 export interface SetKeyRequest {
+  /** The provider-row id this key belongs to. */
+  id: string
   provider: LlmProvider
-  model: string
   key: string
 }
 
 export interface KeyStoreBridge {
   getStatus(): Promise<KeyStoreStatus>
   set(req: SetKeyRequest): Promise<KeyStoreStatus>
-  clear(): Promise<KeyStoreStatus>
+  clear(id: string): Promise<KeyStoreStatus>
 }
 
 export interface ChatBridge {
   complete(req: { prompt: string }): Promise<{ text: string }>
 }
 
+/** A terminal-based AI CLI preset detected on PATH. `path` is null when not installed. */
+export interface DetectedAgent {
+  id: string
+  name: string
+  argv: string[]
+  path: string | null
+}
+
+export interface AgentRunRequest {
+  argv: string[]
+  prompt: string
+  cwd: string
+}
+
+export interface AgentRunResponse {
+  text: string
+  exitCode: number
+  stderr?: string
+}
+
+/** Runs a headless terminal AI CLI in the main process (desktop only). */
+export interface AgentBridge {
+  detect(): Promise<DetectedAgent[]>
+  run(req: AgentRunRequest): Promise<AgentRunResponse>
+  pickFolder(): Promise<string | null>
+}
+
+export interface PtyCreateRequest {
+  cwd: string
+  cols: number
+  rows: number
+  shell?: string
+  /** Run a specific command instead of an interactive shell (e.g. an agent login). */
+  command?: string
+  args?: string[]
+}
+
+/** An interactive shell (node-pty) in the main process (desktop only). */
+export interface PtyBridge {
+  create(req: PtyCreateRequest): Promise<number>
+  write(id: number, data: string): void
+  resize(id: number, cols: number, rows: number): void
+  kill(id: number): void
+  onData(id: number, cb: (data: string) => void): () => void
+  onExit(id: number, cb: (exitCode: number) => void): () => void
+}
+
+/** The body of a streamed ACP `session/update` notification (loosely typed — see AcpView). */
+export interface AcpUpdateBody {
+  sessionUpdate: string
+  content?: { type: string; text?: string }
+  // tool_call / tool_call_update
+  toolCallId?: string
+  title?: string
+  kind?: string
+  status?: string
+  // plan
+  entries?: { content: string; status: string; priority?: string }[]
+}
+
+/** A streamed update tagged with its owning chat, so parallel chats route independently. */
+export interface AcpUpdateEnvelope {
+  chatId: string
+  update: AcpUpdateBody
+}
+
+/** The adapter a chat runs; omitted → the bundled Claude Code adapter. */
+export interface AcpAgentSpec {
+  command?: string
+  args?: string[]
+  label?: string
+}
+
+/** A terminal-auth login command to host in a terminal (from the agent). */
+export interface AcpLoginCommand {
+  command: string
+  args: string[]
+  label?: string
+}
+
+export interface AcpPromptResult {
+  stopReason: string
+  /** Set when the agent needs authentication before it can run. */
+  authRequired?: boolean
+  login?: AcpLoginCommand
+}
+
+/** How a chat authenticates; the key stays in main, only the provider is named. */
+export interface AcpAuth {
+  style: 'acp' | 'sdk'
+  provider?: string
+  /** `sdk` only — the provider-row id whose stored key main should inject. */
+  keyId?: string
+}
+
+export interface AcpPromptRequest {
+  /** The chat this prompt belongs to — selects/creates its own agent session. */
+  chatId: string
+  text: string
+  cwd: string
+  agent?: AcpAgentSpec
+  /** Registry adapter id (subscription style); omitted → Claude Code. */
+  adapter?: string
+  auth?: AcpAuth
+  /** Model id (Anthropic → injected as `ANTHROPIC_MODEL`); omitted → adapter default. */
+  model?: string
+}
+
+/** A known ACP adapter and whether it's present on this machine. */
+export interface DetectedAdapter {
+  id: string
+  label: string
+  available: boolean
+  installHint?: string
+}
+
+/** Result of verifying an adapter actually speaks ACP. */
+export interface AdapterTestResult {
+  ok: boolean
+  ms?: number
+  error?: string
+}
+
+/** Drives structured coding agents over ACP in the main process (desktop only). */
+export interface AcpBridge {
+  prompt(req: AcpPromptRequest): Promise<AcpPromptResult>
+  cancel(chatId: string): void
+  close(chatId: string): void
+  onUpdate(cb: (envelope: AcpUpdateEnvelope) => void): () => void
+  listAdapters(): Promise<DetectedAdapter[]>
+  testAdapter(id: string): Promise<AdapterTestResult>
+}
+
 interface ZoetropeBridge {
   keyStore: KeyStoreBridge
   chat: ChatBridge
+  agent: AgentBridge
+  pty: PtyBridge
+  acp: AcpBridge
 }
 
 function bridge(): ZoetropeBridge | null {
@@ -61,4 +201,19 @@ export function getKeyStore(): KeyStoreBridge | null {
 /** The main-process BYOK chat call, or null on the web. */
 export function getDesktopChat(): ChatBridge | null {
   return bridge()?.chat ?? null
+}
+
+/** The main-process AI-agent runner, or null on the web. */
+export function getAgent(): AgentBridge | null {
+  return bridge()?.agent ?? null
+}
+
+/** The main-process interactive terminal, or null on the web. */
+export function getPty(): PtyBridge | null {
+  return bridge()?.pty ?? null
+}
+
+/** The main-process ACP coding agent, or null on the web. */
+export function getAcp(): AcpBridge | null {
+  return bridge()?.acp ?? null
 }

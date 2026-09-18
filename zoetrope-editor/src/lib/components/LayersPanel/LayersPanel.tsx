@@ -35,19 +35,22 @@ import { addViewsToSlot } from '../../renderer/slot/slot-edit'
 import { LayerRow, type DragOverState } from './layer-row'
 import { TokensSections } from '../TokensPanel/TokensPanel'
 import { AssetsSections } from '../AssetsPanel/AssetsPanel'
+import { ChatPanel } from '../BuildMode/ChatPanel'
 
-type LeftRailTab = 'design' | 'tokens' | 'assets'
+type LeftRailTab = 'design' | 'tokens' | 'assets' | 'chat'
 
 const TABS: { id: LeftRailTab; label: string }[] = [
   { id: 'design', label: 'Design' },
   { id: 'tokens', label: 'Tokens' },
   { id: 'assets', label: 'Assets' },
+  { id: 'chat', label: 'Chat' },
 ]
 
 const TAB_TITLES: Record<LeftRailTab, string> = {
   design: 'Design',
   tokens: 'Tokens',
   assets: 'Assets',
+  chat: 'Chat',
 }
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
@@ -237,7 +240,7 @@ export function LayersPanel({ className }: LayersPanelProps) {
     return sets.reduce((n, s) => n + s.tokens.length, 0)
   }, [doc.meta?.tokens])
   const tokensFooter = tokensCount === 1 ? '1 token' : `${tokensCount} tokens`
-  const footer = activeTab === 'design' ? designFooter : tokensFooter
+  const footer = activeTab === 'design' ? designFooter : activeTab === 'tokens' ? tokensFooter : undefined
 
   return (
     <FloatingEditorRail
@@ -582,6 +585,12 @@ export function LayersPanel({ className }: LayersPanelProps) {
               <AssetsSections />
             </div>
           </ScrollArea>
+        )}
+        {/* Chat gets the whole pane — it manages its own scrolling and composer. */}
+        {activeTab === 'chat' && (
+          <div className="min-h-0 flex-1">
+            <ChatPanel />
+          </div>
         )}
       </div>
     </FloatingEditorRail>
