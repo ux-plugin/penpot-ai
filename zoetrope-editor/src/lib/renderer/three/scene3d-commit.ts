@@ -21,7 +21,10 @@ import type {
   CameraProjection,
   Object3DEntry,
   Scene3DDocument,
+  Scene3DResizeMode,
 } from './scene3d-store'
+import { sceneWindow, windowFittedToBox, type BoxRect } from './scene3d-viewframe'
+import { nodeBoxRect } from './scene3d-crop-resize'
 
 /** The committed scene document on the node (plain clone, detached from the proxy). */
 function currentScene(sceneId: string): Scene3DDocument | null {
@@ -36,6 +39,42 @@ export async function commitScene3d(sceneId: string, next: Scene3DDocument): Pro
   const pid = getActiveOrSinglePageId()
   if (!before || !pid) return
   await commitNodePartialUpdate(sceneId, before, { scene3d: next } as Partial<PenpotNode>, pid)
+}
+
+/** The scene container's current box, for sizing a view frame. */
+function sceneBox(sceneId: string): BoxRect | null {
+  return nodeBoxRect(getCommittedNodeOnActivePage(sceneId))
+}
+
+/**
+ * Switch how resizing the box treats the 3D. Deliberately writes NO view frame: leaving it
+ * absent means the renderer materialises the identity crop from the very box it is drawing,
+ * so flipping the switch is pixel-identical rather than nudging the content. Writing one
+ * here re-derived it from a slightly different rect than the renderer's, and that mismatch
+ * was visible as a small jump. The frame becomes concrete on the first resize, materialised
+ * from the box as it stood before that gesture (see scene3d-crop-resize).
+ */
+export async function commitSceneResizeMode(
+  sceneId: string,
+  mode: Scene3DResizeMode,
+): Promise<void> {
+  const doc = currentScene(sceneId)
+  if (!doc) return
+  doc.resizeMode = mode
+  await commitScene3d(sceneId, doc)
+}
+
+/**
+ * Reshape the view to the box's proportions, so it fills the box with no empty bands. Only
+ * ever reveals — the short axis widens to meet the box rather than the long one being
+ * trimmed, so nothing currently on screen is lost.
+ */
+export async function commitFitViewToBox(sceneId: string): Promise<void> {
+  const doc = currentScene(sceneId)
+  const box = sceneBox(sceneId)
+  if (!doc || !box) return
+  doc.viewWindow = windowFittedToBox(sceneWindow(doc, box), box.w, box.h)
+  await commitScene3d(sceneId, doc)
 }
 
 export async function commitSceneCamera(

@@ -34,8 +34,15 @@ const ROTATE_OFFSET_SCREEN = 14
 const ROTATE_GRAB_RADIUS_SCREEN = 6
 
 export interface CenterGizmoProps {
-  /** Shape centre in world coords — `transformPoint(M(t), restCentre)`. */
+  /**
+   * Shape centre in world coords — `transformPoint(M(t), restCentre)`. This is the value
+   * React renders with; during a gesture `useImperativeCenterGizmo` overwrites the same
+   * transform from the signal, so the gizmo tracks the drag as tightly as the box does
+   * instead of trailing it by a render.
+   */
   center: { x: number; y: number }
+  /** Set by `useImperativeCenterGizmo` to drive the transform during a gesture. */
+  groupRef?: React.Ref<SVGGElement>
   zoom: number
   /**
    * True when the bounds-derived chrome is unusable (scale→0, sub-pixel, or
@@ -52,6 +59,7 @@ export interface CenterGizmoProps {
 
 export function CenterGizmo({
   center,
+  groupRef,
   zoom,
   degenerate,
   allowRotate = true,
@@ -65,7 +73,7 @@ export function CenterGizmo({
   const strokeWidth = 1 / safeZoom
 
   return (
-    <g transform={`translate(${center.x},${center.y})`}>
+    <g ref={groupRef} transform={`translate(${center.x},${center.y})`}>
       {degenerate && (
         <>
           <rect

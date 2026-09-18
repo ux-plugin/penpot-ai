@@ -109,7 +109,35 @@ fn draw_image_fill(
     let xform = ctx.tile_and_shape_transform_matrix(shape);
     let container = shape.selrect;
     let path_transform = shape.to_path_transform();
-    let src_rect = get_source_rect(image.dimensions(), &container, image_fill);
+
+    // A viewport-clipped slice carries an explicit destination sub-rect (local coords): the
+    // texture IS the exact on-screen slice, so draw it WHOLE into that sub-rect (no aspect
+    // crop). Otherwise the image maps over the whole container as usual.
+    //
+    // This mirrors `render::fills::draw_image_fill`. Both renderers draw image fills and only
+    // that one had the sub-rect support, so a clipped 3D bake was cover-fitted across the
+    // entire node here — a correct slice stretched over ~24× its area, which reads as the
+    // scene being pixelated and jumping about as the slice changes.
+    let dest_override = image_fill.dest();
+    let dims = image.dimensions();
+    let src_full = get_source_rect(dims, &container, image_fill);
+    // The whole texture, stated explicitly. `src: None` nominally means the same thing, but
+    // it draws nothing here — and that branch had never run before, since the copy of this
+    // function it was written in is dead code for this renderer.
+    let src_whole = skia::Rect::from_wh(dims.width as f32, dims.height as f32);
+    let (src_arg, dest_rect): (
+        Option<(&skia::Rect, skia::canvas::SrcRectConstraint)>,
+        &skia::Rect,
+    ) = match dest_override.as_ref() {
+        Some(d) => (
+            Some((&src_whole, skia::canvas::SrcRectConstraint::Strict)),
+            d,
+        ),
+        None => (
+            Some((&src_full, skia::canvas::SrcRectConstraint::Strict)),
+            &container,
+        ),
+    };
 
     let mut image_paint = skia::Paint::default();
     image_paint.set_anti_alias(antialias);
@@ -164,13 +192,7 @@ fn draw_image_fill(
         }
     }
 
-    canvas.draw_image_rect_with_sampling_options(
-        &image,
-        Some((&src_rect, skia::canvas::SrcRectConstraint::Strict)),
-        container,
-        sampling,
-        paint,
-    );
+    canvas.draw_image_rect_with_sampling_options(&image, src_arg, dest_rect, sampling, paint);
 
     canvas.restore(); // save_layer
     canvas.restore(); // save + matrix

@@ -768,7 +768,18 @@ impl Surfaces {
     /// is the Target sentinel (Target is never bound in the SurfaceMap
     /// — it's the externally-owned accumulator).
     pub fn target_image_snapshot_for_rect(&mut self, rect: IRect) -> Option<skia::Image> {
-        self.target.image_snapshot_with_bounds(rect)
+        self.surface_image_snapshot_for_rect(SurfaceId::Target, rect)
+    }
+
+    /// SSA: snapshot a sub-rect of an arbitrary accumulator surface
+    /// (`Target` on-screen, `Export` for thumbnail/export renders). The
+    /// export path runs the same scheduler but composites into `Export`.
+    pub fn surface_image_snapshot_for_rect(
+        &mut self,
+        dest: SurfaceId,
+        rect: IRect,
+    ) -> Option<skia::Image> {
+        self.get_mut(dest).image_snapshot_with_bounds(rect)
     }
 
     /// SSA: clear `Target` with bg color at frame start. The legacy
@@ -791,10 +802,21 @@ impl Surfaces {
         image: &skia::Image,
         tile_rect: skia::Rect,
     ) {
-        // Same SrcOver-only semantics as `composite_current_to_target`:
-        // Target was cleared to bg at frame start; the image carries
-        // transparent margins; SrcOver respects prior bands' content.
-        self.target.canvas().draw_image_rect(
+        self.ssa_composite_image_to(SurfaceId::Target, image, tile_rect);
+    }
+
+    /// SSA: composite a snapshotted tile image into an arbitrary
+    /// accumulator surface — `Target` on-screen, `Export` for the
+    /// thumbnail/export render, which drives the same scheduler into
+    /// its own surface. SrcOver-only: the accumulator was cleared at
+    /// frame start and the image carries transparent margins.
+    pub fn ssa_composite_image_to(
+        &mut self,
+        dest: SurfaceId,
+        image: &skia::Image,
+        tile_rect: skia::Rect,
+    ) {
+        self.get_mut(dest).canvas().draw_image_rect(
             image,
             None,
             tile_rect,

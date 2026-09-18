@@ -16,7 +16,6 @@ pub(crate) use crate::shapes::Shape;
 pub(crate) use crate::state::ShapesPoolRef;
 pub(crate) use crate::tiles;
 
-mod fills;
 pub mod filters;
 pub(crate) mod fonts;
 pub(crate) mod glass;
@@ -30,7 +29,6 @@ pub(crate) mod dynamic;
 pub(crate) mod noise;
 pub(crate) mod options;
 pub(crate) mod preview;
-mod shadows;
 mod strokes;
 pub(crate) mod surfaces;
 pub mod text;

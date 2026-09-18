@@ -691,6 +691,41 @@ impl RenderState {
     /// `ProductionSink`. The sole frame-render entry point now that V2
     /// is gone.
     fn run_schedule(&mut self, tree: ShapesPoolRef) -> Result<()> {
+        // On-screen frame: build+dispatch to Target for the whole document,
+        // then the pan-cache / UI housekeeping the fast path depends on.
+        let dispatch_result =
+            self.run_schedule_to(tree, crate::render::SurfaceId::Target, None);
+
+        // Post-schedule housekeeping — MUST mirror the tail of the legacy
+        // `run_schedule`. Without this, `render_from_cache` (the pan/zoom
+        // fast path) short-circuits because `cached_viewbox` never gets
+        // stamped → panning shows nothing. Per-frame cache state,
+        // in-progress flag, scope tracking, and UI overlays all live here.
+        // The export path (`run_schedule_to` directly) deliberately skips
+        // all of this — it must not stamp the on-screen pan cache.
+        self.surfaces.clear_interband_cache();
+        self.render_in_progress = false;
+        self.surfaces.gc();
+        self.cached_viewbox = self.viewbox;
+
+        crate::render::ui::render(self, tree);
+
+        dispatch_result
+    }
+
+    /// The build → validate → liveness → dispatch core, parametrized by the
+    /// final composite target and an optional subtree root. On-screen
+    /// `run_schedule` wraps this with `(Target, None)` plus pan-cache
+    /// housekeeping; the export/thumbnail path (`render_shape_pixels`) calls
+    /// it with `(Export, Some(shape_id))` and no housekeeping. Reads the
+    /// tile list from `self.tile_viewbox.interest_rect`, so the caller sets
+    /// the viewbox + rebuilds the tile index for the region it wants first.
+    fn run_schedule_to(
+        &mut self,
+        tree: ShapesPoolRef,
+        output: crate::render::SurfaceId,
+        subtree_root: Option<crate::uuid::Uuid>,
+    ) -> Result<()> {
         let scale = self.get_scale();
         let tile_size = crate::tiles::get_tile_size(scale);
         // Pool surfaces must match legacy `Current` exactly: 1024×1024
@@ -747,22 +782,11 @@ impl RenderState {
                 viewbox_device_origin,
                 world_origin_for: Box::new(origin),
                 clip_rect_for: Box::new(clip),
+                output,
+                subtree_root,
             };
             ssa::render_via_ssa(args).map(|_out| ())
         });
-
-        // Post-schedule housekeeping — MUST mirror the tail of the
-        // legacy `run_schedule` below. Without this, `render_from_cache`
-        // (the pan/zoom fast path) short-circuits because
-        // `cached_viewbox` never gets stamped → panning shows nothing.
-        // Per-frame cache state, in-progress flag, scope tracking, and
-        // UI overlays all live here too.
-        self.surfaces.clear_interband_cache();
-        self.render_in_progress = false;
-        self.surfaces.gc();
-        self.cached_viewbox = self.viewbox;
-
-        crate::render::ui::render(self, tree);
 
         dispatch_result
     }
@@ -1014,6 +1038,14 @@ impl RenderState {
         let saved_current_tile = self.current_tile;
         let saved_nested_fills = std::mem::take(&mut self.nested_fills);
         let saved_preview_mode = self.preview_mode;
+        // The export render drives the SAME SSA scheduler as the frame
+        // render, so it repoints the viewbox / tile viewbox / tile grid at
+        // the exported shape; save + restore them. `tile_viewbox` is a pure
+        // function of viewbox + scale, so it's recomputed on restore rather
+        // than saved (it isn't Clone). The cross-frame tile cache is left
+        // untouched — the export sink skips all cache writes.
+        let saved_viewbox = self.viewbox;
+        let saved_tile_grid = std::mem::replace(&mut self.tile_grid, TileGrid::new());
 
         self.focus_mode.clear();
 
@@ -1023,18 +1055,30 @@ impl RenderState {
 
         if tree.len() != 0 {
             let shape = tree.get(id).unwrap();
-            let mut extrect = shape.extrect(tree, scale);
+            let extrect = shape.extrect(tree, scale);
             self.export_context = Some((extrect, scale));
-            let margins = self.surfaces.margins();
-            extrect.offset((margins.width as f32 / scale, margins.height as f32 / scale));
 
+            // Size the Export surface to the shape's extended rect (already
+            // includes shadow/blur bleed) at export scale.
             self.surfaces.resize_export_surface(scale, extrect);
             self.render_area = extrect;
             self.render_area_with_margins = extrect;
-            self.surfaces.update_render_context(extrect, scale);
 
-            // For export, do a simple depth-first render without tile scheduling
-            self.render_export_subtree(*id, tree, target_surface, scale)?;
+            // Point the viewbox at `extrect` so the SSA sink's device-rect
+            // composite (`tile.x*TILE_SIZE - viewbox.left*scale`, identity
+            // canvas) lands at the Export surface origin. `Viewbox::area =
+            // (-pan, width/zoom)`, so width = extrect.w*scale and
+            // pan = -extrect.left make `area == extrect` exactly.
+            let mut export_vb =
+                crate::view::Viewbox::new(extrect.width() * scale, extrect.height() * scale);
+            export_vb.set_all(scale, -extrect.left, -extrect.top);
+            self.viewbox = export_vb;
+            self.tile_viewbox.update(self.viewbox, scale);
+            self.rebuild_tile_index(tree);
+
+            // Drive the same SSA scheduler for just this subtree, compositing
+            // into the Export surface (no on-screen pan-cache housekeeping).
+            self.run_schedule_to(tree, target_surface, Some(*id))?;
         }
 
         self.export_context = None;
@@ -1060,6 +1104,12 @@ impl RenderState {
         self.current_tile = saved_current_tile;
         self.nested_fills = saved_nested_fills;
         self.preview_mode = saved_preview_mode;
+        self.viewbox = saved_viewbox;
+        self.tile_grid = saved_tile_grid;
+        // Recompute the tile viewbox from the restored viewbox (not Clone,
+        // and a pure function of viewbox + scale anyway).
+        let restored_scale = self.get_scale();
+        self.tile_viewbox.update(self.viewbox, restored_scale);
 
         // Restore render-surface transforms for the workspace context.
         let workspace_scale = self.get_scale();
@@ -1071,65 +1121,5 @@ impl RenderState {
         Ok((data.as_bytes().to_vec(), width, height))
     }
 
-    /// Simple depth-first render for export (no tile scheduling needed).
-    fn render_export_subtree(
-        &mut self,
-        shape_id: Uuid,
-        tree: ShapesPoolRef,
-        target: SurfaceId,
-        scale: f32,
-    ) -> Result<()> {
-        let Some(shape) = tree.get(&shape_id) else {
-            return Ok(());
-        };
-
-        if shape.hidden {
-            return Ok(());
-        }
-
-        self.focus_mode.enter(&shape_id);
-
-        if self.focus_mode.is_active() {
-            if shape.is_recursive() {
-                self.render_shape_enter(shape, target, false);
-
-                // Draw the container's own body (fill) before its children. The
-                // tiled render paints this via a separate `Paint(ShapeBody)`
-                // scheduler step, but this non-tile export recursion only did
-                // enter → children → exit, so a frame/group's own fill was never
-                // painted — an empty frame exported blank. `render_shape_into_target`
-                // no-ops for containers with no fill/stroke and skips strokes on
-                // clipped frames (drawn on top in `render_shape_exit`).
-                self.render_shape_into_target(shape, target)?;
-
-                let children = shape.children_ids(false);
-                for child_id in &children {
-                    self.render_export_subtree(*child_id, tree, target, scale)?;
-                }
-
-                // Export path is non-tile-scheduler; layer wrapping
-                // stays inline in `render_shape_exit`, never externalized.
-                self.render_shape_exit(shape, None, target, false)?;
-            } else {
-                // Render the shape
-                self.render_background_blur(shape, target);
-
-                if let Some(glass) = shape.glass.as_ref().filter(|g| !g.hidden) {
-                    crate::render::glass::render_glass(self, shape, glass, target);
-                }
-
-                // Phase H.3: route export draw through scheduler-native
-                // dispatcher; downstream paths handle their own blits.
-                self.render_shape_into_target(shape, target)?;
-
-                self.surfaces
-                    .canvas(SurfaceId::DropShadows)
-                    .clear(skia::Color::TRANSPARENT);
-            }
-        }
-
-        self.focus_mode.exit(&shape_id);
-        Ok(())
-    }
 }
 

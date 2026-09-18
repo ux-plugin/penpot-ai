@@ -228,6 +228,25 @@ impl ScheduleBuilder {
         self.schedule
     }
 
+    /// Build a schedule for a SUBTREE — one shape id plus its descendants
+    /// — instead of the whole document. Used by the export/thumbnail path
+    /// (`render_shape_pixels`), which drives this same scheduler into the
+    /// Export surface. The walk starts AT `root_id` (not the document
+    /// root's children) so ancestor frames/groups above `root_id` never
+    /// apply their clip/opacity/scope to the exported shape. Membership is
+    /// still filtered by `inputs.tile_grid`, which the caller populates
+    /// with only the subtree's shapes over the export tiles.
+    pub fn build_subtree(mut self, inputs: &ScheduleInputs<'_>, root_id: Uuid) -> Schedule {
+        for &tile in inputs.tiles {
+            self.record_tile_body_membership(tile, inputs);
+        }
+        self.emit_subtree_in_z_order(root_id, inputs);
+        for &tile in inputs.tiles {
+            self.emit_tile_finalize(tile, inputs);
+        }
+        self.schedule
+    }
+
     /// Bookkeeping pre-pass: record which tiles host any shape this
     /// frame. The tree-walk gather emission reads this set to skip
     /// empty source tiles in the snapshot loop — without it, empty
@@ -259,6 +278,29 @@ impl ScheduleBuilder {
                 self.walk_shape(child, &mut per_tile_scopes, inputs);
             }
         }
+    }
+
+    /// Subtree variant of `emit_tree_in_z_order`: walk `root_id` itself
+    /// (and its descendants, via `walk_shape`) as if it were a top-level
+    /// shape. See `build_subtree`.
+    fn emit_subtree_in_z_order(&mut self, root_id: Uuid, inputs: &ScheduleInputs<'_>) {
+        // Exporting the document root (`Uuid::nil`) means the whole page —
+        // the nil root is a container sentinel, not a paintable shape, so
+        // walking it directly panics. Fall back to the whole-tree walk
+        // (its children), identical to the on-screen frame.
+        if root_id.is_nil() {
+            self.emit_tree_in_z_order(inputs);
+            return;
+        }
+        let Some(root) = inputs.shapes.get(&root_id) else {
+            return;
+        };
+        let mut per_tile_scopes: rustc_hash::FxHashMap<Tile, SurfaceRef> = inputs
+            .tiles
+            .iter()
+            .map(|&t| (t, SurfaceRef::tile_ref(SurfaceRole::TileOutput, t)))
+            .collect();
+        self.walk_shape(root, &mut per_tile_scopes, inputs);
     }
 
     /// Recursive z-order tree walker. See `emit_tree_in_z_order`.

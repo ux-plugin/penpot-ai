@@ -73,12 +73,3 @@ fn render_body_direct(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> {
     Ok(())
 }
 
-fn render_text(_ctx: &mut PaintCtx<'_>, _shape: &Shape) -> Result<()> {
-    // TODO(ssa-port::text)
-    Ok(())
-}
-
-fn render_svg(_ctx: &mut PaintCtx<'_>, _shape: &Shape) -> Result<()> {
-    // TODO(ssa-port::svg)
-    Ok(())
-}

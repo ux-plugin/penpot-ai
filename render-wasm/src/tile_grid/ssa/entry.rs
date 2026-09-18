@@ -48,6 +48,16 @@ pub struct RenderArgs<'a> {
     pub viewbox_device_origin: Point,
     pub world_origin_for: Box<dyn Fn(Tile) -> Point + 'a>,
     pub clip_rect_for: Box<dyn Fn(Tile) -> Rect + 'a>,
+    /// Final composite destination. `SurfaceId::Target` for the on-screen
+    /// frame; `SurfaceId::Export` when the same scheduler is driven to
+    /// produce a thumbnail / raster export into the Export surface. For
+    /// Export the caller (render_shape_pixels) has already cleared the
+    /// surface, so the frame-start Target clear is skipped.
+    pub output: crate::render::SurfaceId,
+    /// When `Some(root)`, build the schedule for that shape's SUBTREE only
+    /// (export/thumbnail), walking from `root` so ancestors don't apply.
+    /// `None` = the whole document (on-screen frame).
+    pub subtree_root: Option<crate::uuid::Uuid>,
 }
 
 /// Output of one `render_via_ssa` call. Reported back to the caller
@@ -73,6 +83,8 @@ pub fn render_via_ssa(args: RenderArgs<'_>) -> Result<RenderOutput> {
         viewbox_device_origin,
         world_origin_for,
         clip_rect_for,
+        output,
+        subtree_root,
     } = args;
 
     // 0. Clear the Target surface to bg color. Legacy `run_schedule`
@@ -84,7 +96,11 @@ pub fn render_via_ssa(args: RenderArgs<'_>) -> Result<RenderOutput> {
     //    is transparent. Without this clear, tiles a shape moved AWAY
     //    from keep their old Target pixels → visible ghost/flicker
     //    while dragging or animating.
-    {
+    //    For an Export render the caller already cleared the Export
+    //    surface (to transparent) before building the schedule, and
+    //    clearing Target here would corrupt the on-screen frame — so the
+    //    clear is Target-only.
+    if output == crate::render::SurfaceId::Target {
         let bg = state.background_color;
         state.surfaces.target_canvas_clear(bg);
     }
@@ -105,7 +121,10 @@ pub fn render_via_ssa(args: RenderArgs<'_>) -> Result<RenderOutput> {
             scale,
             viewbox_device_origin,
         };
-        let Schedule { steps } = ScheduleBuilder::new().build(&inputs);
+        let Schedule { steps } = match subtree_root {
+            Some(root) => ScheduleBuilder::new().build_subtree(&inputs, root),
+            None => ScheduleBuilder::new().build(&inputs),
+        };
         steps
     };
 
@@ -126,7 +145,7 @@ pub fn render_via_ssa(args: RenderArgs<'_>) -> Result<RenderOutput> {
     //    here — the phase-1 immutable borrow on `state.tile_grid`
     //    has ended.
     let (acquires, releases) = {
-        let mut sink = ProductionSink::new(allocator, state, shapes, tile_size);
+        let mut sink = ProductionSink::new(allocator, state, shapes, tile_size, output);
         Dispatcher::new(&mut sink).execute(&steps)?;
         let acq = sink.acquire_count();
         let rel = sink.release_count();

@@ -32,6 +32,7 @@ import { rendererSyncHandler, syncRendererAfterUpdate } from './renderer-sync'
 import { selectionSyncHandler } from './selection-sync'
 import { workerSyncHandler } from '../../worker/worker-sync'
 import { scene3dSyncHandler } from '../three/scene3d-sync'
+import { augmentCropResizeChanges } from '../three/scene3d-crop-resize'
 import { recordHistoryFrame } from '../../history/history-sync'
 
 // Subscriber registration — explicit, ordered, single source of truth.
@@ -131,8 +132,8 @@ function applyDocMetaChangesLocally(changes: readonly DocMetaChange[]): void {
  */
 export async function commitChanges(params: CommitChangesParams): Promise<void> {
   const {
-    redoChanges,
-    undoChanges = [],
+    redoChanges: inputRedoChanges,
+    undoChanges: inputUndoChanges = [],
     docMetaRedoChanges = [],
     docMetaUndoChanges = [],
     pageId: explicitPageId,
@@ -141,6 +142,16 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
     ignoreRendererSync,
     groupId,
   } = params
+
+  // A crop-mode 3D scene pins its view frame while its box resizes, so the frame write
+  // rides along in THIS change set — same commit, same undo frame as the geometry. Undo
+  // and redo already carry it in their recorded frames, so they must not be augmented
+  // again. Returns null (and costs a scan) unless such a scene was actually resized.
+  const augmented = fromHistory
+    ? null
+    : augmentCropResizeChanges(inputRedoChanges, inputUndoChanges)
+  const redoChanges = augmented?.redoChanges ?? inputRedoChanges
+  const undoChanges = augmented?.undoChanges ?? inputUndoChanges
 
   const hasPageChanges = redoChanges.length > 0
   const hasDocMetaChanges = docMetaRedoChanges.length > 0
