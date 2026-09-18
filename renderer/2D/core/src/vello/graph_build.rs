@@ -96,7 +96,7 @@ pub fn build(
         b.walk(root);
     }
     b.flush();
-    FrameGraph { frame, background, nodes: b.nodes }
+    FrameGraph::new(frame, background, b.nodes)
 }
 
 struct Builder<'a> {

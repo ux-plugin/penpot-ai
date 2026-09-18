@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use crate::kurbo::{Rect, Vec2};
 
 use crate::vello::frame_graph::{pad_at, FrameGraph, GNode, NodeId, Op};
-use crate::vello::resolve::{outside, tile_round, Demand, Res, Spines};
+use crate::vello::resolve::{bands, tile_round, Demand, Res, Spines};
 
 /// The resolution the expansion sizes a chain's reach by when deciding which chains an instance
 /// clones: the lowest a pair goes in practice, so a chain that would only enter the region past
@@ -94,7 +94,7 @@ pub(crate) fn expand(g: &FrameGraph, frame: Rect, res: &Res, dem: &Demand, spine
         map[i] = nodes.len();
         nodes.push(GNode { op: node.op.clone(), inputs, label: node.label.clone() });
     }
-    Some(FrameGraph { frame: g.frame, background: g.background, nodes })
+    Some(FrameGraph::new(g.frame, g.background, nodes))
 }
 
 /// One instance's nodes, appended: the root, the cloned spine with its fill points and chain
@@ -112,12 +112,12 @@ fn emit_instance(g: &FrameGraph, frame: Rect, res: &Res, inst: &Instance, ix: us
         let Op::Compose { offset, .. } = &g.nodes[s].op else { continue };
         let v = res.ext[g.nodes[s].inputs[1]] + Vec2::new(f64::from(offset[0]), f64::from(offset[1]));
         let foot = g.nodes[s].inputs.get(2).map_or(v, |&c| v.intersect(res.ext[c]));
-        let hit = foot.intersect(outside(region, frame));
-        if hit.is_zero_area() {
-            continue;
-        }
+        let Some(hit) = bands(region, frame).map(|b| foot.intersect(b)).filter(|h| !h.is_zero_area()).reduce(|a, b| a.union(b)) else { continue };
         cloned[p] = true;
         let reach = chain_reach(g, res, s, MEMBERSHIP_K);
+        if std::env::var_os("WV_PLAN_DUMP").is_some() {
+            eprintln!("expand: member {} foot {:?} hit {:?} reach {reach} region {:?}", g.nodes[s].label, foot, hit, region);
+        }
         region = region.union(hit.inflate(reach, reach));
     }
     let mut push = |node: GNode| {

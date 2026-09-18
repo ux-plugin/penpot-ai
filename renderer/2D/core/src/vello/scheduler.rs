@@ -66,7 +66,7 @@ use crate::vello::frame_graph::FrameGraph;
 use crate::vello::frame_plan::FramePlan;
 use crate::vello::halo;
 use crate::vello::params::Params;
-use crate::vello::resolve::Resolved;
+use crate::vello::resolve::{Laps, Resolved};
 use crate::vello::schedule::{Dump, Schedule};
 
 /// Pixel columns per tile. Must equal vello's `TILE_WIDTH`; the backend checks it at compile time.
@@ -81,22 +81,32 @@ pub(crate) const TILE_H: f64 = TILE_HEIGHT as f64;
 /// and writes what it chose.
 #[must_use]
 pub fn plan(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64, memory: &mut HashMap<u128, f32>) -> FramePlan {
+    let mut laps = Laps::new("plan");
     let expanded = expanded(graph, width, height, max_dim, pages);
+    laps.lap("expanded");
     plan_of(expanded.as_ref().unwrap_or(graph), width, height, max_dim, pages, memory)
 }
 
 /// The plan of `graph` as it is, unexpanded: resolve, then the arms, the schedule, the
 /// parameters, the passes.
 fn plan_of(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64, memory: &mut HashMap<u128, f32>) -> FramePlan {
+    let mut laps = Laps::new("plan");
     let mut cx = Resolved::of(graph, width, height, max_dim, pages);
+    laps.lap("resolved");
     cx.resolve(memory);
+    laps.lap("decided");
     let work = Work::of(&cx);
+    laps.lap("work");
     let sched = Schedule::fit(&cx, &work);
+    laps.lap("schedule");
     if std::env::var_os("WV_PLAN_DUMP").is_some() {
         eprint!("{}", Dump(&cx, &work, &sched));
     }
     let params = Params::bake(&cx, &work, &sched);
-    emit(&cx, &work, &sched, params)
+    laps.lap("params");
+    let plan = emit(&cx, &work, &sched, params);
+    laps.lap("emit");
+    plan
 }
 
 /// The graph `plan` schedules for `graph` on a `width × height` frame: DAG++, the graph with every
@@ -133,10 +143,7 @@ mod tests {
         let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
         let b = Rect::new(100.0, 100.0, 300.0, 260.0);
         let g = Rect::new(200.0, 200.0, 400.0, 380.0);
-        FrameGraph {
-            frame,
-            background: Color::WHITE,
-            nodes: vec![
+        FrameGraph::new(frame, Color::WHITE, vec![
                 GNode { op: Op::Draw(vec![body(1, frame)]), inputs: vec![], label: "ground".into() },
                 GNode { op: Op::Draw(vec![cov(2, b)]), inputs: vec![], label: "sil".into() },
                 GNode { op: Op::Blur { sigma: 4.0, axis: BlurAxis::X, linear: false, edge_clamp_style: EdgeClampStyle::Transparent, taps: BLUR_TAPS }, inputs: vec![1], label: "bx".into() },
@@ -148,8 +155,7 @@ mod tests {
                 GNode { op: Op::MaskMix(vec![0.0; 24]), inputs: vec![7, 5], label: "mix".into() },
                 GNode { op: Op::Draw(vec![cov(3, g)]), inputs: vec![], label: "mask".into() },
                 GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![5, 8, 9], label: "glass".into() },
-            ],
-        }
+            ])
     }
 
     #[test]
@@ -202,10 +208,7 @@ mod tests {
         let key = 0x99;
         let warp = |input| GNode { op: Op::Warp(vec![0.0; 24]), inputs: vec![input], label: "warp".into() };
         let shade = |input| GNode { op: Op::Shade(vec![0.0; 24]), inputs: vec![input], label: "shade".into() };
-        FrameGraph {
-            frame,
-            background: Color::WHITE,
-            nodes: vec![
+        FrameGraph::new(frame, Color::WHITE, vec![
                 GNode { op: Op::Draw(vec![body(1, frame)]), inputs: vec![], label: "ground".into() },
                 warp(0),
                 shade(1),
@@ -217,8 +220,7 @@ mod tests {
                 GNode { op: Op::Scale { target: 1.0, key }, inputs: vec![7], label: "up".into() },
                 GNode { op: Op::Draw(vec![cov(3, rb)]), inputs: vec![], label: "maskB".into() },
                 GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![4, 8, 9], label: "glassB".into() },
-            ],
-        }
+            ])
     }
 
     #[test]
@@ -242,10 +244,7 @@ mod tests {
         let warp = |input| GNode { op: Op::Warp(vec![0.0; 24]), inputs: vec![input], label: "warp".into() };
         let shade = |input| GNode { op: Op::Shade(vec![0.0; 24]), inputs: vec![input], label: "shade".into() };
         let glass = |below, value, mask, label: &str| GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![below, value, mask], label: label.into() };
-        FrameGraph {
-            frame,
-            background: Color::WHITE,
-            nodes: vec![
+        FrameGraph::new(frame, Color::WHITE, vec![
                 GNode { op: Op::Draw(vec![body(1, page)]), inputs: vec![], label: "ground".into() },
                 warp(0),
                 shade(1),
@@ -264,8 +263,7 @@ mod tests {
                 GNode { op: Op::Scale { target: 1.0, key }, inputs: vec![14], label: "up".into() },
                 GNode { op: Op::Draw(vec![cov(3, rb)]), inputs: vec![], label: "maskB".into() },
                 glass(4, 15, 16, "glassB"),
-            ],
-        }
+            ])
     }
 
     #[test]
@@ -397,10 +395,7 @@ mod tests {
         let g = Rect::new(200.0, 200.0, 400.0, 380.0);
         let blur = |axis, input| GNode { op: Op::Blur { sigma: 4.0, axis, linear: false, edge_clamp_style: EdgeClampStyle::Transparent, taps: BLUR_TAPS }, inputs: vec![input], label: String::new() };
         let scale = |target, input| GNode { op: Op::Scale { target, key: 0 }, inputs: vec![input], label: String::new() };
-        let g = FrameGraph {
-            frame,
-            background: Color::WHITE,
-            nodes: vec![
+        let g = FrameGraph::new(frame, Color::WHITE, vec![
                 GNode { op: Op::Draw(vec![body(1, frame)]), inputs: vec![], label: "ground".into() },
                 GNode { op: Op::Draw(vec![cov(2, b)]), inputs: vec![], label: "sil".into() },
                 scale(target, 1),
@@ -416,8 +411,7 @@ mod tests {
                 GNode { op: Op::MaskMix(vec![0.0; 24]), inputs: vec![11, 7], label: "mix".into() },
                 GNode { op: Op::Draw(vec![cov(3, g)]), inputs: vec![], label: "mask".into() },
                 GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![7, 12, 13], label: "glass".into() },
-            ],
-        };
+            ]);
         g.validate().expect("valid");
         g
     }
@@ -487,7 +481,7 @@ mod tests {
             nodes.push(GNode { op: Op::Scale { target: 1.0, key: i as u128 }, inputs: vec![sil + 3], label: "up".into() });
             nodes.push(GNode { op: Op::Compose { mode: ComposeMode::Over, colour: Some([0.0, 0.0, 0.0, 0.5]), offset: [6.0, 8.0] }, inputs: vec![spine, sil + 4], label: "drop".into() });
         }
-        let g = FrameGraph { frame, background: Color::WHITE, nodes };
+        let g = FrameGraph::new(frame, Color::WHITE, nodes);
         g.validate().expect("valid");
         g
     }
@@ -505,10 +499,7 @@ mod tests {
     #[test]
     fn the_store_is_as_wide_as_the_frame_plus_the_widest_ring_so_only_area_lowers_a_run() {
         let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
-        let g = FrameGraph {
-            frame,
-            background: Color::WHITE,
-            nodes: vec![
+        let g = FrameGraph::new(frame, Color::WHITE, vec![
                 GNode { op: Op::Draw(vec![body(1, frame)]), inputs: vec![], label: "ground".into() },
                 GNode { op: Op::Scale { target: 1.0, key: 7 }, inputs: vec![0], label: "down".into() },
                 GNode { op: Op::Blur { sigma: 100.0, axis: BlurAxis::X, linear: true, edge_clamp_style: EdgeClampStyle::Extend, taps: BLUR_TAPS }, inputs: vec![1], label: "bx".into() },
@@ -516,8 +507,7 @@ mod tests {
                 GNode { op: Op::Scale { target: 1.0, key: 7 }, inputs: vec![3], label: "up".into() },
                 GNode { op: Op::Draw(vec![cov(3, Rect::new(100.0, 100.0, 540.0, 380.0))]), inputs: vec![], label: "mask".into() },
                 GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![0, 4, 5], label: "blur".into() },
-            ],
-        };
+            ]);
         g.validate().expect("valid");
         let mut memory = HashMap::new();
         let mut s = Resolved::of(&g, 640, 480, 8192, 3.0);

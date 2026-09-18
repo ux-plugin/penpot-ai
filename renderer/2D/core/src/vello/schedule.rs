@@ -2,8 +2,10 @@
 //! everything it reads; a leaf or halo root is drawn the round before its first reader; each
 //! chain, in spine order, is shifted later by the least amount at which [`StorePacker`] fits its
 //! values beside those placed before them within the store's rows — the packer is the one judge
-//! of what fits. A value's origin in the store splits into the page fine folds rows by and the
-//! placement that rides the records.
+//! of what fits: a shift whose rounds lack the tiles is skipped without asking, and a chain that
+//! does not fit at a shift is taken back out of it. A value's
+//! origin in the store splits into the page fine folds rows by and the placement that rides the
+//! records.
 
 use std::fmt;
 
@@ -11,7 +13,7 @@ use crate::kurbo::{Rect, Vec2};
 
 use crate::vello::arms::{Kind, Work};
 use crate::vello::frame_graph::{DrawStyle, NodeId, Op};
-use crate::vello::resolve::{overlaps, Resolved};
+use crate::vello::resolve::{overlaps, Laps, Resolved};
 use crate::vello::scheduler::{TILE_H, TILE_W};
 use crate::vello::store_pack::StorePacker;
 
@@ -45,8 +47,16 @@ impl Schedule {
         let mut s = Schedule { round: vec![0; work.arms.len()], slot: vec![Slot::default(); work.values.len()] };
         let drawn: Vec<bool> = work.values.iter().map(|v| matches!(v.kind, Kind::Leaf { .. } | Kind::Root(_))).collect();
         let baked: Vec<bool> = work.values.iter().map(|v| matches!(&v.kind, Kind::Leaf { item, .. } if matches!(item.style, DrawStyle::Distance { .. }))).collect();
+        let tiles = |v: usize| {
+            let r = work.values[v].rect;
+            ((r.width() / TILE_W).ceil() as u32, (r.height() / TILE_H).ceil() as u32)
+        };
         let rows = (cx.store.rows / TILE_H).floor() as u32;
-        let mut placed: Vec<usize> = Vec::new();
+        let tiles_total = rows * (cx.store.width / TILE_W) as u32;
+        let mut packer = StorePacker::new((cx.store.width / TILE_W) as u32);
+        let mut need: Vec<u32> = Vec::new();
+        let (mut n_attempts, mut n_jumps, mut n_rollbacks, mut n_places) = (0u64, 0u64, 0u64, 0u64);
+        let mut id: Vec<Option<u32>> = vec![None; work.values.len()];
         let mut far = 0u32;
         let mut chains: Vec<NodeId> = work.arms.iter().map(|a| a.chain).collect();
         chains.dedup();
@@ -71,19 +81,62 @@ impl Schedule {
                 }
             }
             let first = arms.iter().map(|&a| s.round[a]).min().unwrap_or(0);
+            let saved: Vec<(Slot, Option<u32>)> = spans.iter().map(|&(v, _, _)| (s.slot[v], id[v])).collect();
             let mut shift = 0u32;
             loop {
+                while first + shift <= far {
+                    need.clear();
+                    for &(v, b, d) in &spans {
+                        let (w, h) = tiles(v);
+                        let from = match id[v] {
+                            None if baked[v] => 0,
+                            None => b + shift - 1,
+                            Some(_) => s.slot[v].last_read + 1,
+                        };
+                        for q in from..=d + shift {
+                            if need.len() <= q as usize {
+                                need.resize(q as usize + 1, 0);
+                            }
+                            need[q as usize] += w * h;
+                        }
+                    }
+                    if need.iter().enumerate().all(|(q, &n)| n == 0 || packer.used(q as u32) + n <= tiles_total) {
+                        break;
+                    }
+                    shift += 1;
+                    n_jumps += 1;
+                }
+                n_attempts += 1;
+                let mut within = true;
                 for &(v, b, d) in &spans {
-                    if !placed.contains(&v) {
-                        s.slot[v].birth = if baked[v] { 0 } else { b + shift - 1 };
-                        s.slot[v].last_read = d + shift;
-                    } else {
-                        s.slot[v].last_read = s.slot[v].last_read.max(d + shift);
+                    let (w, h) = tiles(v);
+                    let placed = match id[v] {
+                        None => {
+                            s.slot[v].birth = if baked[v] { 0 } else { b + shift - 1 };
+                            s.slot[v].last_read = d + shift;
+                            Some(packer.place(w, h, s.slot[v].birth, s.slot[v].last_read))
+                        }
+                        Some(old) if d + shift > s.slot[v].last_read => {
+                            s.slot[v].last_read = d + shift;
+                            packer.remove(old);
+                            Some(packer.place(w, h, s.slot[v].birth, s.slot[v].last_read))
+                        }
+                        Some(_) => None,
+                    };
+                    if let Some(new) = placed {
+                        n_places += 1;
+                        id[v] = Some(new);
+                        within &= packer.at(new)[1] + h <= rows;
                     }
                 }
-                let trial: Vec<usize> = placed.iter().copied().chain(spans.iter().map(|e| e.0).filter(|v| !placed.contains(v))).collect();
-                if s.pack(cx, work, &trial) <= rows || first + shift > far {
+                if within || first + shift > far {
+                    packer.commit();
                     break;
+                }
+                packer.rollback();
+                n_rollbacks += 1;
+                for (i, &(v, _, _)) in spans.iter().enumerate() {
+                    (s.slot[v], id[v]) = saved[i];
                 }
                 shift += 1;
             }
@@ -91,35 +144,21 @@ impl Schedule {
                 s.round[a] += shift;
                 far = far.max(s.round[a] + 1);
             }
-            for &(v, _, _) in &spans {
-                if !placed.contains(&v) {
-                    placed.push(v);
-                }
-            }
         }
-        let all: Vec<usize> = (0..work.values.len()).filter(|&v| Self::placed(work, v)).collect();
-        s.pack(cx, work, &all);
-        s.slot[0].last_read = s.round.iter().copied().max().unwrap_or(0);
-        s
-    }
-
-    /// Place `values` in the rows below the frame by [`StorePacker`], which hands out whole tiles
-    /// and lets values whose lifetimes do not meet share them. Returns the tile rows the placement
-    /// needs.
-    fn pack(&mut self, cx: &Resolved, work: &Work, values: &[usize]) -> u32 {
-        let mut order = values.to_vec();
-        order.sort_by_key(|&v| (self.slot[v].birth, v));
+        if Laps::new("fit").on() {
+            eprintln!("fit: {} values, {} arms, attempts {n_attempts}, jumps {n_jumps}, rollbacks {n_rollbacks}, placements {n_places}, rows {rows}, height {}", work.values.len(), work.arms.len(), packer.height());
+        }
         let pitch = cx.store.pitch;
-        let mut packer = StorePacker::new((cx.store.width / TILE_W) as u32);
-        for v in order {
-            let (rect, slot) = (work.values[v].rect, self.slot[v]);
-            let [x, y] = packer.place((rect.width() / TILE_W).ceil() as u32, (rect.height() / TILE_H).ceil() as u32, slot.birth, slot.last_read);
+        for v in 0..work.values.len() {
+            let Some(id) = id[v] else { continue };
+            let [x, y] = packer.at(id);
             let origin = Vec2::new(f64::from(x) * TILE_W, pitch + f64::from(y) * TILE_H);
             let page = (origin.y / pitch).floor() as usize;
-            self.slot[v].page = page;
-            self.slot[v].place = origin - Vec2::new(0.0, page as f64 * pitch) - rect.origin().to_vec2();
+            s.slot[v].page = page;
+            s.slot[v].place = origin - Vec2::new(0.0, page as f64 * pitch) - work.values[v].rect.origin().to_vec2();
         }
-        packer.height()
+        s.slot[0].last_read = s.round.iter().copied().max().unwrap_or(0);
+        s
     }
 
     /// The round after which node `i`'s result can be read over `r`: an arm's own round, a leaf's

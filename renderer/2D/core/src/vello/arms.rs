@@ -210,13 +210,13 @@ impl Work {
     /// two run at one resolution, else by an arm of the halo's own that resamples `of` over the
     /// drawn rows and keeps them where the source leaves the frame.
     fn halo(&mut self, cx: &Resolved, h: NodeId, of: NodeId) {
-        let root = cx.g.spine_root(h);
+        let root = cx.spines.root[h];
         let v = match self.value_of[root] {
             Some(v) => v,
             None => {
                 let items = cx.dem.kept[root].clone();
                 let rect = (0..cx.g.nodes.len())
-                    .filter(|&s| cx.live(s) && cx.g.is_spine(s) && cx.g.spine_root(s) == root)
+                    .filter(|&s| cx.live(s) && cx.g.is_spine(s) && cx.spines.root[s] == root)
                     .map(|s| cx.dem.out[s])
                     .reduce(|a, b| a.union(b))
                     .unwrap_or(cx.dem.out[h]);

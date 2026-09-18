@@ -1,136 +1,210 @@
 //! Where a value lives in the store.
 //!
 //! The scheduler knows each value's size and the span of rounds it must survive: the round it is
-//! first written, and the last round anything reads it. [`StorePacker::place`] hands back a
-//! coordinate for each, such that two values whose spans meet never share a tile and two whose
-//! spans are disjoint may.
+//! first written, and the last round anything reads it. [`StorePacker::place`] hands back a slot
+//! for each, such that two values whose spans meet never share a tile and two whose spans are
+//! disjoint may. Values arrive in any order, and the rounds stage tries a chain at a shift and
+//! takes it back: every placement and removal since the last [`StorePacker::commit`] is undone by
+//! [`StorePacker::rollback`].
 //!
 //! Everything here is in TILES. A fine workgroup writes one whole tile, so a texel-exact packing
 //! would let one value's mark clobber the edge of its neighbour. The caller converts pixels.
 //!
-//! Two obligations on the caller: values arrive in non-decreasing birth order, and a value's span
-//! covers every write to it, not merely the first. A served ground is written twice, by its draw
-//! and again by its copy, and both fall inside its span.
+//! One obligation on the caller: a value's span covers every write to it, not merely the first.
 //!
-//! Memory is bounded by the values placed, whatever the round numbers are: the bitmap grows to the
-//! lowest row handed out, and the death buckets hold only rounds some live value dies in.
-
-use std::collections::BTreeMap;
+//! Memory is one bitmap per round over the rows handed out: bounded by the rounds in use and the
+//! rows the values reached. A placement scans those bitmaps, so its cost does not grow with the
+//! number of values alive.
 
 const BITS: usize = u64::BITS as usize;
 
-/// A value's footprint, in tiles. Its death is the bucket it is filed under.
+/// A value's footprint, in tiles, and the rounds it holds it.
+#[derive(Clone, Copy, Debug)]
 struct Slot {
     x: u32,
     y: u32,
     w: u32,
     h: u32,
+    birth: u32,
+    death: u32,
+    live: bool,
+}
+
+enum Entry {
+    Placed(u32),
+    Removed(u32),
 }
 
 /// The store's tiles, handed out to values as their lifetimes allow.
 pub struct StorePacker {
     width: u32,
     words: usize,
-    /// One bit per tile, set while a live value owns it; row `r` is words `r * words ..`.
-    rows: Vec<u64>,
-    /// Live slots by the round they die in. Every entry is at or after the current round.
-    by_death: BTreeMap<u32, Vec<Slot>>,
-    round: u32,
-    height: u32,
+    /// Per round, one bit per tile, set while a value alive in that round owns it; row `r` is
+    /// words `r * words ..`.
+    rounds: Vec<Vec<u64>>,
+    /// Per round, the tiles owned.
+    used: Vec<u32>,
+    slots: Vec<Slot>,
+    journal: Vec<Entry>,
 }
 
 impl StorePacker {
     /// A packer over a store `width` tiles wide.
     pub fn new(width: u32) -> Self {
         assert!(width > 0, "a store has width");
-        Self { width, words: (width as usize).div_ceil(BITS), rows: Vec::new(), by_death: BTreeMap::new(), round: 0, height: 0 }
+        Self { width, words: (width as usize).div_ceil(BITS), rounds: Vec::new(), used: Vec::new(), slots: Vec::new(), journal: Vec::new() }
     }
 
-    /// The rows handed out so far, in tiles: the store needs this many below its origin.
+    /// The rows handed out to live values, in tiles: the store needs this many below its origin.
     pub fn height(&self) -> u32 {
-        self.height
+        self.slots.iter().filter(|s| s.live).map(|s| s.y + s.h).max().unwrap_or(0)
     }
 
-    /// Where a `w`×`h` value alive over rounds `birth..=death` goes, in tiles from the store's
-    /// origin. The rect returned lies inside the width and overlaps nothing still alive at `birth`;
-    /// among such spots it is the highest, then the leftmost, that sits against the origin or a
-    /// live value.
+    /// Where slot `id` sits, in tiles from the store's origin.
+    pub fn at(&self, id: u32) -> [u32; 2] {
+        let s = &self.slots[id as usize];
+        [s.x, s.y]
+    }
+
+    /// The tiles owned in round `q`.
+    pub fn used(&self, q: u32) -> u32 {
+        self.used.get(q as usize).copied().unwrap_or(0)
+    }
+
+    /// A slot for a `w`×`h` value alive over rounds `birth..=death`: inside the width, overlapping
+    /// nothing alive in any of those rounds; the highest, then the leftmost, such spot.
     ///
-    /// Panics if `birth` precedes an earlier call's, if the value is empty or wider than the store,
-    /// or if it dies before it is born.
-    pub fn place(&mut self, w: u32, h: u32, birth: u32, death: u32) -> [u32; 2] {
-        assert!(birth >= self.round, "values are placed in birth order");
+    /// Panics if the value is empty or wider than the store, or dies before it is born.
+    pub fn place(&mut self, w: u32, h: u32, birth: u32, death: u32) -> u32 {
         assert!(w > 0 && h > 0, "an empty value has no place");
         assert!(w <= self.width, "a value is wider than the store");
         assert!(death >= birth, "a value dies before it is born");
-        self.retire(birth);
-
-        let [x, y] = self.spot(w, h);
-        self.mark(x, y, w, h, true);
-        self.by_death.entry(death).or_default().push(Slot { x, y, w, h });
-        self.height = self.height.max(y + h);
-        [x, y]
+        if self.rounds.len() <= death as usize {
+            self.rounds.resize(death as usize + 1, Vec::new());
+            self.used.resize(death as usize + 1, 0);
+        }
+        let deepest = (birth..=death).map(|q| self.rounds[q as usize].len() / self.words).max().unwrap_or(0) as u32;
+        let mut band = vec![0u64; self.words];
+        let mut y = 0u32;
+        let [x, y] = loop {
+            if y >= deepest {
+                break [0, y];
+            }
+            band.fill(0);
+            for q in birth..=death {
+                let rows = &self.rounds[q as usize];
+                for row in y..y + h {
+                    let base = row as usize * self.words;
+                    if base >= rows.len() {
+                        break;
+                    }
+                    for (k, word) in band.iter_mut().enumerate() {
+                        *word |= rows[base + k];
+                    }
+                }
+            }
+            if let Some(x) = run_of(&band, self.width, w) {
+                break [x, y];
+            }
+            y += 1;
+        };
+        let id = self.slots.len() as u32;
+        self.slots.push(Slot { x, y, w, h, birth, death, live: true });
+        self.take(id, true);
+        self.journal.push(Entry::Placed(id));
+        id
     }
 
-    /// Move to `round`, releasing every slot whose last reader ran before it.
-    fn retire(&mut self, round: u32) {
-        while let Some(entry) = self.by_death.first_entry() {
-            if *entry.key() >= round {
-                break;
-            }
-            for s in entry.remove() {
-                self.mark(s.x, s.y, s.w, s.h, false);
+    /// Give slot `id`'s tiles back for every round it held them.
+    pub fn remove(&mut self, id: u32) {
+        assert!(self.slots[id as usize].live, "a slot is removed once");
+        self.take(id, false);
+        self.journal.push(Entry::Removed(id));
+    }
+
+    /// Keep everything placed and removed so far.
+    pub fn commit(&mut self) {
+        self.journal.clear();
+    }
+
+    /// Undo every placement and removal since the last commit, latest first.
+    pub fn rollback(&mut self) {
+        while let Some(e) = self.journal.pop() {
+            match e {
+                Entry::Placed(id) => self.take(id, false),
+                Entry::Removed(id) => self.take(id, true),
             }
         }
-        self.round = round;
     }
 
-    /// Every slot that may still be read.
-    fn live(&self) -> impl Iterator<Item = &Slot> {
-        self.by_death.values().flatten()
-    }
-
-    /// The highest, then leftmost, free spot for a `w`×`h` rect among the origin and the corners
-    /// of live slots; below every live slot when none of those fits.
-    fn spot(&self, w: u32, h: u32) -> [u32; 2] {
-        let mut spots: Vec<[u32; 2]> = vec![[0, 0]];
-        for s in self.live() {
-            spots.push([s.x + s.w, s.y]);
-            spots.push([s.x, s.y + s.h]);
+    /// Take (`taken`) or release slot `id`'s tiles in every round of its span.
+    fn take(&mut self, id: u32, taken: bool) {
+        let s = self.slots[id as usize];
+        for q in s.birth..=s.death {
+            self.mark(q, s.x, s.y, s.w, s.h, taken);
+            if taken {
+                self.used[q as usize] += s.w * s.h;
+            } else {
+                self.used[q as usize] -= s.w * s.h;
+            }
         }
-        spots.sort_unstable_by_key(|&[x, y]| (y, x));
-        spots.dedup();
-        spots
-            .into_iter()
-            .find(|&[x, y]| x + w <= self.width && self.free(x, y, w, h))
-            .unwrap_or_else(|| [0, self.live().map(|s| s.y + s.h).max().unwrap_or(0)])
+        self.slots[id as usize].live = taken;
     }
 
-    /// Whether every tile of the `w`×`h` rect at `(x, y)` is unowned.
-    fn free(&self, x: u32, y: u32, w: u32, h: u32) -> bool {
+    /// Whether every tile of the `w`×`h` rect at `(x, y)` is unowned in round `q`.
+    #[cfg(test)]
+    fn free(&self, q: u32, x: u32, y: u32, w: u32, h: u32) -> bool {
+        let rows = &self.rounds[q as usize];
         (y..y + h).all(|row| {
             let base = row as usize * self.words;
-            base >= self.rows.len() || masks(x, w).all(|(word, mask)| self.rows[base + word] & mask == 0)
+            base >= rows.len() || masks(x, w).all(|(word, mask)| rows[base + word] & mask == 0)
         })
     }
 
-    /// Take (`taken`) or release the tiles of the `w`×`h` rect at `(x, y)`.
-    fn mark(&mut self, x: u32, y: u32, w: u32, h: u32, taken: bool) {
-        let need = (y + h) as usize * self.words;
-        if self.rows.len() < need {
-            self.rows.resize(need, 0);
+    /// Take (`taken`) or release the tiles of the `w`×`h` rect at `(x, y)` in round `q`.
+    fn mark(&mut self, q: u32, x: u32, y: u32, w: u32, h: u32, taken: bool) {
+        let words = self.words;
+        let rows = &mut self.rounds[q as usize];
+        let need = (y + h) as usize * words;
+        if rows.len() < need {
+            rows.resize(need, 0);
         }
         for row in y..y + h {
-            let base = row as usize * self.words;
+            let base = row as usize * words;
             for (word, mask) in masks(x, w) {
                 if taken {
-                    self.rows[base + word] |= mask;
+                    rows[base + word] |= mask;
                 } else {
-                    self.rows[base + word] &= !mask;
+                    rows[base + word] &= !mask;
                 }
             }
         }
     }
+}
+
+/// The leftmost column of `w` clear bits within the first `width` bits of `band`, if any.
+fn run_of(band: &[u64], width: u32, w: u32) -> Option<u32> {
+    let mut x = 0u32;
+    while x + w <= width {
+        let mut run = 0u32;
+        while run < w {
+            let bit = (x + run) as usize;
+            let word = band[bit / BITS] >> (bit % BITS);
+            if word & 1 != 0 {
+                break;
+            }
+            let zeros = word.trailing_zeros().min((BITS - bit % BITS) as u32);
+            run += zeros;
+        }
+        if run >= w {
+            return Some(x);
+        }
+        let bit = (x + run) as usize;
+        let word = band[bit / BITS] >> (bit % BITS);
+        let ones = word.trailing_ones().min((BITS - bit % BITS) as u32).max(1);
+        x += run + ones;
+    }
+    None
 }
 
 /// The row words and bit masks covering exactly the `w` tiles from column `x`; `w` is non-zero.
@@ -157,7 +231,9 @@ mod tests {
     #[test]
     fn disjoint_lives_share_a_slot() {
         let mut p = StorePacker::new(10);
-        assert_eq!(p.place(4, 2, 0, 1), p.place(4, 2, 2, 3));
+        let a = p.place(4, 2, 0, 1);
+        let b = p.place(4, 2, 2, 3);
+        assert_eq!(p.at(a), p.at(b));
         assert_eq!(p.height(), 2);
     }
 
@@ -165,15 +241,19 @@ mod tests {
     fn a_death_meeting_a_birth_still_clashes() {
         let mut p = StorePacker::new(10);
         let a = p.place(4, 2, 0, 2);
-        assert_ne!(a, p.place(4, 2, 2, 3));
+        let b = p.place(4, 2, 2, 3);
+        assert_ne!(p.at(a), p.at(b));
     }
 
     #[test]
     fn values_sit_side_by_side_before_opening_a_row() {
         let mut p = StorePacker::new(10);
-        assert_eq!(p.place(4, 2, 0, 9), [0, 0]);
-        assert_eq!(p.place(4, 2, 0, 9), [4, 0]);
-        assert_eq!(p.place(4, 2, 0, 9), [0, 2]);
+        let id = p.place(4, 2, 0, 9);
+        assert_eq!(p.at(id), [0, 0]);
+        let id = p.place(4, 2, 0, 9);
+        assert_eq!(p.at(id), [4, 0]);
+        let id = p.place(4, 2, 0, 9);
+        assert_eq!(p.at(id), [0, 2]);
         assert_eq!(p.height(), 4);
     }
 
@@ -182,16 +262,49 @@ mod tests {
         let mut p = StorePacker::new(4);
         p.place(4, 3, 0, 0);
         p.place(4, 1, 0, 5);
-        assert_eq!(p.place(4, 3, 1, 5), [0, 0]);
+        let id = p.place(4, 3, 1, 5);
+        assert_eq!(p.at(id), [0, 0]);
         assert_eq!(p.height(), 4);
     }
 
     #[test]
-    fn a_huge_death_round_costs_no_memory() {
+    fn an_earlier_birth_placed_later_sees_what_is_alive_then() {
         let mut p = StorePacker::new(4);
-        p.place(1, 1, 0, u32::MAX);
-        p.place(1, 1, u32::MAX - 1, u32::MAX);
-        assert_eq!(p.by_death.len(), 1);
+        let late = p.place(4, 2, 3, 5);
+        let early = p.place(4, 2, 0, 3);
+        assert_ne!(p.at(late), p.at(early), "they meet at round 3");
+        let gap = p.place(4, 2, 0, 2);
+        assert_eq!(p.at(gap), p.at(late), "the rows are free until round 3");
+    }
+
+    #[test]
+    fn a_rollback_forgets_placements_and_removals_alike() {
+        let mut p = StorePacker::new(4);
+        let a = p.place(4, 2, 0, 9);
+        p.commit();
+        p.remove(a);
+        let b = p.place(4, 2, 0, 9);
+        assert_eq!(p.at(b), [0, 0], "a's rows were free once it was removed");
+        p.rollback();
+        assert_eq!(p.height(), 2, "a is back, b is gone");
+        let c = p.place(4, 2, 0, 9);
+        assert_eq!(p.at(c), [0, 2], "a holds its rows again");
+    }
+
+    #[test]
+    fn the_leftmost_clear_run_is_found_across_word_boundaries() {
+        for x in 0..130u32 {
+            for w in 1..70u32 {
+                let mut p = StorePacker::new(200);
+                p.rounds.push(Vec::new());
+                p.mark(0, x, 0, w, 1, true);
+                let band = p.rounds[0].clone();
+                for need in [1u32, 5, 64, 70] {
+                    let want = (0..=200 - need).find(|&c| (c + need <= x) || c >= x + w);
+                    assert_eq!(super::run_of(&band, 200, need), want, "run {x}+{w}, need {need}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -199,9 +312,10 @@ mod tests {
         for x in 0..130u32 {
             for w in 1..70u32 {
                 let mut p = StorePacker::new(200);
-                p.mark(x, 0, w, 1, true);
+                p.rounds.push(Vec::new());
+                p.mark(0, x, 0, w, 1, true);
                 for t in 0..200u32 {
-                    assert_eq!(!p.free(t, 0, 1, 1), t >= x && t < x + w, "tile {t}, run {x}+{w}");
+                    assert_eq!(!p.free(0, t, 0, 1, 1), t >= x && t < x + w, "tile {t}, run {x}+{w}");
                 }
             }
         }
@@ -211,23 +325,20 @@ mod tests {
     fn live_values_never_overlap_and_stay_in_width() {
         let mut seed = 0x2545_f491u64;
         let mut p = StorePacker::new(150);
-        let mut placed: Vec<([u32; 2], u32, u32, u32)> = Vec::new();
-        let mut birth = 0u32;
+        let mut placed: Vec<([u32; 2], u32, u32, u32, u32)> = Vec::new();
         for _ in 0..400 {
-            birth += next(&mut seed) % 2;
+            let birth = next(&mut seed) % 40;
             let (w, h) = (1 + next(&mut seed) % 80, 1 + next(&mut seed) % 12);
             let death = birth + next(&mut seed) % 6;
-            let o = p.place(w, h, birth, death);
+            let id = p.place(w, h, birth, death);
+            let o = p.at(id);
             assert!(o[0] + w <= 150, "value leaves the store");
-            for &(q, qw, qh, qd) in &placed {
-                if qd >= birth {
-                    assert!(
-                        o[0] >= q[0] + qw || q[0] >= o[0] + w || o[1] >= q[1] + qh || q[1] >= o[1] + h,
-                        "live values overlap"
-                    );
+            for &(q, qw, qh, qb, qd) in &placed {
+                if qd >= birth && qb <= death {
+                    assert!(o[0] >= q[0] + qw || q[0] >= o[0] + w || o[1] >= q[1] + qh || q[1] >= o[1] + h, "live values overlap");
                 }
             }
-            placed.push((o, w, h, death));
+            placed.push((o, w, h, birth, death));
         }
     }
 }

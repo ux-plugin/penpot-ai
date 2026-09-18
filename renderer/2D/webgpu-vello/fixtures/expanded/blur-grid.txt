@@ -1,4 +1,4 @@
-frame [0.0 0.0 1192.0 622.0] nodes 493 background [1.0, 1.0, 1.0, 1.0]
+frame [0.0 0.0 1192.0 622.0] nodes 129 background [1.0, 1.0, 1.0, 1.0]
   0 | draw · 1300 item(s)        in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
   1 | draw · 1300 item(s) @0     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
   2 | halo of draw · 1300 item(s) @0 in=[1] Halo of 0
@@ -25,470 +25,106 @@ frame [0.0 0.0 1192.0 622.0] nodes 493 background [1.0, 1.0, 1.0, 1.0]
  23   s3 gather mask             in=[] Draw n=1 [695.3 51.8 794.7 103.7] 517:coverage[695.3 51.8 794.7 103.7]
  24 | s3 gather → spine          in=[16, 22, 23] Compose MaskedMix
  25 | draw · 1300 item(s) @3     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
- 26 | fill of draw · 1300 item(s) @3 in=[25] Halo of 0
- 27   s1 down @3                 in=[26] Scale → 0.25
- 28   s1 gather blur-X σ14.4 @3  in=[27] Blur σ14.4 X linear taps 193
- 29   s1 gather blur-Y σ14.4 @3  in=[28] Blur σ14.4 Y linear taps 193
- 30   s1 up @3                   in=[29] Scale → 1
- 31   s1 gather mask @3          in=[] Draw n=1 [99.3 51.8 198.7 103.7] 515:coverage[99.3 51.8 198.7 103.7]
- 32 | s1 gather → spine @3       in=[26, 30, 31] Compose MaskedMix
- 33 | fill of s1 gather → spine @3 in=[32] Halo of 8
- 34   s2 down @3                 in=[33] Scale → 0.25
- 35   s2 gather blur-X σ14.4 @3  in=[34] Blur σ14.4 X linear taps 193
- 36   s2 gather blur-Y σ14.4 @3  in=[35] Blur σ14.4 Y linear taps 193
- 37   s2 up @3                   in=[36] Scale → 1
- 38   s2 gather mask @3          in=[] Draw n=1 [397.3 51.8 496.7 103.7] 516:coverage[397.3 51.8 496.7 103.7]
- 39 | s2 gather → spine @3       in=[33, 37, 38] Compose MaskedMix
- 40 | fill of s2 gather → spine @3 in=[39] Halo of 16
- 41   s3 down @3                 in=[40] Scale → 0.25
- 42   s3 gather blur-X σ14.4 @3  in=[41] Blur σ14.4 X linear taps 193
- 43   s3 gather blur-Y σ14.4 @3  in=[42] Blur σ14.4 Y linear taps 193
- 44   s3 up @3                   in=[43] Scale → 1
- 45   s3 gather mask @3          in=[] Draw n=1 [695.3 51.8 794.7 103.7] 517:coverage[695.3 51.8 794.7 103.7]
- 46 | s3 gather → spine @3       in=[40, 44, 45] Compose MaskedMix
- 47 | halo of s3 gather → spine @3 in=[46] Halo of 24
- 48   s4 down                    in=[47] Scale → 0.25
- 49   s4 gather blur-X σ14.4     in=[48] Blur σ14.4 X linear taps 193
- 50   s4 gather blur-Y σ14.4     in=[49] Blur σ14.4 Y linear taps 193
- 51   s4 up                      in=[50] Scale → 1
- 52   s4 gather mask             in=[] Draw n=1 [993.3 51.8 1092.7 103.7] 518:coverage[993.3 51.8 1092.7 103.7]
- 53 | s4 gather → spine          in=[24, 51, 52] Compose MaskedMix
- 54 | draw · 1300 item(s) @4     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
- 55 | fill of draw · 1300 item(s) @4 in=[54] Halo of 0
- 56   s1 down @4                 in=[55] Scale → 0.25
- 57   s1 gather blur-X σ14.4 @4  in=[56] Blur σ14.4 X linear taps 193
- 58   s1 gather blur-Y σ14.4 @4  in=[57] Blur σ14.4 Y linear taps 193
- 59   s1 up @4                   in=[58] Scale → 1
- 60   s1 gather mask @4          in=[] Draw n=1 [99.3 51.8 198.7 103.7] 515:coverage[99.3 51.8 198.7 103.7]
- 61 | s1 gather → spine @4       in=[55, 59, 60] Compose MaskedMix
- 62 | fill of s1 gather → spine @4 in=[61] Halo of 8
- 63   s2 down @4                 in=[62] Scale → 0.25
- 64   s2 gather blur-X σ14.4 @4  in=[63] Blur σ14.4 X linear taps 193
- 65   s2 gather blur-Y σ14.4 @4  in=[64] Blur σ14.4 Y linear taps 193
- 66   s2 up @4                   in=[65] Scale → 1
- 67   s2 gather mask @4          in=[] Draw n=1 [397.3 51.8 496.7 103.7] 516:coverage[397.3 51.8 496.7 103.7]
- 68 | s2 gather → spine @4       in=[62, 66, 67] Compose MaskedMix
- 69 | halo of s4 gather → spine @4 in=[68] Halo of 53
- 70   s5 down                    in=[69] Scale → 0.25
- 71   s5 gather blur-X σ14.4     in=[70] Blur σ14.4 X linear taps 193
- 72   s5 gather blur-Y σ14.4     in=[71] Blur σ14.4 Y linear taps 193
- 73   s5 up                      in=[72] Scale → 1
- 74   s5 gather mask             in=[] Draw n=1 [99.3 207.3 198.7 259.2] 519:coverage[99.3 207.3 198.7 259.2]
- 75 | s5 gather → spine          in=[53, 73, 74] Compose MaskedMix
- 76 | draw · 1300 item(s) @5     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
- 77 | halo of s5 gather → spine @5 in=[76] Halo of 75
- 78   s6 down                    in=[77] Scale → 0.25
- 79   s6 gather blur-X σ14.4     in=[78] Blur σ14.4 X linear taps 193
- 80   s6 gather blur-Y σ14.4     in=[79] Blur σ14.4 Y linear taps 193
- 81   s6 up                      in=[80] Scale → 1
- 82   s6 gather mask             in=[] Draw n=1 [397.3 207.3 496.7 259.2] 51a:coverage[397.3 207.3 496.7 259.2]
- 83 | s6 gather → spine          in=[75, 81, 82] Compose MaskedMix
- 84 | draw · 1300 item(s) @6     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
- 85 | halo of s6 gather → spine @6 in=[84] Halo of 83
- 86   s7 down                    in=[85] Scale → 0.25
- 87   s7 gather blur-X σ14.4     in=[86] Blur σ14.4 X linear taps 193
- 88   s7 gather blur-Y σ14.4     in=[87] Blur σ14.4 Y linear taps 193
- 89   s7 up                      in=[88] Scale → 1
- 90   s7 gather mask             in=[] Draw n=1 [695.3 207.3 794.7 259.2] 51b:coverage[695.3 207.3 794.7 259.2]
- 91 | s7 gather → spine          in=[83, 89, 90] Compose MaskedMix
- 92 | draw · 1300 item(s) @7     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
- 93 | fill of draw · 1300 item(s) @7 in=[92] Halo of 0
- 94   s1 down @7                 in=[93] Scale → 0.25
- 95   s1 gather blur-X σ14.4 @7  in=[94] Blur σ14.4 X linear taps 193
- 96   s1 gather blur-Y σ14.4 @7  in=[95] Blur σ14.4 Y linear taps 193
- 97   s1 up @7                   in=[96] Scale → 1
- 98   s1 gather mask @7          in=[] Draw n=1 [99.3 51.8 198.7 103.7] 515:coverage[99.3 51.8 198.7 103.7]
- 99 | s1 gather → spine @7       in=[93, 97, 98] Compose MaskedMix
-100 | fill of s1 gather → spine @7 in=[99] Halo of 8
-101   s2 down @7                 in=[100] Scale → 0.25
-102   s2 gather blur-X σ14.4 @7  in=[101] Blur σ14.4 X linear taps 193
-103   s2 gather blur-Y σ14.4 @7  in=[102] Blur σ14.4 Y linear taps 193
-104   s2 up @7                   in=[103] Scale → 1
-105   s2 gather mask @7          in=[] Draw n=1 [397.3 51.8 496.7 103.7] 516:coverage[397.3 51.8 496.7 103.7]
-106 | s2 gather → spine @7       in=[100, 104, 105] Compose MaskedMix
-107 | fill of s2 gather → spine @7 in=[106] Halo of 16
-108   s3 down @7                 in=[107] Scale → 0.25
-109   s3 gather blur-X σ14.4 @7  in=[108] Blur σ14.4 X linear taps 193
-110   s3 gather blur-Y σ14.4 @7  in=[109] Blur σ14.4 Y linear taps 193
-111   s3 up @7                   in=[110] Scale → 1
-112   s3 gather mask @7          in=[] Draw n=1 [695.3 51.8 794.7 103.7] 517:coverage[695.3 51.8 794.7 103.7]
-113 | s3 gather → spine @7       in=[107, 111, 112] Compose MaskedMix
-114 | fill of s3 gather → spine @7 in=[113] Halo of 24
-115   s4 down @7                 in=[114] Scale → 0.25
-116   s4 gather blur-X σ14.4 @7  in=[115] Blur σ14.4 X linear taps 193
-117   s4 gather blur-Y σ14.4 @7  in=[116] Blur σ14.4 Y linear taps 193
-118   s4 up @7                   in=[117] Scale → 1
-119   s4 gather mask @7          in=[] Draw n=1 [993.3 51.8 1092.7 103.7] 518:coverage[993.3 51.8 1092.7 103.7]
-120 | s4 gather → spine @7       in=[114, 118, 119] Compose MaskedMix
-121 | fill of s4 gather → spine @7 in=[120] Halo of 53
-122   s5 down @7                 in=[121] Scale → 0.25
-123   s5 gather blur-X σ14.4 @7  in=[122] Blur σ14.4 X linear taps 193
-124   s5 gather blur-Y σ14.4 @7  in=[123] Blur σ14.4 Y linear taps 193
-125   s5 up @7                   in=[124] Scale → 1
-126   s5 gather mask @7          in=[] Draw n=1 [99.3 207.3 198.7 259.2] 519:coverage[99.3 207.3 198.7 259.2]
-127 | s5 gather → spine @7       in=[121, 125, 126] Compose MaskedMix
-128 | fill of s5 gather → spine @7 in=[127] Halo of 75
-129   s6 down @7                 in=[128] Scale → 0.25
-130   s6 gather blur-X σ14.4 @7  in=[129] Blur σ14.4 X linear taps 193
-131   s6 gather blur-Y σ14.4 @7  in=[130] Blur σ14.4 Y linear taps 193
-132   s6 up @7                   in=[131] Scale → 1
-133   s6 gather mask @7          in=[] Draw n=1 [397.3 207.3 496.7 259.2] 51a:coverage[397.3 207.3 496.7 259.2]
-134 | s6 gather → spine @7       in=[128, 132, 133] Compose MaskedMix
-135 | fill of s6 gather → spine @7 in=[134] Halo of 83
-136   s7 down @7                 in=[135] Scale → 0.25
-137   s7 gather blur-X σ14.4 @7  in=[136] Blur σ14.4 X linear taps 193
-138   s7 gather blur-Y σ14.4 @7  in=[137] Blur σ14.4 Y linear taps 193
-139   s7 up @7                   in=[138] Scale → 1
-140   s7 gather mask @7          in=[] Draw n=1 [695.3 207.3 794.7 259.2] 51b:coverage[695.3 207.3 794.7 259.2]
-141 | s7 gather → spine @7       in=[135, 139, 140] Compose MaskedMix
-142 | halo of s7 gather → spine @7 in=[141] Halo of 91
-143   s8 down                    in=[142] Scale → 0.25
-144   s8 gather blur-X σ14.4     in=[143] Blur σ14.4 X linear taps 193
-145   s8 gather blur-Y σ14.4     in=[144] Blur σ14.4 Y linear taps 193
-146   s8 up                      in=[145] Scale → 1
-147   s8 gather mask             in=[] Draw n=1 [993.3 207.3 1092.7 259.2] 51c:coverage[993.3 207.3 1092.7 259.2]
-148 | s8 gather → spine          in=[91, 146, 147] Compose MaskedMix
-149 | draw · 1300 item(s) @8     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
-150 | fill of draw · 1300 item(s) @8 in=[149] Halo of 0
-151   s1 down @8                 in=[150] Scale → 0.25
-152   s1 gather blur-X σ14.4 @8  in=[151] Blur σ14.4 X linear taps 193
-153   s1 gather blur-Y σ14.4 @8  in=[152] Blur σ14.4 Y linear taps 193
-154   s1 up @8                   in=[153] Scale → 1
-155   s1 gather mask @8          in=[] Draw n=1 [99.3 51.8 198.7 103.7] 515:coverage[99.3 51.8 198.7 103.7]
-156 | s1 gather → spine @8       in=[150, 154, 155] Compose MaskedMix
-157 | fill of s1 gather → spine @8 in=[156] Halo of 8
-158   s2 down @8                 in=[157] Scale → 0.25
-159   s2 gather blur-X σ14.4 @8  in=[158] Blur σ14.4 X linear taps 193
-160   s2 gather blur-Y σ14.4 @8  in=[159] Blur σ14.4 Y linear taps 193
-161   s2 up @8                   in=[160] Scale → 1
-162   s2 gather mask @8          in=[] Draw n=1 [397.3 51.8 496.7 103.7] 516:coverage[397.3 51.8 496.7 103.7]
-163 | s2 gather → spine @8       in=[157, 161, 162] Compose MaskedMix
-164 | fill of s2 gather → spine @8 in=[163] Halo of 16
-165   s3 down @8                 in=[164] Scale → 0.25
-166   s3 gather blur-X σ14.4 @8  in=[165] Blur σ14.4 X linear taps 193
-167   s3 gather blur-Y σ14.4 @8  in=[166] Blur σ14.4 Y linear taps 193
-168   s3 up @8                   in=[167] Scale → 1
-169   s3 gather mask @8          in=[] Draw n=1 [695.3 51.8 794.7 103.7] 517:coverage[695.3 51.8 794.7 103.7]
-170 | s3 gather → spine @8       in=[164, 168, 169] Compose MaskedMix
-171 | fill of s4 gather → spine @8 in=[170] Halo of 53
-172   s5 down @8                 in=[171] Scale → 0.25
-173   s5 gather blur-X σ14.4 @8  in=[172] Blur σ14.4 X linear taps 193
-174   s5 gather blur-Y σ14.4 @8  in=[173] Blur σ14.4 Y linear taps 193
-175   s5 up @8                   in=[174] Scale → 1
-176   s5 gather mask @8          in=[] Draw n=1 [99.3 207.3 198.7 259.2] 519:coverage[99.3 207.3 198.7 259.2]
-177 | s5 gather → spine @8       in=[171, 175, 176] Compose MaskedMix
-178 | fill of s5 gather → spine @8 in=[177] Halo of 75
-179   s6 down @8                 in=[178] Scale → 0.25
-180   s6 gather blur-X σ14.4 @8  in=[179] Blur σ14.4 X linear taps 193
-181   s6 gather blur-Y σ14.4 @8  in=[180] Blur σ14.4 Y linear taps 193
-182   s6 up @8                   in=[181] Scale → 1
-183   s6 gather mask @8          in=[] Draw n=1 [397.3 207.3 496.7 259.2] 51a:coverage[397.3 207.3 496.7 259.2]
-184 | s6 gather → spine @8       in=[178, 182, 183] Compose MaskedMix
-185 | halo of s8 gather → spine @8 in=[184] Halo of 148
-186   s9 down                    in=[185] Scale → 0.25
-187   s9 gather blur-X σ14.4     in=[186] Blur σ14.4 X linear taps 193
-188   s9 gather blur-Y σ14.4     in=[187] Blur σ14.4 Y linear taps 193
-189   s9 up                      in=[188] Scale → 1
-190   s9 gather mask             in=[] Draw n=1 [99.3 362.8 198.7 414.7] 51d:coverage[99.3 362.8 198.7 414.7]
-191 | s9 gather → spine          in=[148, 189, 190] Compose MaskedMix
-192 | draw · 1300 item(s) @9     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
-193 | halo of s9 gather → spine @9 in=[192] Halo of 191
-194   s10 down                   in=[193] Scale → 0.25
-195   s10 gather blur-X σ14.4    in=[194] Blur σ14.4 X linear taps 193
-196   s10 gather blur-Y σ14.4    in=[195] Blur σ14.4 Y linear taps 193
-197   s10 up                     in=[196] Scale → 1
-198   s10 gather mask            in=[] Draw n=1 [397.3 362.8 496.7 414.7] 51e:coverage[397.3 362.8 496.7 414.7]
-199 | s10 gather → spine         in=[191, 197, 198] Compose MaskedMix
-200 | draw · 1300 item(s) @10    in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
-201 | halo of s10 gather → spine @10 in=[200] Halo of 199
-202   s11 down                   in=[201] Scale → 0.25
-203   s11 gather blur-X σ14.4    in=[202] Blur σ14.4 X linear taps 193
-204   s11 gather blur-Y σ14.4    in=[203] Blur σ14.4 Y linear taps 193
-205   s11 up                     in=[204] Scale → 1
-206   s11 gather mask            in=[] Draw n=1 [695.3 362.8 794.7 414.7] 51f:coverage[695.3 362.8 794.7 414.7]
-207 | s11 gather → spine         in=[199, 205, 206] Compose MaskedMix
-208 | draw · 1300 item(s) @11    in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
-209 | fill of draw · 1300 item(s) @11 in=[208] Halo of 0
-210   s1 down @11                in=[209] Scale → 0.25
-211   s1 gather blur-X σ14.4 @11 in=[210] Blur σ14.4 X linear taps 193
-212   s1 gather blur-Y σ14.4 @11 in=[211] Blur σ14.4 Y linear taps 193
-213   s1 up @11                  in=[212] Scale → 1
-214   s1 gather mask @11         in=[] Draw n=1 [99.3 51.8 198.7 103.7] 515:coverage[99.3 51.8 198.7 103.7]
-215 | s1 gather → spine @11      in=[209, 213, 214] Compose MaskedMix
-216 | fill of s1 gather → spine @11 in=[215] Halo of 8
-217   s2 down @11                in=[216] Scale → 0.25
-218   s2 gather blur-X σ14.4 @11 in=[217] Blur σ14.4 X linear taps 193
-219   s2 gather blur-Y σ14.4 @11 in=[218] Blur σ14.4 Y linear taps 193
-220   s2 up @11                  in=[219] Scale → 1
-221   s2 gather mask @11         in=[] Draw n=1 [397.3 51.8 496.7 103.7] 516:coverage[397.3 51.8 496.7 103.7]
-222 | s2 gather → spine @11      in=[216, 220, 221] Compose MaskedMix
-223 | fill of s2 gather → spine @11 in=[222] Halo of 16
-224   s3 down @11                in=[223] Scale → 0.25
-225   s3 gather blur-X σ14.4 @11 in=[224] Blur σ14.4 X linear taps 193
-226   s3 gather blur-Y σ14.4 @11 in=[225] Blur σ14.4 Y linear taps 193
-227   s3 up @11                  in=[226] Scale → 1
-228   s3 gather mask @11         in=[] Draw n=1 [695.3 51.8 794.7 103.7] 517:coverage[695.3 51.8 794.7 103.7]
-229 | s3 gather → spine @11      in=[223, 227, 228] Compose MaskedMix
-230 | fill of s3 gather → spine @11 in=[229] Halo of 24
-231   s4 down @11                in=[230] Scale → 0.25
-232   s4 gather blur-X σ14.4 @11 in=[231] Blur σ14.4 X linear taps 193
-233   s4 gather blur-Y σ14.4 @11 in=[232] Blur σ14.4 Y linear taps 193
-234   s4 up @11                  in=[233] Scale → 1
-235   s4 gather mask @11         in=[] Draw n=1 [993.3 51.8 1092.7 103.7] 518:coverage[993.3 51.8 1092.7 103.7]
-236 | s4 gather → spine @11      in=[230, 234, 235] Compose MaskedMix
-237 | fill of s4 gather → spine @11 in=[236] Halo of 53
-238   s5 down @11                in=[237] Scale → 0.25
-239   s5 gather blur-X σ14.4 @11 in=[238] Blur σ14.4 X linear taps 193
-240   s5 gather blur-Y σ14.4 @11 in=[239] Blur σ14.4 Y linear taps 193
-241   s5 up @11                  in=[240] Scale → 1
-242   s5 gather mask @11         in=[] Draw n=1 [99.3 207.3 198.7 259.2] 519:coverage[99.3 207.3 198.7 259.2]
-243 | s5 gather → spine @11      in=[237, 241, 242] Compose MaskedMix
-244 | fill of s5 gather → spine @11 in=[243] Halo of 75
-245   s6 down @11                in=[244] Scale → 0.25
-246   s6 gather blur-X σ14.4 @11 in=[245] Blur σ14.4 X linear taps 193
-247   s6 gather blur-Y σ14.4 @11 in=[246] Blur σ14.4 Y linear taps 193
-248   s6 up @11                  in=[247] Scale → 1
-249   s6 gather mask @11         in=[] Draw n=1 [397.3 207.3 496.7 259.2] 51a:coverage[397.3 207.3 496.7 259.2]
-250 | s6 gather → spine @11      in=[244, 248, 249] Compose MaskedMix
-251 | fill of s6 gather → spine @11 in=[250] Halo of 83
-252   s7 down @11                in=[251] Scale → 0.25
-253   s7 gather blur-X σ14.4 @11 in=[252] Blur σ14.4 X linear taps 193
-254   s7 gather blur-Y σ14.4 @11 in=[253] Blur σ14.4 Y linear taps 193
-255   s7 up @11                  in=[254] Scale → 1
-256   s7 gather mask @11         in=[] Draw n=1 [695.3 207.3 794.7 259.2] 51b:coverage[695.3 207.3 794.7 259.2]
-257 | s7 gather → spine @11      in=[251, 255, 256] Compose MaskedMix
-258 | fill of s7 gather → spine @11 in=[257] Halo of 91
-259   s8 down @11                in=[258] Scale → 0.25
-260   s8 gather blur-X σ14.4 @11 in=[259] Blur σ14.4 X linear taps 193
-261   s8 gather blur-Y σ14.4 @11 in=[260] Blur σ14.4 Y linear taps 193
-262   s8 up @11                  in=[261] Scale → 1
-263   s8 gather mask @11         in=[] Draw n=1 [993.3 207.3 1092.7 259.2] 51c:coverage[993.3 207.3 1092.7 259.2]
-264 | s8 gather → spine @11      in=[258, 262, 263] Compose MaskedMix
-265 | fill of s8 gather → spine @11 in=[264] Halo of 148
-266   s9 down @11                in=[265] Scale → 0.25
-267   s9 gather blur-X σ14.4 @11 in=[266] Blur σ14.4 X linear taps 193
-268   s9 gather blur-Y σ14.4 @11 in=[267] Blur σ14.4 Y linear taps 193
-269   s9 up @11                  in=[268] Scale → 1
-270   s9 gather mask @11         in=[] Draw n=1 [99.3 362.8 198.7 414.7] 51d:coverage[99.3 362.8 198.7 414.7]
-271 | s9 gather → spine @11      in=[265, 269, 270] Compose MaskedMix
-272 | fill of s9 gather → spine @11 in=[271] Halo of 191
-273   s10 down @11               in=[272] Scale → 0.25
-274   s10 gather blur-X σ14.4 @11 in=[273] Blur σ14.4 X linear taps 193
-275   s10 gather blur-Y σ14.4 @11 in=[274] Blur σ14.4 Y linear taps 193
-276   s10 up @11                 in=[275] Scale → 1
-277   s10 gather mask @11        in=[] Draw n=1 [397.3 362.8 496.7 414.7] 51e:coverage[397.3 362.8 496.7 414.7]
-278 | s10 gather → spine @11     in=[272, 276, 277] Compose MaskedMix
-279 | fill of s10 gather → spine @11 in=[278] Halo of 199
-280   s11 down @11               in=[279] Scale → 0.25
-281   s11 gather blur-X σ14.4 @11 in=[280] Blur σ14.4 X linear taps 193
-282   s11 gather blur-Y σ14.4 @11 in=[281] Blur σ14.4 Y linear taps 193
-283   s11 up @11                 in=[282] Scale → 1
-284   s11 gather mask @11        in=[] Draw n=1 [695.3 362.8 794.7 414.7] 51f:coverage[695.3 362.8 794.7 414.7]
-285 | s11 gather → spine @11     in=[279, 283, 284] Compose MaskedMix
-286 | halo of s11 gather → spine @11 in=[285] Halo of 207
-287   s12 down                   in=[286] Scale → 0.25
-288   s12 gather blur-X σ14.4    in=[287] Blur σ14.4 X linear taps 193
-289   s12 gather blur-Y σ14.4    in=[288] Blur σ14.4 Y linear taps 193
-290   s12 up                     in=[289] Scale → 1
-291   s12 gather mask            in=[] Draw n=1 [993.3 362.8 1092.7 414.7] 520:coverage[993.3 362.8 1092.7 414.7]
-292 | s12 gather → spine         in=[207, 290, 291] Compose MaskedMix
-293 | draw · 1300 item(s) @12    in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
-294 | fill of draw · 1300 item(s) @12 in=[293] Halo of 0
-295   s1 down @12                in=[294] Scale → 0.25
-296   s1 gather blur-X σ14.4 @12 in=[295] Blur σ14.4 X linear taps 193
-297   s1 gather blur-Y σ14.4 @12 in=[296] Blur σ14.4 Y linear taps 193
-298   s1 up @12                  in=[297] Scale → 1
-299   s1 gather mask @12         in=[] Draw n=1 [99.3 51.8 198.7 103.7] 515:coverage[99.3 51.8 198.7 103.7]
-300 | s1 gather → spine @12      in=[294, 298, 299] Compose MaskedMix
-301 | fill of s1 gather → spine @12 in=[300] Halo of 8
-302   s2 down @12                in=[301] Scale → 0.25
-303   s2 gather blur-X σ14.4 @12 in=[302] Blur σ14.4 X linear taps 193
-304   s2 gather blur-Y σ14.4 @12 in=[303] Blur σ14.4 Y linear taps 193
-305   s2 up @12                  in=[304] Scale → 1
-306   s2 gather mask @12         in=[] Draw n=1 [397.3 51.8 496.7 103.7] 516:coverage[397.3 51.8 496.7 103.7]
-307 | s2 gather → spine @12      in=[301, 305, 306] Compose MaskedMix
-308 | fill of s2 gather → spine @12 in=[307] Halo of 16
-309   s3 down @12                in=[308] Scale → 0.25
-310   s3 gather blur-X σ14.4 @12 in=[309] Blur σ14.4 X linear taps 193
-311   s3 gather blur-Y σ14.4 @12 in=[310] Blur σ14.4 Y linear taps 193
-312   s3 up @12                  in=[311] Scale → 1
-313   s3 gather mask @12         in=[] Draw n=1 [695.3 51.8 794.7 103.7] 517:coverage[695.3 51.8 794.7 103.7]
-314 | s3 gather → spine @12      in=[308, 312, 313] Compose MaskedMix
-315 | fill of s3 gather → spine @12 in=[314] Halo of 24
-316   s4 down @12                in=[315] Scale → 0.25
-317   s4 gather blur-X σ14.4 @12 in=[316] Blur σ14.4 X linear taps 193
-318   s4 gather blur-Y σ14.4 @12 in=[317] Blur σ14.4 Y linear taps 193
-319   s4 up @12                  in=[318] Scale → 1
-320   s4 gather mask @12         in=[] Draw n=1 [993.3 51.8 1092.7 103.7] 518:coverage[993.3 51.8 1092.7 103.7]
-321 | s4 gather → spine @12      in=[315, 319, 320] Compose MaskedMix
-322 | fill of s4 gather → spine @12 in=[321] Halo of 53
-323   s5 down @12                in=[322] Scale → 0.25
-324   s5 gather blur-X σ14.4 @12 in=[323] Blur σ14.4 X linear taps 193
-325   s5 gather blur-Y σ14.4 @12 in=[324] Blur σ14.4 Y linear taps 193
-326   s5 up @12                  in=[325] Scale → 1
-327   s5 gather mask @12         in=[] Draw n=1 [99.3 207.3 198.7 259.2] 519:coverage[99.3 207.3 198.7 259.2]
-328 | s5 gather → spine @12      in=[322, 326, 327] Compose MaskedMix
-329 | fill of s5 gather → spine @12 in=[328] Halo of 75
-330   s6 down @12                in=[329] Scale → 0.25
-331   s6 gather blur-X σ14.4 @12 in=[330] Blur σ14.4 X linear taps 193
-332   s6 gather blur-Y σ14.4 @12 in=[331] Blur σ14.4 Y linear taps 193
-333   s6 up @12                  in=[332] Scale → 1
-334   s6 gather mask @12         in=[] Draw n=1 [397.3 207.3 496.7 259.2] 51a:coverage[397.3 207.3 496.7 259.2]
-335 | s6 gather → spine @12      in=[329, 333, 334] Compose MaskedMix
-336 | fill of s6 gather → spine @12 in=[335] Halo of 83
-337   s7 down @12                in=[336] Scale → 0.25
-338   s7 gather blur-X σ14.4 @12 in=[337] Blur σ14.4 X linear taps 193
-339   s7 gather blur-Y σ14.4 @12 in=[338] Blur σ14.4 Y linear taps 193
-340   s7 up @12                  in=[339] Scale → 1
-341   s7 gather mask @12         in=[] Draw n=1 [695.3 207.3 794.7 259.2] 51b:coverage[695.3 207.3 794.7 259.2]
-342 | s7 gather → spine @12      in=[336, 340, 341] Compose MaskedMix
-343 | fill of s8 gather → spine @12 in=[342] Halo of 148
-344   s9 down @12                in=[343] Scale → 0.25
-345   s9 gather blur-X σ14.4 @12 in=[344] Blur σ14.4 X linear taps 193
-346   s9 gather blur-Y σ14.4 @12 in=[345] Blur σ14.4 Y linear taps 193
-347   s9 up @12                  in=[346] Scale → 1
-348   s9 gather mask @12         in=[] Draw n=1 [99.3 362.8 198.7 414.7] 51d:coverage[99.3 362.8 198.7 414.7]
-349 | s9 gather → spine @12      in=[343, 347, 348] Compose MaskedMix
-350 | fill of s9 gather → spine @12 in=[349] Halo of 191
-351   s10 down @12               in=[350] Scale → 0.25
-352   s10 gather blur-X σ14.4 @12 in=[351] Blur σ14.4 X linear taps 193
-353   s10 gather blur-Y σ14.4 @12 in=[352] Blur σ14.4 Y linear taps 193
-354   s10 up @12                 in=[353] Scale → 1
-355   s10 gather mask @12        in=[] Draw n=1 [397.3 362.8 496.7 414.7] 51e:coverage[397.3 362.8 496.7 414.7]
-356 | s10 gather → spine @12     in=[350, 354, 355] Compose MaskedMix
-357 | halo of s12 gather → spine @12 in=[356] Halo of 292
-358   s13 down                   in=[357] Scale → 0.25
-359   s13 gather blur-X σ14.4    in=[358] Blur σ14.4 X linear taps 193
-360   s13 gather blur-Y σ14.4    in=[359] Blur σ14.4 Y linear taps 193
-361   s13 up                     in=[360] Scale → 1
-362   s13 gather mask            in=[] Draw n=1 [99.3 518.3 198.7 570.2] 521:coverage[99.3 518.3 198.7 570.2]
-363 | s13 gather → spine         in=[292, 361, 362] Compose MaskedMix
-364 | draw · 1300 item(s) @13    in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
-365 | halo of s13 gather → spine @13 in=[364] Halo of 363
-366   s14 down                   in=[365] Scale → 0.25
-367   s14 gather blur-X σ14.4    in=[366] Blur σ14.4 X linear taps 193
-368   s14 gather blur-Y σ14.4    in=[367] Blur σ14.4 Y linear taps 193
-369   s14 up                     in=[368] Scale → 1
-370   s14 gather mask            in=[] Draw n=1 [397.3 518.3 496.7 570.2] 522:coverage[397.3 518.3 496.7 570.2]
-371 | s14 gather → spine         in=[363, 369, 370] Compose MaskedMix
-372 | draw · 1300 item(s) @14    in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
-373 | halo of s14 gather → spine @14 in=[372] Halo of 371
-374   s15 down                   in=[373] Scale → 0.25
-375   s15 gather blur-X σ14.4    in=[374] Blur σ14.4 X linear taps 193
-376   s15 gather blur-Y σ14.4    in=[375] Blur σ14.4 Y linear taps 193
-377   s15 up                     in=[376] Scale → 1
-378   s15 gather mask            in=[] Draw n=1 [695.3 518.3 794.7 570.2] 523:coverage[695.3 518.3 794.7 570.2]
-379 | s15 gather → spine         in=[371, 377, 378] Compose MaskedMix
-380 | draw · 1300 item(s) @15    in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
-381 | fill of draw · 1300 item(s) @15 in=[380] Halo of 0
-382   s1 down @15                in=[381] Scale → 0.25
-383   s1 gather blur-X σ14.4 @15 in=[382] Blur σ14.4 X linear taps 193
-384   s1 gather blur-Y σ14.4 @15 in=[383] Blur σ14.4 Y linear taps 193
-385   s1 up @15                  in=[384] Scale → 1
-386   s1 gather mask @15         in=[] Draw n=1 [99.3 51.8 198.7 103.7] 515:coverage[99.3 51.8 198.7 103.7]
-387 | s1 gather → spine @15      in=[381, 385, 386] Compose MaskedMix
-388 | fill of s1 gather → spine @15 in=[387] Halo of 8
-389   s2 down @15                in=[388] Scale → 0.25
-390   s2 gather blur-X σ14.4 @15 in=[389] Blur σ14.4 X linear taps 193
-391   s2 gather blur-Y σ14.4 @15 in=[390] Blur σ14.4 Y linear taps 193
-392   s2 up @15                  in=[391] Scale → 1
-393   s2 gather mask @15         in=[] Draw n=1 [397.3 51.8 496.7 103.7] 516:coverage[397.3 51.8 496.7 103.7]
-394 | s2 gather → spine @15      in=[388, 392, 393] Compose MaskedMix
-395 | fill of s2 gather → spine @15 in=[394] Halo of 16
-396   s3 down @15                in=[395] Scale → 0.25
-397   s3 gather blur-X σ14.4 @15 in=[396] Blur σ14.4 X linear taps 193
-398   s3 gather blur-Y σ14.4 @15 in=[397] Blur σ14.4 Y linear taps 193
-399   s3 up @15                  in=[398] Scale → 1
-400   s3 gather mask @15         in=[] Draw n=1 [695.3 51.8 794.7 103.7] 517:coverage[695.3 51.8 794.7 103.7]
-401 | s3 gather → spine @15      in=[395, 399, 400] Compose MaskedMix
-402 | fill of s3 gather → spine @15 in=[401] Halo of 24
-403   s4 down @15                in=[402] Scale → 0.25
-404   s4 gather blur-X σ14.4 @15 in=[403] Blur σ14.4 X linear taps 193
-405   s4 gather blur-Y σ14.4 @15 in=[404] Blur σ14.4 Y linear taps 193
-406   s4 up @15                  in=[405] Scale → 1
-407   s4 gather mask @15         in=[] Draw n=1 [993.3 51.8 1092.7 103.7] 518:coverage[993.3 51.8 1092.7 103.7]
-408 | s4 gather → spine @15      in=[402, 406, 407] Compose MaskedMix
-409 | fill of s4 gather → spine @15 in=[408] Halo of 53
-410   s5 down @15                in=[409] Scale → 0.25
-411   s5 gather blur-X σ14.4 @15 in=[410] Blur σ14.4 X linear taps 193
-412   s5 gather blur-Y σ14.4 @15 in=[411] Blur σ14.4 Y linear taps 193
-413   s5 up @15                  in=[412] Scale → 1
-414   s5 gather mask @15         in=[] Draw n=1 [99.3 207.3 198.7 259.2] 519:coverage[99.3 207.3 198.7 259.2]
-415 | s5 gather → spine @15      in=[409, 413, 414] Compose MaskedMix
-416 | fill of s5 gather → spine @15 in=[415] Halo of 75
-417   s6 down @15                in=[416] Scale → 0.25
-418   s6 gather blur-X σ14.4 @15 in=[417] Blur σ14.4 X linear taps 193
-419   s6 gather blur-Y σ14.4 @15 in=[418] Blur σ14.4 Y linear taps 193
-420   s6 up @15                  in=[419] Scale → 1
-421   s6 gather mask @15         in=[] Draw n=1 [397.3 207.3 496.7 259.2] 51a:coverage[397.3 207.3 496.7 259.2]
-422 | s6 gather → spine @15      in=[416, 420, 421] Compose MaskedMix
-423 | fill of s6 gather → spine @15 in=[422] Halo of 83
-424   s7 down @15                in=[423] Scale → 0.25
-425   s7 gather blur-X σ14.4 @15 in=[424] Blur σ14.4 X linear taps 193
-426   s7 gather blur-Y σ14.4 @15 in=[425] Blur σ14.4 Y linear taps 193
-427   s7 up @15                  in=[426] Scale → 1
-428   s7 gather mask @15         in=[] Draw n=1 [695.3 207.3 794.7 259.2] 51b:coverage[695.3 207.3 794.7 259.2]
-429 | s7 gather → spine @15      in=[423, 427, 428] Compose MaskedMix
-430 | fill of s7 gather → spine @15 in=[429] Halo of 91
-431   s8 down @15                in=[430] Scale → 0.25
-432   s8 gather blur-X σ14.4 @15 in=[431] Blur σ14.4 X linear taps 193
-433   s8 gather blur-Y σ14.4 @15 in=[432] Blur σ14.4 Y linear taps 193
-434   s8 up @15                  in=[433] Scale → 1
-435   s8 gather mask @15         in=[] Draw n=1 [993.3 207.3 1092.7 259.2] 51c:coverage[993.3 207.3 1092.7 259.2]
-436 | s8 gather → spine @15      in=[430, 434, 435] Compose MaskedMix
-437 | fill of s8 gather → spine @15 in=[436] Halo of 148
-438   s9 down @15                in=[437] Scale → 0.25
-439   s9 gather blur-X σ14.4 @15 in=[438] Blur σ14.4 X linear taps 193
-440   s9 gather blur-Y σ14.4 @15 in=[439] Blur σ14.4 Y linear taps 193
-441   s9 up @15                  in=[440] Scale → 1
-442   s9 gather mask @15         in=[] Draw n=1 [99.3 362.8 198.7 414.7] 51d:coverage[99.3 362.8 198.7 414.7]
-443 | s9 gather → spine @15      in=[437, 441, 442] Compose MaskedMix
-444 | fill of s9 gather → spine @15 in=[443] Halo of 191
-445   s10 down @15               in=[444] Scale → 0.25
-446   s10 gather blur-X σ14.4 @15 in=[445] Blur σ14.4 X linear taps 193
-447   s10 gather blur-Y σ14.4 @15 in=[446] Blur σ14.4 Y linear taps 193
-448   s10 up @15                 in=[447] Scale → 1
-449   s10 gather mask @15        in=[] Draw n=1 [397.3 362.8 496.7 414.7] 51e:coverage[397.3 362.8 496.7 414.7]
-450 | s10 gather → spine @15     in=[444, 448, 449] Compose MaskedMix
-451 | fill of s10 gather → spine @15 in=[450] Halo of 199
-452   s11 down @15               in=[451] Scale → 0.25
-453   s11 gather blur-X σ14.4 @15 in=[452] Blur σ14.4 X linear taps 193
-454   s11 gather blur-Y σ14.4 @15 in=[453] Blur σ14.4 Y linear taps 193
-455   s11 up @15                 in=[454] Scale → 1
-456   s11 gather mask @15        in=[] Draw n=1 [695.3 362.8 794.7 414.7] 51f:coverage[695.3 362.8 794.7 414.7]
-457 | s11 gather → spine @15     in=[451, 455, 456] Compose MaskedMix
-458 | fill of s11 gather → spine @15 in=[457] Halo of 207
-459   s12 down @15               in=[458] Scale → 0.25
-460   s12 gather blur-X σ14.4 @15 in=[459] Blur σ14.4 X linear taps 193
-461   s12 gather blur-Y σ14.4 @15 in=[460] Blur σ14.4 Y linear taps 193
-462   s12 up @15                 in=[461] Scale → 1
-463   s12 gather mask @15        in=[] Draw n=1 [993.3 362.8 1092.7 414.7] 520:coverage[993.3 362.8 1092.7 414.7]
-464 | s12 gather → spine @15     in=[458, 462, 463] Compose MaskedMix
-465 | fill of s12 gather → spine @15 in=[464] Halo of 292
-466   s13 down @15               in=[465] Scale → 0.25
-467   s13 gather blur-X σ14.4 @15 in=[466] Blur σ14.4 X linear taps 193
-468   s13 gather blur-Y σ14.4 @15 in=[467] Blur σ14.4 Y linear taps 193
-469   s13 up @15                 in=[468] Scale → 1
-470   s13 gather mask @15        in=[] Draw n=1 [99.3 518.3 198.7 570.2] 521:coverage[99.3 518.3 198.7 570.2]
-471 | s13 gather → spine @15     in=[465, 469, 470] Compose MaskedMix
-472 | fill of s13 gather → spine @15 in=[471] Halo of 363
-473   s14 down @15               in=[472] Scale → 0.25
-474   s14 gather blur-X σ14.4 @15 in=[473] Blur σ14.4 X linear taps 193
-475   s14 gather blur-Y σ14.4 @15 in=[474] Blur σ14.4 Y linear taps 193
-476   s14 up @15                 in=[475] Scale → 1
-477   s14 gather mask @15        in=[] Draw n=1 [397.3 518.3 496.7 570.2] 522:coverage[397.3 518.3 496.7 570.2]
-478 | s14 gather → spine @15     in=[472, 476, 477] Compose MaskedMix
-479 | fill of s14 gather → spine @15 in=[478] Halo of 371
-480   s15 down @15               in=[479] Scale → 0.25
-481   s15 gather blur-X σ14.4 @15 in=[480] Blur σ14.4 X linear taps 193
-482   s15 gather blur-Y σ14.4 @15 in=[481] Blur σ14.4 Y linear taps 193
-483   s15 up @15                 in=[482] Scale → 1
-484   s15 gather mask @15        in=[] Draw n=1 [695.3 518.3 794.7 570.2] 523:coverage[695.3 518.3 794.7 570.2]
-485 | s15 gather → spine @15     in=[479, 483, 484] Compose MaskedMix
-486 | halo of s15 gather → spine @15 in=[485] Halo of 379
-487   s16 down                   in=[486] Scale → 0.25
-488   s16 gather blur-X σ14.4    in=[487] Blur σ14.4 X linear taps 193
-489   s16 gather blur-Y σ14.4    in=[488] Blur σ14.4 Y linear taps 193
-490   s16 up                     in=[489] Scale → 1
-491   s16 gather mask            in=[] Draw n=1 [993.3 518.3 1092.7 570.2] 524:coverage[993.3 518.3 1092.7 570.2]
-492 | s16 gather → spine         in=[379, 490, 491] Compose MaskedMix
+ 26 | halo of s3 gather → spine @3 in=[25] Halo of 24
+ 27   s4 down                    in=[26] Scale → 0.25
+ 28   s4 gather blur-X σ14.4     in=[27] Blur σ14.4 X linear taps 193
+ 29   s4 gather blur-Y σ14.4     in=[28] Blur σ14.4 Y linear taps 193
+ 30   s4 up                      in=[29] Scale → 1
+ 31   s4 gather mask             in=[] Draw n=1 [993.3 51.8 1092.7 103.7] 518:coverage[993.3 51.8 1092.7 103.7]
+ 32 | s4 gather → spine          in=[24, 30, 31] Compose MaskedMix
+ 33 | draw · 1300 item(s) @4     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
+ 34 | halo of s4 gather → spine @4 in=[33] Halo of 32
+ 35   s5 down                    in=[34] Scale → 0.25
+ 36   s5 gather blur-X σ14.4     in=[35] Blur σ14.4 X linear taps 193
+ 37   s5 gather blur-Y σ14.4     in=[36] Blur σ14.4 Y linear taps 193
+ 38   s5 up                      in=[37] Scale → 1
+ 39   s5 gather mask             in=[] Draw n=1 [99.3 207.3 198.7 259.2] 519:coverage[99.3 207.3 198.7 259.2]
+ 40 | s5 gather → spine          in=[32, 38, 39] Compose MaskedMix
+ 41 | draw · 1300 item(s) @5     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
+ 42 | halo of s5 gather → spine @5 in=[41] Halo of 40
+ 43   s6 down                    in=[42] Scale → 0.25
+ 44   s6 gather blur-X σ14.4     in=[43] Blur σ14.4 X linear taps 193
+ 45   s6 gather blur-Y σ14.4     in=[44] Blur σ14.4 Y linear taps 193
+ 46   s6 up                      in=[45] Scale → 1
+ 47   s6 gather mask             in=[] Draw n=1 [397.3 207.3 496.7 259.2] 51a:coverage[397.3 207.3 496.7 259.2]
+ 48 | s6 gather → spine          in=[40, 46, 47] Compose MaskedMix
+ 49 | draw · 1300 item(s) @6     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
+ 50 | halo of s6 gather → spine @6 in=[49] Halo of 48
+ 51   s7 down                    in=[50] Scale → 0.25
+ 52   s7 gather blur-X σ14.4     in=[51] Blur σ14.4 X linear taps 193
+ 53   s7 gather blur-Y σ14.4     in=[52] Blur σ14.4 Y linear taps 193
+ 54   s7 up                      in=[53] Scale → 1
+ 55   s7 gather mask             in=[] Draw n=1 [695.3 207.3 794.7 259.2] 51b:coverage[695.3 207.3 794.7 259.2]
+ 56 | s7 gather → spine          in=[48, 54, 55] Compose MaskedMix
+ 57 | draw · 1300 item(s) @7     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
+ 58 | halo of s7 gather → spine @7 in=[57] Halo of 56
+ 59   s8 down                    in=[58] Scale → 0.25
+ 60   s8 gather blur-X σ14.4     in=[59] Blur σ14.4 X linear taps 193
+ 61   s8 gather blur-Y σ14.4     in=[60] Blur σ14.4 Y linear taps 193
+ 62   s8 up                      in=[61] Scale → 1
+ 63   s8 gather mask             in=[] Draw n=1 [993.3 207.3 1092.7 259.2] 51c:coverage[993.3 207.3 1092.7 259.2]
+ 64 | s8 gather → spine          in=[56, 62, 63] Compose MaskedMix
+ 65 | draw · 1300 item(s) @8     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
+ 66 | halo of s8 gather → spine @8 in=[65] Halo of 64
+ 67   s9 down                    in=[66] Scale → 0.25
+ 68   s9 gather blur-X σ14.4     in=[67] Blur σ14.4 X linear taps 193
+ 69   s9 gather blur-Y σ14.4     in=[68] Blur σ14.4 Y linear taps 193
+ 70   s9 up                      in=[69] Scale → 1
+ 71   s9 gather mask             in=[] Draw n=1 [99.3 362.8 198.7 414.7] 51d:coverage[99.3 362.8 198.7 414.7]
+ 72 | s9 gather → spine          in=[64, 70, 71] Compose MaskedMix
+ 73 | draw · 1300 item(s) @9     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
+ 74 | halo of s9 gather → spine @9 in=[73] Halo of 72
+ 75   s10 down                   in=[74] Scale → 0.25
+ 76   s10 gather blur-X σ14.4    in=[75] Blur σ14.4 X linear taps 193
+ 77   s10 gather blur-Y σ14.4    in=[76] Blur σ14.4 Y linear taps 193
+ 78   s10 up                     in=[77] Scale → 1
+ 79   s10 gather mask            in=[] Draw n=1 [397.3 362.8 496.7 414.7] 51e:coverage[397.3 362.8 496.7 414.7]
+ 80 | s10 gather → spine         in=[72, 78, 79] Compose MaskedMix
+ 81 | draw · 1300 item(s) @10    in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
+ 82 | halo of s10 gather → spine @10 in=[81] Halo of 80
+ 83   s11 down                   in=[82] Scale → 0.25
+ 84   s11 gather blur-X σ14.4    in=[83] Blur σ14.4 X linear taps 193
+ 85   s11 gather blur-Y σ14.4    in=[84] Blur σ14.4 Y linear taps 193
+ 86   s11 up                     in=[85] Scale → 1
+ 87   s11 gather mask            in=[] Draw n=1 [695.3 362.8 794.7 414.7] 51f:coverage[695.3 362.8 794.7 414.7]
+ 88 | s11 gather → spine         in=[80, 86, 87] Compose MaskedMix
+ 89 | draw · 1300 item(s) @11    in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
+ 90 | halo of s11 gather → spine @11 in=[89] Halo of 88
+ 91   s12 down                   in=[90] Scale → 0.25
+ 92   s12 gather blur-X σ14.4    in=[91] Blur σ14.4 X linear taps 193
+ 93   s12 gather blur-Y σ14.4    in=[92] Blur σ14.4 Y linear taps 193
+ 94   s12 up                     in=[93] Scale → 1
+ 95   s12 gather mask            in=[] Draw n=1 [993.3 362.8 1092.7 414.7] 520:coverage[993.3 362.8 1092.7 414.7]
+ 96 | s12 gather → spine         in=[88, 94, 95] Compose MaskedMix
+ 97 | draw · 1300 item(s) @12    in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
+ 98 | halo of s12 gather → spine @12 in=[97] Halo of 96
+ 99   s13 down                   in=[98] Scale → 0.25
+100   s13 gather blur-X σ14.4    in=[99] Blur σ14.4 X linear taps 193
+101   s13 gather blur-Y σ14.4    in=[100] Blur σ14.4 Y linear taps 193
+102   s13 up                     in=[101] Scale → 1
+103   s13 gather mask            in=[] Draw n=1 [99.3 518.3 198.7 570.2] 521:coverage[99.3 518.3 198.7 570.2]
+104 | s13 gather → spine         in=[96, 102, 103] Compose MaskedMix
+105 | draw · 1300 item(s) @13    in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
+106 | halo of s13 gather → spine @13 in=[105] Halo of 104
+107   s14 down                   in=[106] Scale → 0.25
+108   s14 gather blur-X σ14.4    in=[107] Blur σ14.4 X linear taps 193
+109   s14 gather blur-Y σ14.4    in=[108] Blur σ14.4 Y linear taps 193
+110   s14 up                     in=[109] Scale → 1
+111   s14 gather mask            in=[] Draw n=1 [397.3 518.3 496.7 570.2] 522:coverage[397.3 518.3 496.7 570.2]
+112 | s14 gather → spine         in=[104, 110, 111] Compose MaskedMix
+113 | draw · 1300 item(s) @14    in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
+114 | halo of s14 gather → spine @14 in=[113] Halo of 112
+115   s15 down                   in=[114] Scale → 0.25
+116   s15 gather blur-X σ14.4    in=[115] Blur σ14.4 X linear taps 193
+117   s15 gather blur-Y σ14.4    in=[116] Blur σ14.4 Y linear taps 193
+118   s15 up                     in=[117] Scale → 1
+119   s15 gather mask            in=[] Draw n=1 [695.3 518.3 794.7 570.2] 523:coverage[695.3 518.3 794.7 570.2]
+120 | s15 gather → spine         in=[112, 118, 119] Compose MaskedMix
+121 | draw · 1300 item(s) @15    in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
+122 | halo of s15 gather → spine @15 in=[121] Halo of 120
+123   s16 down                   in=[122] Scale → 0.25
+124   s16 gather blur-X σ14.4    in=[123] Blur σ14.4 X linear taps 193
+125   s16 gather blur-Y σ14.4    in=[124] Blur σ14.4 Y linear taps 193
+126   s16 up                     in=[125] Scale → 1
+127   s16 gather mask            in=[] Draw n=1 [993.3 518.3 1092.7 570.2] 524:coverage[993.3 518.3 1092.7 570.2]
+128 | s16 gather → spine         in=[120, 126, 127] Compose MaskedMix

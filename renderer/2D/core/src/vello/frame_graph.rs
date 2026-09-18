@@ -22,7 +22,24 @@ pub struct FrameGraph {
     pub frame: Rect,
     /// The page colour the scheduler clears to.
     pub background: Color,
+    /// Fixed at construction: which nodes stand on which is what [`Self::new`] reads.
     pub nodes: Vec<GNode>,
+    /// Per node, whether a spine op takes it as the state below.
+    stood: Vec<bool>,
+}
+
+impl FrameGraph {
+    /// A graph over `nodes` in topological order, the last being the frame.
+    #[must_use]
+    pub fn new(frame: Rect, background: Color, nodes: Vec<GNode>) -> FrameGraph {
+        let mut stood = vec![false; nodes.len()];
+        for n in &nodes {
+            if let (Some(&i), Op::Compose { .. } | Op::Halo { .. } | Op::Draw(_)) = (n.inputs.first(), &n.op) {
+                stood[i] = true;
+            }
+        }
+        FrameGraph { frame, background, nodes, stood }
+    }
 }
 
 /// One operation. `inputs` are positional; the op fixes their roles.
@@ -180,14 +197,7 @@ impl FrameGraph {
     /// Whether a spine op takes node `i` as the state below: an input-less draw so stood on
     /// roots a spine, a halo so stood on is a fill point inside one rather than its top.
     fn stood_on(&self, i: NodeId) -> bool {
-        self.nodes.iter().any(|n| {
-            n.inputs.first() == Some(&i)
-                && match &n.op {
-                    Op::Compose { .. } | Op::Halo { .. } => true,
-                    Op::Draw(_) => true,
-                    _ => false,
-                }
-        })
+        self.stood[i]
     }
 
     /// The root of spine node `i`'s spine: node 0 for the frame, a halo's draw otherwise.
@@ -414,10 +424,7 @@ mod tests {
     }
 
     fn shadow_graph() -> FrameGraph {
-        FrameGraph {
-            frame: Rect::new(0.0, 0.0, 400.0, 300.0),
-            background: Color::WHITE,
-            nodes: vec![
+        FrameGraph::new(Rect::new(0.0, 0.0, 400.0, 300.0), Color::WHITE, vec![
                 GNode { op: Op::Draw(vec![item(1, 10.0, 10.0, 100.0, 100.0)]), inputs: vec![], label: "ground".into() },
                 GNode {
                     op: Op::Draw(vec![DrawItem { shape: 2, style: DrawStyle::Coverage { analytic: true, spread: 0.0 }, bounds: Rect::new(120.0, 20.0, 200.0, 80.0) }]),
@@ -428,8 +435,7 @@ mod tests {
                 GNode { op: Op::Blur { sigma: 4.0, axis: BlurAxis::Y, linear: true, edge_clamp_style: EdgeClampStyle::Transparent, taps: BLUR_TAPS }, inputs: vec![2], label: "by".into() },
                 GNode { op: Op::Compose { mode: ComposeMode::Over, colour: Some([0.0, 0.0, 0.0, 0.5]), offset: [6.0, 8.0] }, inputs: vec![0, 3], label: "shadow".into() },
                 GNode { op: Op::Draw(vec![item(2, 120.0, 20.0, 200.0, 80.0)]), inputs: vec![4], label: "body".into() },
-            ],
-        }
+            ])
     }
 
     #[test]

@@ -30,15 +30,23 @@ pub(crate) fn overlaps(a: Rect, b: Rect) -> bool {
     a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
 }
 
-/// The bounds of what `r` holds past `f`: nothing when `f` covers it.
-pub(crate) fn outside(r: Rect, f: Rect) -> Rect {
-    let bands = [
+/// What `r` holds past `f`, as the bands of `r` left of, right of, above and below `f` that are
+/// not empty (they overlap at the corners).
+pub(crate) fn bands(r: Rect, f: Rect) -> impl Iterator<Item = Rect> {
+    [
         Rect::new(r.x0, r.y0, f.x0.min(r.x1), r.y1),
         Rect::new(f.x1.max(r.x0), r.y0, r.x1, r.y1),
         Rect::new(r.x0, r.y0, r.x1, f.y0.min(r.y1)),
         Rect::new(r.x0, f.y1.max(r.y0), r.x1, r.y1),
-    ];
-    bands.into_iter().filter(|b| b.x1 > b.x0 && b.y1 > b.y0).reduce(|a, b| a.union(b)).unwrap_or(Rect::ZERO)
+    ]
+    .into_iter()
+    .filter(|b| b.x1 > b.x0 && b.y1 > b.y0)
+}
+
+/// The bounds of what `r` holds past `f`: nothing when `f` covers it. Exact when `r` leaves `f`
+/// on one side; at a corner it covers the inside too.
+pub(crate) fn outside(r: Rect, f: Rect) -> Rect {
+    bands(r, f).reduce(|a, b| a.union(b)).unwrap_or(Rect::ZERO)
 }
 
 /// How far, in frame pixels, the chain of compose `s` reads past its output at full resolution:
@@ -105,6 +113,9 @@ impl Store {
 /// halo above it; `None` on the frame's spine, off the spines, and for a halo itself.
 pub(crate) struct Spines {
     pub halo_of: Vec<Option<NodeId>>,
+    /// Per node, the root of the spine it stands on: node 0 on the frame's, a halo's draw
+    /// otherwise, the node itself off the spines.
+    pub root: Vec<NodeId>,
 }
 
 impl Spines {
@@ -127,7 +138,13 @@ impl Spines {
                 }
             }
         }
-        Spines { halo_of }
+        let mut root: Vec<NodeId> = (0..n).collect();
+        for i in 0..n {
+            if let (Some(&below), true) = (g.nodes[i].inputs.first(), g.is_spine(i)) {
+                root[i] = root[below];
+            }
+        }
+        Spines { halo_of, root }
     }
 
     /// Whether node `i` is a halo or stands on a spine under one.
@@ -483,10 +500,15 @@ impl<'a> Resolved<'a> {
     /// `g` at the pairs' targets, on a `width × height` frame with `pages` frame heights of store
     /// below it on a device whose textures reach `max_dim`.
     pub fn of(g: &'a FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64) -> Self {
+        let mut laps = Laps::new("  resolved");
         let store = Store::for_graph(g, width, height, max_dim, pages);
+        laps.lap("store");
         let spines = Spines::of(g);
+        laps.lap("spines");
         let res = Res::targets(g);
+        laps.lap("res");
         let dem = Demand::of(g, store.frame, &res, &spines);
+        laps.lap("demand");
         Resolved { g, store, spines, res, dem }
     }
 
@@ -546,5 +568,48 @@ impl<'a> Resolved<'a> {
     /// nothing demands would be filled for nobody; the fill above it covers the same rows.
     pub fn fill_read(&self, h: NodeId) -> bool {
         self.res.readers[h].iter().any(|&r| !self.g.is_spine(r) && self.live(r))
+    }
+}
+
+/// Stage timings to stderr under `WV_PLAN_TIMING`, on hosts with a clock; silent otherwise.
+pub(crate) struct Laps {
+    what: &'static str,
+    #[cfg(not(target_arch = "wasm32"))]
+    at: Option<std::time::Instant>,
+}
+
+impl Laps {
+    pub fn new(what: &'static str) -> Laps {
+        Laps {
+            what,
+            #[cfg(not(target_arch = "wasm32"))]
+            at: std::env::var_os("WV_PLAN_TIMING").map(|_| std::time::Instant::now()),
+        }
+    }
+
+    /// Whether timings are being taken.
+    pub fn on(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.at.is_some()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = self.what;
+            false
+        }
+    }
+
+    /// Print the time since the last lap as `stage`, and start the next.
+    pub fn lap(&mut self, stage: &str) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(at) = self.at.as_mut() {
+            eprintln!("{}: {stage} {:.2} ms", self.what, at.elapsed().as_secs_f64() * 1e3);
+            *at = std::time::Instant::now();
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = stage;
+        }
     }
 }
