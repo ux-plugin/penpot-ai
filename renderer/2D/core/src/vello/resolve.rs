@@ -9,8 +9,6 @@ use crate::kurbo::{Rect, Vec2};
 use crate::vello::frame_graph::{pad_at, scale_rect, DrawItem, EdgeClampStyle, FrameGraph, NodeId, Op};
 use crate::vello::scheduler::{TILE_H, TILE_W};
 
-/// The share of the store's texels the budget counts on: the rest absorbs the packer's gaps.
-const STORE_FILL: f64 = 0.75;
 /// How far past the next rung the rule that lowered a pair must rise before the pair climbs back.
 const CLIMB_MARGIN: f32 = 1.25;
 
@@ -100,10 +98,6 @@ impl Store {
         Store { frame, width, pitch, rows }
     }
 
-    /// The texels of store the plan counts on below the frame.
-    pub fn budget(&self) -> f64 {
-        self.rows * self.width * STORE_FILL
-    }
 }
 
 /// Which spine each node stands on: for every node on a spine under an [`Op::Halo`], the nearest
@@ -296,12 +290,13 @@ impl Res {
     }
 
     /// The capacity decision, made once, from the demand at the pairs' targets: each pair no
-    /// higher than its target, lowered only by the size rules — the run between it no wider than
-    /// the store, no two adjacent links of it together larger than the budget — with hysteresis
-    /// from `memory`, which is updated. Never looks at what runs beside what. Returns the lowered
-    /// resolutions, or `None` when every pair keeps its target.
+    /// higher than its target, lowered only by the size rules — the run between it no wider nor
+    /// taller than the store's rows, no two adjacent links of it together larger than them — with
+    /// hysteresis from `memory`, which is updated. Never looks at what runs beside what: that is
+    /// the packer's, in rounds. Returns the lowered resolutions, or `None` when every pair keeps
+    /// its target.
     pub fn decide(&self, g: &FrameGraph, dem: &Demand, store: &Store, memory: &mut HashMap<u128, f32>) -> Option<Res> {
-        let budget = store.budget();
+        let pool = store.rows * store.width;
         let mut lowered: HashMap<NodeId, f32> = HashMap::new();
         let mut seen: Vec<u128> = Vec::new();
         for d in 0..g.nodes.len() {
@@ -315,11 +310,13 @@ impl Res {
             }
             let t = self.k[d];
             let mut widest = links.iter().map(|&l| dem.out[l].width()).fold(0.0, f64::max);
+            let mut tallest = links.iter().map(|&l| dem.out[l].height()).fold(0.0, f64::max);
             let mut peak: f64 = 0.0;
             if self.elided[d] && g.is_spine(g.nodes[d].inputs[0]) {
                 for &l in links.iter().filter(|&&l| g.nodes[l].inputs.contains(&d)) {
                     let r = dem.read_rect(g, self, l);
                     widest = widest.max(r.width());
+                    tallest = tallest.max(r.height());
                     peak = peak.max(r.area() + dem.out[l].area());
                 }
             }
@@ -332,7 +329,7 @@ impl Res {
                 }
                 peak = peak.max(a);
             }
-            let bound = f64::from(t) * (store.width / widest).min((budget / peak).sqrt());
+            let bound = f64::from(t) * (store.width / widest).min(store.rows / tallest).min((pool / peak).sqrt());
             let k = settle(target, bound as f32, memory.get(&key).copied());
             seen.push(key);
             memory.insert(key, k);

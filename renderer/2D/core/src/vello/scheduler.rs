@@ -9,13 +9,12 @@
 //!    rect is its demand clipped to its extent — the frame for the spine, and for a chain node
 //!    whatever it reaches, past the frame included; a draw item that misses its draw's demand is
 //!    dropped.
-//! 2. **Capacity.** The store below the frame is a budget of texels (the preset's pages, capped
-//!    by the device). With demand known at every
-//!    pair's target, each pair's resolution is decided in closed form, then demand runs again:
-//!    the run between a pair may be no wider than the store, and no two adjacent links of it
-//!    (the leaf or halo it starts from included) may together exceed the budget: a chain is
-//!    lowered only when it could not fit the store alone; chains that cannot share a round run
-//!    one after the other. Resolutions step down a ladder of halves, so a
+//! 2. **Capacity.** The store below the frame is the preset's pages, capped by the device. With
+//!    demand known at every pair's target, each pair's resolution is decided in closed form, then
+//!    demand runs again: the run between a pair may be no wider nor taller than the store's rows,
+//!    and no two adjacent links of it (the leaf or halo it starts from included) may together
+//!    exceed them: a chain is lowered only when it could not fit the store alone; chains that
+//!    cannot share a round run one after the other. Resolutions step down a ladder of halves, so a
 //!    resample is a whole box; there is no floor. Across frames a pair keeps its resolution until
 //!    the rule that set it has moved by a margin, so a zoom does not flicker.
 //! 3. **Expansion** (DAG++, [`Scheduler::expanded`]). Every read of the frame's spine that
@@ -33,13 +32,14 @@
 //!    arm below it, once the node it continues is ready there.
 //! 5. **Rounds.** An arm runs one round after everything it reads: the spine at a node is the
 //!    round of the last compose below it, a halo the later of its fill and its spine, an arm is
-//!    its own round, and a leaf or halo root is drawn
-//!    the round before its first reader — then each chain, in spine order, is shifted later by
-//!    the least amount that keeps every round's live texels within the budget (first fit: chains
-//!    overlap in time only when they fit beside each other). Nothing but the frame is drawn at
-//!    round 0 by right: a value's draw is sequenced into its round by a boundary marker in its
-//!    tiles, the way spine draws take the segment of the last compose below them. A tile runs
-//!    every mark of a window in list order, so nothing else separates rounds.
+//!    its own round, and a leaf or halo root is drawn the round before its first reader — then
+//!    each chain, in spine order, is shifted later by the least amount at which the packer fits
+//!    its values beside those placed before them (first fit: chains overlap in time only when
+//!    they fit beside each other; the packer is the one judge of what fits, so there is no fill
+//!    factor and no second pass). Nothing but the frame is drawn at round 0 by right: a value's
+//!    draw is sequenced into its round by a boundary marker in its tiles, the way spine draws
+//!    take the segment of the last compose below them. A tile runs every mark of a window in
+//!    list order, so nothing else separates rounds.
 //! 6. **Packing** (ruling 19, amended at R4). Every leaf, halo and arm output that is not a
 //!    compose is a rect placed in the rows below the frame by [`StorePacker`], which hands out whole
 //!    tiles and lets values whose lifetimes do not meet share them. Its origin splits back into the
@@ -243,8 +243,7 @@ impl<'a> Scheduler<'a> {
     /// The plan, once [`Self::resolve`] has settled every resolution and demand.
     fn run(mut self) -> FramePlan {
         self.build_arms();
-        self.fit_rounds();
-        self.assign_pages();
+        self.fit();
         if std::env::var_os("WV_PLAN_DUMP").is_some() {
             eprint!("{}", self.schedule_dump());
         }
@@ -615,8 +614,8 @@ impl<'a> Scheduler<'a> {
         r
     }
 
-    /// The values arm `a` reads that are drawn rather than computed: leaves and halo spines.
-    fn static_reads(&self, a: usize) -> Vec<usize> {
+    /// The values arm `a` reads: leaves, halo spines and other arms' outputs.
+    fn reads_of(&self, a: usize) -> Vec<usize> {
         let arm = &self.arms[a];
         let mut inputs: Vec<NodeId> = arm.nodes.iter().flat_map(|&i| self.read_nodes(i)).collect();
         if let Some(c) = arm.compose {
@@ -624,12 +623,7 @@ impl<'a> Scheduler<'a> {
         }
         let mut out = Vec::new();
         for j in inputs {
-            if let Some(&v) = self.value_of.get(&j) {
-                if self.values[v].leaf.is_some() && !out.contains(&v) {
-                    out.push(v);
-                }
-            }
-            if let Some(v) = self.halo_value(j) {
+            for v in self.value_of.get(&j).copied().into_iter().chain(self.halo_value(j)) {
                 if !out.contains(&v) {
                     out.push(v);
                 }
@@ -638,102 +632,15 @@ impl<'a> Scheduler<'a> {
         out
     }
 
-    /// The texels the output of arm `a` occupies: nothing for a compose, which writes the frame,
-    /// nor for a halo's arm, which writes the halo value it stands on.
-    fn out_area(&self, a: usize) -> f64 {
-        match self.arms[a].nodes.last() {
-            Some(&tail) if self.arms[a].compose.is_none() && !matches!(self.g.nodes[tail].op, Op::Halo { .. }) => self.dem.out[tail].area(),
-            _ => 0.0,
-        }
-    }
-
-    /// Give every arm its round and every leaf or halo root its draw round (step 5): a chain's
-    /// natural rounds, one after what each arm reads, its values drawn the round before their
-    /// first reader, then the whole chain shifted later by the least amount that keeps every
-    /// round's live texels within the budget beside the chains placed before it. A halo read
-    /// by several chains is drawn for the first and kept for the rest. A distance leaf is baked
-    /// by the executor ahead of every round, so it is born at 0 whatever its reader. A chain
-    /// that fits nowhere within the rounds in use goes after them all.
-    fn fit_rounds(&mut self) {
-        let mut live: Vec<f64> = Vec::new();
-        let mut drawn: Vec<bool> = vec![false; self.values.len()];
-        let mut chains: Vec<NodeId> = self.arms.iter().map(|a| a.chain).collect();
-        chains.dedup();
-        for c in chains {
-            let arms: Vec<usize> = (0..self.arms.len()).filter(|&a| self.arms[a].chain == c).collect();
-            for &a in &arms {
-                let r = self.arm_round(a);
-                self.arms[a].round = r;
-            }
-            let mut spans: Vec<(f64, u32, u32)> = Vec::new();
-            let mut own: Vec<(usize, u32, u32)> = Vec::new();
-            for &a in &arms {
-                let round = self.arms[a].round;
-                let death = match self.arms[a].nodes.last() {
-                    Some(&tail) => arms.iter().filter(|&&b| self.arms[b].nodes.iter().chain(self.arms[b].compose.as_ref()).any(|&i| self.inputs(i).contains(&tail))).map(|&b| self.arms[b].round).fold(round, u32::max),
-                    None => round,
-                };
-                spans.push((self.out_area(a), round, death));
-                for v in self.static_reads(a) {
-                    match own.iter_mut().find(|(w, _, _)| *w == v) {
-                        Some(slot) => {
-                            slot.1 = slot.1.min(round.saturating_sub(1));
-                            slot.2 = slot.2.max(round);
-                        }
-                        None => own.push((v, round.saturating_sub(1), round)),
-                    }
-                }
-            }
-            let baked: Vec<bool> = self.values.iter().map(|v| matches!(v.leaf, Some(DrawItem { style: DrawStyle::Distance { .. }, .. }))).collect();
-            let far = live.len() as u32;
-            let first = arms.iter().map(|&a| self.arms[a].round).min().unwrap_or(0);
-            let mut shift = 0u32;
-            loop {
-                let lo = |v: usize, b: u32| if drawn[v] { self.values[v].birth } else if baked[v] { 0 } else { b + shift };
-                let last = spans.iter().map(|s| s.2).chain(own.iter().map(|o| o.2)).max().unwrap_or(0) + shift;
-                let fits = (0..=last).all(|r| {
-                    let outs: f64 = spans.iter().filter(|s| s.1 + shift <= r && r <= s.2 + shift).map(|s| s.0).sum();
-                    let statics: f64 = own
-                        .iter()
-                        .filter(|&&(v, b, d)| lo(v, b) <= r && r <= d + shift && !(drawn[v] && r <= self.values[v].last_read))
-                        .map(|&(v, _, _)| self.values[v].rect.area())
-                        .sum();
-                    live.get(r as usize).copied().unwrap_or(0.0) + statics + outs <= self.store.budget()
-                });
-                if fits || first + shift > far {
-                    break;
-                }
-                shift += 1;
-            }
-            for &a in &arms {
-                self.arms[a].round += shift;
-            }
-            let last = spans.iter().map(|s| s.2).chain(own.iter().map(|o| o.2)).max().unwrap_or(0) + shift;
-            if live.len() <= last as usize {
-                live.resize(last as usize + 1, 0.0);
-            }
-            for s in &spans {
-                for r in s.1 + shift..=s.2 + shift {
-                    live[r as usize] += s.0;
-                }
-            }
-            for &(v, b, d) in &own {
-                let from = if drawn[v] { self.values[v].last_read + 1 } else if baked[v] { 0 } else { b + shift };
-                for r in from..=d + shift {
-                    live[r as usize] += self.values[v].rect.area();
-                }
-                if !drawn[v] {
-                    self.values[v].birth = if baked[v] { 0 } else { b + shift };
-                    drawn[v] = true;
-                }
-                self.values[v].last_read = self.values[v].last_read.max(d + shift);
-            }
-        }
-    }
-
-    /// Give every non-compose arm its value, mark every value's last reader, and pack the values
-    /// into the rows below the frame.
-    fn assign_pages(&mut self) {
+    /// Every arm's round, every value's lifetime and every value's place in the store (steps 5
+    /// and 6): chain by chain in spine order, a chain's natural rounds — one after what each arm
+    /// reads; its leaves and halo roots drawn the round before their first reader, a distance
+    /// leaf baked by the executor ahead of every round and so born at 0 — then the whole chain
+    /// shifted later by the least amount at which the packer fits its values, beside every value
+    /// placed before them, within the store's rows: the packer is the one judge of what fits. A
+    /// value read by several chains is drawn for the first and kept for the rest. A chain that
+    /// fits nowhere within the rounds in use goes after them all, and the store grows to say so.
+    fn fit(&mut self) {
         for a in 0..self.arms.len() {
             if self.arms[a].compose.is_some() {
                 continue;
@@ -744,26 +651,74 @@ impl<'a> Scheduler<'a> {
                 continue;
             }
             let v = self.values.len();
-            self.values.push(Value { node: tail, rect: self.dem.out[tail], place: Vec2::ZERO, birth: self.arms[a].round, last_read: self.arms[a].round, page: 0, leaf: None, decode: 0.0, root: None });
+            self.values.push(Value { node: tail, rect: self.dem.out[tail], place: Vec2::ZERO, birth: 0, last_read: 0, page: 0, leaf: None, decode: 0.0, root: None });
             self.value_of.insert(tail, v);
             self.arms[a].out = Some(v);
         }
-        for a in 0..self.arms.len() {
-            let round = self.arms[a].round;
-            let mut inputs: Vec<NodeId> = self.arms[a].nodes.iter().flat_map(|&i| self.read_nodes(i)).collect();
-            if let Some(c) = self.arms[a].compose {
-                inputs.extend(self.inputs(c));
+        let drawn: Vec<bool> = self.values.iter().map(|v| v.leaf.is_some() || v.root.is_some()).collect();
+        let baked: Vec<bool> = self.values.iter().map(|v| matches!(v.leaf, Some(DrawItem { style: DrawStyle::Distance { .. }, .. }))).collect();
+        let rows = (self.store.rows / TILE_H).floor() as u32;
+        let mut placed: Vec<usize> = Vec::new();
+        let mut far = 0u32;
+        let mut chains: Vec<NodeId> = self.arms.iter().map(|a| a.chain).collect();
+        chains.dedup();
+        for c in chains {
+            let arms: Vec<usize> = (0..self.arms.len()).filter(|&a| self.arms[a].chain == c).collect();
+            for &a in &arms {
+                let r = self.arm_round(a);
+                self.arms[a].round = r;
             }
-            for j in inputs {
-                if let Some(&v) = self.value_of.get(&j) {
-                    self.values[v].last_read = self.values[v].last_read.max(round);
+            let mut spans: Vec<(usize, u32, u32)> = Vec::new();
+            for &a in &arms {
+                let round = self.arms[a].round;
+                let touched = self.reads_of(a).into_iter().map(|v| (v, round)).chain(self.arms[a].out.filter(|&v| !drawn[v]).map(|v| (v, round + 1)));
+                for (v, first) in touched {
+                    match spans.iter_mut().find(|e| e.0 == v) {
+                        Some(e) => {
+                            e.1 = e.1.min(first);
+                            e.2 = e.2.max(round);
+                        }
+                        None => spans.push((v, first, round)),
+                    }
                 }
-                if let Some(v) = self.halo_value(j) {
-                    self.values[v].last_read = self.values[v].last_read.max(round);
+            }
+            let first = arms.iter().map(|&a| self.arms[a].round).min().unwrap_or(0);
+            let mut shift = 0u32;
+            loop {
+                for &(v, b, d) in &spans {
+                    if !placed.contains(&v) {
+                        self.values[v].birth = if baked[v] { 0 } else { b + shift - 1 };
+                        self.values[v].last_read = d + shift;
+                    } else {
+                        self.values[v].last_read = self.values[v].last_read.max(d + shift);
+                    }
+                }
+                let trial: Vec<usize> = placed.iter().copied().chain(spans.iter().map(|e| e.0).filter(|v| !placed.contains(v))).collect();
+                if self.pack(&trial) <= rows || first + shift > far {
+                    break;
+                }
+                shift += 1;
+            }
+            for &a in &arms {
+                self.arms[a].round += shift;
+                far = far.max(self.arms[a].round + 1);
+            }
+            for &(v, _, _) in &spans {
+                if !placed.contains(&v) {
+                    placed.push(v);
                 }
             }
         }
-        let mut order: Vec<usize> = (0..self.values.len()).collect();
+        let all: Vec<usize> = (0..self.values.len()).collect();
+        self.pack(&all);
+    }
+
+    /// Place `values` in the rows below the frame by [`StorePacker`], which hands out whole tiles
+    /// and lets values whose lifetimes do not meet share them; each value's origin splits into
+    /// the page fine folds rows by and the placement that rides the records. Returns the tile
+    /// rows the placement needs.
+    fn pack(&mut self, values: &[usize]) -> u32 {
+        let mut order = values.to_vec();
         order.sort_by_key(|&v| (self.values[v].birth, v));
         let pitch = self.store.pitch;
         let mut packer = StorePacker::new((self.store.width / TILE_W) as u32);
@@ -775,6 +730,7 @@ impl<'a> Scheduler<'a> {
             self.values[v].page = page;
             self.values[v].place = origin - Vec2::new(0.0, page as f64 * pitch) - rect.origin().to_vec2();
         }
+        packer.height()
     }
 
     /// How many pages the frame rents below its own rows: enough for the lowest value's rows.
@@ -1255,7 +1211,7 @@ mod tests {
         g.validate().expect("valid");
         let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0);
         s.build_arms();
-        s.assign_pages();
+        s.fit();
         let arms: Vec<(Vec<NodeId>, Option<NodeId>, u32)> = s.arms.iter().map(|a| (a.nodes.clone(), a.compose, a.round)).collect();
         assert_eq!(arms[0], (vec![2], None, 1), "blur X reads the round-0 silhouette");
         assert_eq!(arms[1], (vec![3], Some(4), 2), "blur Y lands the drop shadow");
@@ -1374,8 +1330,7 @@ mod tests {
         assert_eq!((k[4], k[0], k[3]), (1.0, 1.0, 1.0), "the frame's spine and A's own leaf stay at 1");
         let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0);
         s.build_arms();
-        s.fit_rounds();
-        s.assign_pages();
+        s.fit();
         let halo = s.value_of[&11];
         assert_eq!((s.value_of[&6], s.value_of[&5]), (halo, halo), "one value per spine: the fill point and the root share the halo's");
         let items: Vec<u128> = s.values[halo].root.as_ref().expect("the halo value is drawn from its root").iter().map(|it| it.shape).collect();
@@ -1541,7 +1496,7 @@ mod tests {
         assert!(!s.res.elided[5] && !s.res.elided[8] && !s.res.elided[10]);
         assert_eq!((s.res.k[1], s.res.k[3], s.res.k[4], s.res.k[5], s.res.k[9], s.res.k[10]), (0.5, 0.5, 0.5, 1.0, 0.5, 1.0));
         s.build_arms();
-        s.assign_pages();
+        s.fit();
         let mut params = Vec::new();
         for a in 0..s.arms.len() {
             s.bake_arm(a, &mut params);
@@ -1623,16 +1578,16 @@ mod tests {
         };
         g.validate().expect("valid");
         let mut memory = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 8192, 4.0);
+        let mut s = Scheduler::new(&g, 640, 480, 8192, 3.0);
         assert_eq!(s.store.width, 640.0 + 2.0 * 672.0, "two σ100 blurs read 308 px past their output each, plus a tile of rounding per read: the store grows by that ring on both sides");
         assert!(s.dem.out[2].width() > 640.0 && s.dem.out[2].width() <= s.store.width, "at target 1 the backdrop the blur needs is wider than the frame and no wider than the store: {:?}", s.dem.out[2]);
         s.resolve(&mut memory);
         assert_eq!(s.res.k[2], 0.5, "the pair's two links together exceed the store's texels: one rung down fits");
-        assert!(s.dem.out[1].area() + s.dem.out[2].area() <= s.store.budget(), "{:?} {:?}", s.dem.out[1], s.dem.out[2]);
+        assert!(s.dem.out[1].area() + s.dem.out[2].area() <= s.store.rows * s.store.width, "{:?} {:?}", s.dem.out[1], s.dem.out[2]);
         assert!(!s.res.elided[1], "the pair is now real");
         assert_eq!(memory.get(&7), Some(&0.5), "the pair remembers what it ran at");
         let mut memory = HashMap::from([(7u128, 0.5f32)]);
-        let mut s2 = Scheduler::new(&g, 640, 480, 8192, 4.0);
+        let mut s2 = Scheduler::new(&g, 640, 480, 8192, 3.0);
         s2.resolve(&mut memory);
         assert_eq!(memory.get(&7), Some(&0.5), "the same frame keeps last frame's resolution");
         let c = Scheduler::new(&g, 640, 480, 640, 4.0);
@@ -1640,7 +1595,7 @@ mod tests {
     }
 
     #[test]
-    fn chains_are_placed_first_fit_within_the_budget() {
+    fn chains_are_placed_first_fit_within_the_store() {
         let g = shadows(3, 4.0, EdgeClampStyle::Transparent);
         let mut roomy = HashMap::new();
         let mut wide = Scheduler::new(&g, 640, 480, 8192, 4.0);
@@ -1648,22 +1603,21 @@ mod tests {
         wide.resolve(&mut roomy);
         assert_eq!(wide.res.k, targets, "three small shadows need no lowering with room to spare");
         wide.build_arms();
-        wide.fit_rounds();
+        wide.fit();
         let natural: Vec<u32> = wide.arms.iter().map(|a| a.round).collect();
         assert_eq!(natural, vec![1, 2, 1, 2, 1, 2], "disjoint chains run side by side: {natural:?}");
 
         let mut tight = HashMap::new();
-        let mut s = Scheduler::new(&g, 640, 480, 480 + 64, 4.0);
+        let mut s = Scheduler::new(&g, 640, 480, 480 + 256, 4.0);
         s.resolve(&mut tight);
+        assert_eq!(s.res.k, targets, "every chain fits the store alone, so none is lowered");
         s.build_arms();
-        s.fit_rounds();
-        s.assign_pages();
+        s.fit();
         let rounds: Vec<(NodeId, u32)> = s.arms.iter().map(|a| (a.chain, a.round)).collect();
         let last = rounds.iter().map(|r| r.1).max().unwrap();
-        assert!(last > 3, "a tight budget serialises the chains: {rounds:?}");
-        for r in 0..=last {
-            let live: f64 = s.values.iter().filter(|v| v.birth <= r && r <= v.last_read).map(|v| v.rect.area()).sum();
-            assert!(live <= s.store.budget(), "round {r} holds {live} texels of a {} budget", s.store.budget());
+        assert!(last > 2, "a store too small for three chains side by side runs one of them later: {rounds:?}");
+        for v in 0..s.values.len() {
+            assert!(s.store_rect(v).y1 <= s.store.pitch + s.store.rows, "value {v} sits within the store's rows: {:?}", s.store_rect(v));
         }
         assert!(rounds.windows(2).all(|w| w[0].0 != w[1].0 || w[0].1 < w[1].1), "each chain still runs in order: {rounds:?}");
     }
