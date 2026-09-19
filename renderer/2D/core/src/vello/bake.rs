@@ -54,6 +54,11 @@ pub mod bits {
     /// Sampling head: jittered read of the input — stochastic diffusion, the sampling-head analogue
     /// of a blur.
     pub const SCATTER: u32 = 256;
+    /// The arm reads a spine's rows, so it runs as a mark in that spine's own tiles at the
+    /// reader's place in z and writes the tile's pixels — the state below the reader, nothing
+    /// above it — into its output record, resampled by `u[0].x` input texels per output texel
+    /// (a box average; 1 is a copy). The tile's own pixels are left as they are.
+    pub const SNAPSHOT: u32 = 1024;
     /// Text inner flood: recover unoffset glyph coverage from the offset silhouette.
     pub const FLOOD_ERASE: u32 = 4096;
     /// Sampling head: resample the value between resolutions (`u[0].x` = input texels per

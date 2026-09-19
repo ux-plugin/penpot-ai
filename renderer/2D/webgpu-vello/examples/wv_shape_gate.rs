@@ -10,7 +10,11 @@
 //! while the pixels each round touches halved. DAG++ moved the crossing view's regions up once
 //! more: the glass reading past the left edge gets a halo whose spine clones the soft body chain
 //! composed below it (its leaf, its blur, the halo value itself) instead of a flat serve, and the
-//! background blur under it a halo of its own — four values, no extra round. Run:
+//! background blur under it a halo of its own — four values, no extra round. Snapshots moved
+//! regions up by one per glass (two crossing: its halo clone too): a chain's backdrop is taken
+//! in the spine's own tiles at the chain's place in z, so a ×1 pair over the spine is a real
+//! copy the chain reads — the price of never reading rows that content above it has already
+//! painted. Rounds went down by one per such chain, taken in the round its tiles arrive. Run:
 //! `cargo run --release --example wv_shape_gate` (`WV_SHAPE_PRINT=1` prints the frame lines).
 
 use render_core::kurbo::Affine;
@@ -35,8 +39,8 @@ struct Ceiling {
 
 fn ceilings() -> Vec<Ceiling> {
     vec![
-        Ceiling { name: "glass-at-rest", pan: (0.0, 0.0), max: [12, 21, 14, 14] },
-        Ceiling { name: "glass-crossing-left", pan: (-450.0, -165.0), max: [15, 19, 14, 14] },
+        Ceiling { name: "glass-at-rest", pan: (0.0, 0.0), max: [13, 21, 14, 14] },
+        Ceiling { name: "glass-crossing-left", pan: (-450.0, -165.0), max: [17, 19, 14, 14] },
     ]
 }
 

@@ -233,6 +233,9 @@ impl Params {
             desc[2] = ratio;
             desc[3] = past;
         }
+        if work.snapshot_of(cx, a).is_some() {
+            desc[0] = (desc[0] as u32 | bake::bits::SNAPSHOT) as f32;
+        }
         if let Some(t) = tint {
             if !policy.colour_over {
                 desc[0] = (desc[0] as u32 | bake::bits::TINT) as f32;

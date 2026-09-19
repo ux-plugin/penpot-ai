@@ -290,41 +290,58 @@ mod tests {
         let (lower, clone, fill, outer) = (w.arm_of[6].unwrap(), w.arm_of[7].unwrap(), w.arm_of[11].unwrap(), w.arm_of[13].unwrap());
         assert_eq!((sc.round[lower], sc.round[clone], sc.round[fill], sc.round[outer]), (1, 2, 3, 4), "the ring's fill, the clone chain, the halo's fill over it, then B's chain");
         assert_eq!((w.arms[lower].out, w.arms[fill].out), (halo, halo), "both fills write the halo value");
-        assert_eq!((sc.slot[halo].birth, sc.slot[halo].last_read), (0, 4), "drawn at 0, alive until B's warp has read it");
+        let down = w.arm_of[12].expect("B's down, a resample of the halo, is an arm even at the halo's own resolution");
+        assert_eq!(w.snapshot_of(&s, down).map(|(j, _)| j), Some(11), "B's down is a snapshot of the halo, taken in the halo's tiles");
+        assert_eq!(sc.round[down], sc.round[fill], "taken in the fill's own round: after the fill in the halo's tiles, before B's warp");
+        assert_eq!((sc.slot[halo].birth, sc.slot[halo].last_read), (0, 3), "drawn at 0, alive until B's down has taken its snapshot");
         let ps = Params::bake(&s, &w, &sc);
         let params = &ps.floats;
         let frame = Operand::Value { v: 0, shift: Vec2::ZERO };
-        assert_eq!((ps.arms[lower].value, ps.arms[fill].value), (frame, frame), "the fills resample the frame rows");
+        assert_eq!((ps.arms[lower].value, ps.arms[fill].value), (frame, frame), "the fills snapshot the frame rows");
         assert_eq!(ps.arms[clone].value, Operand::Value { v: halo, shift: Vec2::ZERO }, "the clone's warp reads the halo value as its spine");
-        assert_eq!(ps.arms[outer].value, Operand::Value { v: halo, shift: Vec2::ZERO }, "B's warp reads the halo, not the frame");
+        assert_eq!(ps.arms[down].value, Operand::Value { v: halo, shift: Vec2::ZERO }, "B's down snapshots the halo, not the frame");
+        assert_eq!(ps.arms[outer].value, Operand::Value { v: w.arms[down].out, shift: Vec2::ZERO }, "B's warp reads the snapshot");
         let desc = &params[ps.arms[fill].off as usize..];
-        assert_eq!((desc[0] as u32 & bake::bits::RESAMPLE, desc[2], desc[3]), (bake::bits::RESAMPLE, 2.0, bake::RESAMPLE_KEEP), "a keep-resample by two");
+        let bits = desc[0] as u32;
+        assert_eq!((bits & bake::bits::RESAMPLE, bits & bake::bits::SNAPSHOT, desc[2], desc[3]), (bake::bits::RESAMPLE, bake::bits::SNAPSHOT, 2.0, bake::RESAMPLE_KEEP), "a keep-resample by two, taken as a snapshot");
+        let desc = &params[ps.arms[down].off as usize..];
+        assert_eq!((desc[0] as u32 & bake::bits::SNAPSHOT, desc[2]), (bake::bits::SNAPSHOT, 1.0), "a copy, taken as a snapshot");
+    }
+
+    /// The markers in the frame's front-end whose descriptor is a snapshot, in draw order, with
+    /// their footprints and rounds.
+    fn snapshot_markers(p: &FramePlan) -> Vec<(usize, Rect, u32)> {
+        let draws = p.passes.iter().filter_map(|p| match p { Pass::Frontend { draws } => Some(draws), _ => None }).next().unwrap();
+        draws
+            .iter()
+            .enumerate()
+            .filter_map(|(at, d)| match d {
+                DrawCmd::Marker { footprint, round, params_off, eid, .. } if *eid != bake::EID_BOUNDARY && (p.params[*params_off as usize] as u32) & bake::bits::SNAPSHOT != 0 => Some((at, *footprint, *round)),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
-    fn a_halo_at_the_spines_resolution_is_one_copy() {
+    fn a_halo_at_the_spines_resolution_is_filled_by_a_snapshot() {
         let g = halo_graph(1.0);
         let s = Resolved::of(&g, 640, 480, 8192, 4.0);
         let w = Work::of(&s);
-        assert!(w.arm_of[6].is_none() && w.arm_of[11].is_none(), "no fill arms at k 1");
+        assert!(w.arm_of[6].is_some() && w.arm_of[11].is_some(), "a fill is an arm at k 1 too: a snapshot of the frame's tiles at the halo's place in z");
         let p = plan_as_is(&g);
         p.validate().unwrap_or_else(|e| panic!("{e}"));
-        let mut fines = 0;
-        let mut copies = Vec::new();
-        for pass in &p.passes {
-            match pass {
-                Pass::Fine { .. } => fines += 1,
-                Pass::Copy { src, dst } => copies.push((fines, *src, *dst)),
-                _ => {}
-            }
-        }
-        let [(ring_at, ring, ring_dst), (top_at, src, dst)] = copies[..] else { panic!("one copy per fill point: {copies:?}") };
-        assert!(src.x1 <= 640.0 && src.y1 <= 480.0 && src.x0 >= 448.0, "copied from the frame rows where the halo overlaps them: {src:?}");
-        assert!(ring.x1 <= 640.0 && ring.x0 >= 592.0 && ring.x0 > src.x0, "the ring is copied where the clone samples inside the frame edge, within the top's region: {ring:?}");
-        assert!(dst.y0 >= 480.0 && ring_dst.y0 >= 480.0, "into the halo's page rows: {dst:?} {ring_dst:?}");
-        assert_eq!((ring_at, top_at), (1, 2), "the ring after round 0 (the ground), the top after round 1 (both glass-A composes) and before B's chain in round 2");
-        let frame_draws = p.passes.iter().filter_map(|p| match p { Pass::Frontend { draws } => Some(draws), _ => None }).next().unwrap();
-        let identity_shapes = frame_draws.iter().filter(|d| matches!(d, DrawCmd::Shapes { transform, .. } if *transform == Affine::IDENTITY)).count();
+        assert!(p.passes.iter().all(|p| !matches!(p, Pass::Copy { .. })), "nothing is copied between rounds");
+        let draws = p.passes.iter().filter_map(|p| match p { Pass::Frontend { draws } => Some(draws), _ => None }).next().unwrap();
+        let ground = draws.iter().position(|d| matches!(d, DrawCmd::Shapes { transform, .. } if *transform == Affine::IDENTITY)).unwrap();
+        let glass_a = draws.iter().position(|d| matches!(d, DrawCmd::Marker { eid, .. } if *eid == bake::EID_MASKED)).unwrap();
+        let snaps = snapshot_markers(&p);
+        let [(ring_at, ring, ring_round), (top_at, src, top_round), (copy_at, copy, copy_round)] = snaps[..] else { panic!("one snapshot per fill point in the frame's tiles, and B's copy in the halo's: {snaps:?}") };
+        assert!(src.x1 <= 640.0 && src.y1 <= 480.0 && src.x0 >= 448.0, "the top is taken from the frame's tiles where the halo overlaps them: {src:?}");
+        assert!(ring.x1 <= 640.0 && ring.x0 >= 592.0 && ring.x0 > src.x0, "the ring is taken where the clone samples inside the frame edge, within the top's region: {ring:?}");
+        assert!(ground < ring_at && ring_at < glass_a && glass_a < top_at && top_at < copy_at, "in z: the ground, the ring's snapshot, glass A, the top's snapshot, then B's copy of the halo");
+        assert!(copy.y0 >= 480.0, "B's ×1 down copies the halo in the halo's page rows: {copy:?}");
+        assert_eq!((ring_round, top_round, copy_round), (1, 3, 3), "the ring after round 0 (the ground); the top after the clone chain (round 2); B's copy in the top's own round, after it in the halo's tiles");
+        let identity_shapes = draws.iter().filter(|d| matches!(d, DrawCmd::Shapes { transform, .. } if *transform == Affine::IDENTITY)).count();
         assert_eq!(identity_shapes, 1, "the frame draws the ground once; the root draws only into the halo");
     }
 
@@ -417,13 +434,32 @@ mod tests {
     }
 
     #[test]
-    fn a_pair_between_equal_resolutions_is_nothing() {
+    fn a_pair_between_equal_resolutions_is_nothing_unless_it_reads_the_spine() {
+        let g = scaled_graph(1.0);
+        let mut s = Resolved::of(&g, 640, 480, 8192, 4.0);
+        assert!(s.res.elided[2] && s.res.elided[5] && s.res.elided[10], "a ×1 pair off a leaf, and the up of a chain, are nothing");
+        assert!(!s.res.elided[8], "a ×1 resample of the spine is the chain's backdrop: a copy taken in the spine's tiles");
+        let w = Work::of(&s);
+        let arms: Vec<(Vec<NodeId>, Option<NodeId>)> = w.arms.iter().map(|a| (a.nodes.clone(), a.compose)).collect();
+        assert_eq!(arms[0], (vec![3], None), "blur X");
+        assert_eq!(arms[1], (vec![4], Some(6)), "blur Y lands the shadow");
+        assert_eq!(arms[2], (vec![8], None), "the copy");
+        assert_eq!(arms[3], (vec![9, 11, 12], Some(14)), "the lens is one arm reading the copy");
+        let read = s.in_space_of(s.read_rect(8), 8, 7);
+        assert_eq!(w.snapshot_of(&s, 2), Some((7, read)), "the copy is a snapshot of the body's rows, over what the lens reads");
+        let sc = Schedule::fit(&s, &w);
+        assert_eq!((sc.round[1], sc.round[2], sc.round[3]), (2, 2, 3), "the copy is taken in the shadow's own round, after it in the tiles they share; the lens reads it a round later");
+        assert_eq!(sc.ready(&s, &w, 7, read), 2, "the body's rows the copy reads are held at its place in z until it is taken");
+        let p = plan_as_is(&g);
+        p.validate().unwrap_or_else(|e| panic!("{e}"));
+        let draws = p.passes.iter().filter_map(|p| match p { Pass::Frontend { draws } => Some(draws), _ => None }).next().unwrap();
+        let body = draws.iter().rposition(|d| matches!(d, DrawCmd::Shapes { transform, .. } if *transform == Affine::IDENTITY)).unwrap();
+        let glass = draws.iter().position(|d| matches!(d, DrawCmd::Marker { eid, .. } if *eid == bake::EID_MASKED)).unwrap();
+        let [(at, footprint, round)] = snapshot_markers(&p)[..] else { panic!("one snapshot in the frame's tiles") };
+        assert!(body < at && at < glass, "in z: the body, the copy, the glass");
+        assert_eq!((footprint, round), (read, 2), "over what the lens reads, in the shadow's round");
         let plain = plan(&graph(), 640, 480, 8192, 4.0, &mut HashMap::new());
-        let paired = plan(&scaled_graph(1.0), 640, 480, 8192, 4.0, &mut HashMap::new());
-        assert_eq!(paired.store, plain.store);
-        assert_eq!(paired.params, plain.params);
-        assert_eq!(paired.passes.len(), plain.passes.len());
-        assert_eq!(paired.shape(), plain.shape());
+        assert_eq!(p.shape().markers, plain.shape().markers + 1, "against the same chains without a pair: the copy is the one addition");
     }
 
     #[test]

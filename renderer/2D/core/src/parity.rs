@@ -1800,8 +1800,10 @@ pub fn build_mixed_grid_scene(n: usize) -> (Scene, Vec<(usize, &'static str)>) {
 /// lens renders identically with and without its neighbours; a difference inside the lens is a
 /// backdrop read that saw rows written later in z. `neighbour`: 0 none, 1 solid magenta frames
 /// on all four sides, 2 a background-blur panel on the right. `frost` picks the frosted lens.
+/// `clipped` puts the lens and its neighbours inside a clipping frame, so the backdrop is taken
+/// inside a clip layer.
 #[must_use]
-pub fn build_backdrop_order_scene(neighbour: u32, gap: f64, frost: bool) -> (Scene, Vec<(usize, &'static str)>) {
+pub fn build_backdrop_order_scene(neighbour: u32, gap: f64, frost: bool, clipped: bool) -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
     b.advance("backdrop order");
     let (cw, ch) = (1200.0_f64, 800.0_f64);
@@ -1817,6 +1819,7 @@ pub fn build_backdrop_order_scene(neighbour: u32, gap: f64, frost: bool) -> (Sce
         }
     }
     let lens = Rect::new(400.0, 250.0, 800.0, 550.0);
+    let mut members: Vec<Node> = Vec::new();
     let mut node = Node::new(b.id(), ShapeKind::Rect);
     node.bounds = lens;
     node.corners = Some(RoundedRectRadii::from_single_radius(12.0));
@@ -1826,7 +1829,7 @@ pub fn build_backdrop_order_scene(neighbour: u32, gap: f64, frost: bool) -> (Sce
         g.frost = 0.0;
     }
     node.glass = Some(g);
-    b.root(node);
+    members.push(node);
     let side = 60.0;
     match neighbour {
         1 => {
@@ -1840,7 +1843,7 @@ pub fn build_backdrop_order_scene(neighbour: u32, gap: f64, frost: bool) -> (Sce
                 let mut node = Node::new(b.id(), ShapeKind::Rect);
                 node.bounds = rect;
                 node.fills = vec![Paint::plain(Brush::Solid(col(255, 0, 255)))];
-                b.root(node);
+                members.push(node);
             }
         }
         2 => {
@@ -1848,9 +1851,24 @@ pub fn build_backdrop_order_scene(neighbour: u32, gap: f64, frost: bool) -> (Sce
             node.bounds = Rect::new(lens.x1 + gap, lens.y0 - 40.0, lens.x1 + gap + 220.0, lens.y1 + 40.0);
             node.corners = Some(RoundedRectRadii::from_single_radius(12.0));
             node.background_blur = Some(24.0);
-            b.root(node);
+            members.push(node);
         }
         _ => {}
+    }
+    if clipped {
+        let mut frame = Node::new(b.id(), ShapeKind::Frame);
+        frame.bounds = lens.inflate(100.0, 100.0);
+        frame.clip = true;
+        frame.corners = Some(RoundedRectRadii::from_single_radius(40.0));
+        frame.children = members.iter().map(|n| n.id).collect();
+        b.root(frame);
+        for node in members {
+            b.child(node);
+        }
+    } else {
+        for node in members {
+            b.root(node);
+        }
     }
     b.finish()
 }

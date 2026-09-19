@@ -2,7 +2,8 @@
 //! effect's pixels. Each case renders the backdrop-order fixture (a glass lens over a
 //! checkerboard) with and without neighbours stacked above the lens just outside its edge —
 //! inside its read reach, outside its footprint — and compares the lens interior. Any
-//! difference there is a backdrop read that saw rows written later in z.
+//! difference there is a backdrop read that saw rows written later in z. The `clip-` cases put
+//! the lens and its neighbours inside a clipping frame, so the backdrop is taken in a clip layer.
 //!
 //! Run: `cargo run --release --example wv_backdrop_order` (`WV_CASE=<substr>` filters, `WV_DUMP=1`
 //! writes with/without/diff PNGs into `.vello-proofs/`).
@@ -25,6 +26,7 @@ struct Case {
     neighbour: u32,
     gap: f32,
     frost: bool,
+    clipped: bool,
     zoom: f32,
     pan: (f32, f32),
 }
@@ -37,11 +39,14 @@ fn cases() -> Vec<Case> {
                 for (zoom, pan) in [(1.0f32, (0.0f32, 0.0f32)), (2.0, (-300.0, -150.0))] {
                     v.push(Case {
                         name: format!("{what}-gap{gap}-{}-z{zoom}", if frost { "frost" } else { "sharp" }),
-                        neighbour, gap, frost, zoom, pan,
+                        neighbour, gap, frost, clipped: false, zoom, pan,
                     });
                 }
             }
         }
+    }
+    for frost in [false, true] {
+        v.push(Case { name: format!("clip-frames-gap2-{}-z1", if frost { "frost" } else { "sharp" }), neighbour: 1, gap: 2.0, frost, clipped: true, zoom: 1.0, pan: (0.0, 0.0) });
     }
     v
 }
@@ -114,7 +119,7 @@ fn write_png(path: &str, rgba: &[u8], w: u32, h: u32) {
 }
 
 fn render(device: &wgpu::Device, queue: &wgpu::Queue, case: &Case, neighbour: u32) -> Vec<u8> {
-    render_core::vello::abi::load_backdrop_order_scene(neighbour, case.gap, u32::from(case.frost));
+    render_core::vello::abi::load_backdrop_order_scene(neighbour, case.gap, u32::from(case.frost), u32::from(case.clipped));
     render_core::vello::abi::set_render_options(0, 1.0);
     render_core::vello::abi::set_canvas_background(0xffff_ffff);
     render_core::vello::abi::set_scheduler(1);

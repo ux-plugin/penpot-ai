@@ -163,7 +163,9 @@ impl Schedule {
 
     /// The round after which node `i`'s result can be read over `r`: an arm's own round, a leaf's
     /// round 0, and for the spine the round of the last live compose below `i` that touches `r`
-    /// (a pruned compose has no arm and is walked past). A spine draw has no round of its own:
+    /// (a pruned compose has no arm and is walked past), and no earlier than any snapshot taken
+    /// of the spine over `r` at or below `i` — the snapshot's tiles hold at its place in z until
+    /// its round, so whatever lands on them above it lands after. A spine draw has no round of its own:
     /// a tile's segment advances only at the markers binned into it, so the draw's items are
     /// painted over `r` in whatever round the last compose touching `r` gave those tiles — two
     /// chains over disjoint ground run in the same rounds even with draws between them.
@@ -178,18 +180,26 @@ impl Schedule {
         }
         if cx.g.is_spine(i) {
             let mut s = i;
+            let mut held = 0;
             loop {
                 let node = &cx.g.nodes[s];
+                for a in 0..work.arms.len() {
+                    if let Some((j, read)) = work.snapshot_of(cx, a) {
+                        if j == s && overlaps(read, r) {
+                            held = held.max(self.round[a]);
+                        }
+                    }
+                }
                 if let Op::Compose { .. } = &node.op {
                     if overlaps(cx.dem.out[s], r) {
                         if let Some(a) = work.arm_of[s] {
-                            return self.round[a];
+                            return self.round[a].max(held);
                         }
                     }
                 }
                 match node.inputs.first() {
                     Some(&below) => s = below,
-                    None => return 0,
+                    None => return held,
                 }
             }
         }
@@ -224,7 +234,11 @@ impl Schedule {
                 r = r.max(self.ready(cx, work, j, cx.dem.out[c]));
             }
         }
-        r + 1
+        // A resample of a spine is a snapshot taken in the spine's tiles, after the compose it
+        // waits for in the same tiles' order: it runs in that compose's own round. A halo's fill
+        // is one too, but writes rows its root draws the round before, so it stays a round later.
+        let snapshot = work.snapshot_of(cx, a).is_some() && matches!(cx.g.nodes[arm.nodes[0]].op, Op::Resample { .. });
+        if snapshot { r } else { r + 1 }
     }
 
     /// Where value `v`'s rows start in the store: its placement, down by its page.

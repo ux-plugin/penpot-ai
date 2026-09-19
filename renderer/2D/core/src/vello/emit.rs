@@ -3,16 +3,17 @@
 //! reaching past the frame's bottom never paints a page) with a marker at every compose, then
 //! the page work in round order: each leaf and halo root draw behind its boundary marker (each
 //! clipped to its store rect), a halo spine's draws and compose markers under the halo's
-//! transform, and a marker per page arm; before each round's fine, the clears of the rects drawn
-//! in it (a leaf's to transparent, a halo's to the background — the tiles may have held an
-//! earlier value) and the copies filling the halos whose node became ready the round before;
-//! one fine per round over that round's tiles; present. `params` gains one tile list per round.
+//! transform, and a marker per page arm — except a snapshot arm (a resample of a spine, a halo's
+//! fill), whose marker sits in the tiles of the spine it reads, over the rows it reads, right
+//! after the spine node it reads; before each round's fine, the clears of the rects drawn in it
+//! (a leaf's to transparent, a halo's to the background — the tiles may have held an earlier
+//! value); one fine per round over that round's tiles; present. `params` gains one tile list per round.
 
 use crate::kurbo::{Affine, Rect, Vec2};
 
 use crate::vello::arms::{Kind, Work};
 use crate::vello::bake;
-use crate::vello::frame_graph::{scale_rect, Op};
+use crate::vello::frame_graph::{scale_rect, NodeId, Op};
 use crate::vello::frame_plan::{self, DrawCmd, FramePlan, Pass, Tiles, Window};
 use crate::vello::params::Params;
 use crate::vello::resolve::{tile_round, Resolved};
@@ -110,22 +111,13 @@ pub(crate) fn emit(cx: &Resolved, work: &Work, s: &Schedule, params: Params) -> 
         let transform = Affine::translate(origin) * Affine::scale(k);
         page_work.push((round, if round > birth { 2 } else { 0 }, vec![DrawCmd::Clip { rect }, DrawCmd::Shapes { items, transform }, DrawCmd::Unclip]));
     }
-    for h in 0..cx.g.nodes.len() {
-        let Op::Halo { of } = cx.g.nodes[h].op else { continue };
-        if !cx.live(h) || cx.res.k[of] != cx.res.k[h] || !cx.fill_read(h) {
-            continue;
-        }
-        let inside = cx.inside_of(h, cx.dem.out[h]);
-        if inside.is_zero_area() {
-            continue;
-        }
-        let v = work.value_of[h].expect("a live halo has a value");
-        let copy_round = s.ready(cx, work, h, inside).max(s.slot[v].birth);
-        if (copy_round as usize) < rounds as usize {
-            let src_origin = work.value_of[of].map_or(Vec2::ZERO, |w| s.origin(cx, w));
-            copies[copy_round as usize + 1].push(Pass::Copy { src: inside + src_origin, dst: inside + s.origin(cx, v) });
-        }
-    }
+    // A snapshot arm's marker: in the tiles of the spine it reads, over the rows it reads, at
+    // its place in z — right after the spine node it reads. `footprint` is in store texels.
+    let snapshot_marker = |a: usize, footprint: Rect, tiles: &mut Vec<Vec<u32>>| {
+        tiles_of(footprint, &mut tiles[s.round[a] as usize]);
+        DrawCmd::Marker { shape: 0, transform: Affine::IDENTITY, eid: bake::EID_MATERIALIZE, seg_after: s.round[a], round: s.round[a], footprint, ctl: 0, params_off: ops[a].off }
+    };
+    let snapshots_of = |j: NodeId| (0..work.arms.len()).filter_map(|a| work.snapshot_of(cx, a).filter(|&(of, _)| of == j).map(|(_, read)| (a, read))).collect::<Vec<_>>();
     if pages > 0 {
         draws.push(DrawCmd::Clip { rect: Rect::new(0.0, 0.0, cx.store.width, pitch) });
     }
@@ -136,10 +128,9 @@ pub(crate) fn emit(cx: &Resolved, work: &Work, s: &Schedule, params: Params) -> 
         match &cx.g.nodes[i].op {
             Op::Draw(_) => {
                 let items = cx.dem.kept[i].clone();
-                if items.is_empty() {
-                    continue;
+                if !items.is_empty() {
+                    draws.push(DrawCmd::Shapes { items, transform: Affine::IDENTITY });
                 }
-                draws.push(DrawCmd::Shapes { items, transform: Affine::IDENTITY });
             }
             Op::Compose { .. } => {
                 let a = work.arm_of[i].expect("a live compose has an arm");
@@ -157,6 +148,14 @@ pub(crate) fn emit(cx: &Resolved, work: &Work, s: &Schedule, params: Params) -> 
                 });
             }
             _ => {}
+        }
+        if cx.halo_of(i).is_none() {
+            for (a, read) in snapshots_of(i) {
+                let footprint = read.intersect(cx.store.frame);
+                if !footprint.is_zero_area() {
+                    draws.push(snapshot_marker(a, footprint, &mut tiles));
+                }
+            }
         }
     }
     if pages > 0 {
@@ -185,7 +184,22 @@ pub(crate) fn emit(cx: &Resolved, work: &Work, s: &Schedule, params: Params) -> 
         };
         page_work.push((s.round[a], 1, vec![marker]));
     }
-    for a in (0..work.arms.len()).filter(|&a| work.arms[a].compose.is_none()) {
+    for i in 0..cx.g.nodes.len() {
+        let Some(h) = cx.halo_of(i) else { continue };
+        if !cx.live(i) {
+            continue;
+        }
+        let vh = work.value_of[h].expect("a live halo has a value");
+        let rows = s.store_rect(cx, work, vh);
+        for (a, read) in snapshots_of(i) {
+            let footprint = (read + s.origin(cx, vh)).intersect(rows);
+            if !footprint.is_zero_area() {
+                let marker = snapshot_marker(a, footprint, &mut tiles);
+                page_work.push((s.round[a], 1, vec![marker]));
+            }
+        }
+    }
+    for a in (0..work.arms.len()).filter(|&a| work.arms[a].compose.is_none() && work.snapshot_of(cx, a).is_none()) {
         let footprint = s.store_rect(cx, work, work.arms[a].out);
         tiles_of(footprint, &mut tiles[s.round[a] as usize]);
         let marker = DrawCmd::Marker { shape: 0, transform: Affine::IDENTITY, eid: bake::EID_MATERIALIZE, seg_after: s.round[a], round: s.round[a], footprint, ctl: 0, params_off: ops[a].off };

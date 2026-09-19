@@ -96,7 +96,7 @@ impl Work {
                     }
                     w.compose(cx, i, value);
                 }
-                Op::Halo { of } => w.halo(cx, i, of),
+                Op::Halo { .. } => w.halo(cx, i),
                 _ => {}
             }
         }
@@ -133,6 +133,22 @@ impl Work {
     fn push_arm(&mut self, nodes: Vec<NodeId>, chain: NodeId) -> usize {
         self.arms.push(Arm { nodes, compose: None, chain, out: usize::MAX });
         self.arms.len() - 1
+    }
+
+    /// The spine whose rows arm `a`'s head reads, and the rows it reads of them in that spine's
+    /// texels: a resample of a spine, or a halo filled from the spine node it continues. Such an
+    /// arm runs as a snapshot mark in the spine's tiles rather than over its own rows
+    /// (`bake::bits::SNAPSHOT`), so what it reads is the state at its place in z.
+    pub fn snapshot_of(&self, cx: &Resolved, a: usize) -> Option<(NodeId, Rect)> {
+        let &head = self.arms[a].nodes.first()?;
+        match cx.g.nodes[head].op {
+            Op::Resample { .. } => {
+                let j = cx.input(head, 0);
+                cx.g.is_spine(j).then(|| (j, cx.in_space_of(cx.read_rect(head), head, j)))
+            }
+            Op::Halo { of } => Some((of, cx.in_space_of(cx.inside_of(head, cx.dem.out[head]), head, of))),
+            _ => None,
+        }
     }
 
     /// The values arm `a` reads: leaves, silhouettes, spines' rows and other arms' outputs.
@@ -206,10 +222,10 @@ impl Work {
 
     /// Give halo `h` its value — one per spine, shared by every halo on it and by its root: the
     /// rows the spine's nodes demand, joined, that the root draws into and the spine's composes
-    /// write. Where `h`'s rect overlaps the frame it is filled from `of`: by one copy when the
-    /// two run at one resolution, else by an arm of the halo's own that resamples `of` over the
-    /// drawn rows and keeps them where the source leaves the frame.
-    fn halo(&mut self, cx: &Resolved, h: NodeId, of: NodeId) {
+    /// write. Where `h`'s rect overlaps the frame it is filled from `of` by an arm of the halo's
+    /// own: a snapshot of `of`'s tiles at the halo's place in z, resampled to the halo's
+    /// resolution over the rows inside the frame, the drawn rows past it kept.
+    fn halo(&mut self, cx: &Resolved, h: NodeId) {
         let root = cx.spines.root[h];
         let v = match self.value_of[root] {
             Some(v) => v,
@@ -226,7 +242,7 @@ impl Work {
             }
         };
         self.value_of[h] = Some(v);
-        if cx.res.k[of] == cx.res.k[h] || !cx.fill_read(h) || cx.inside_of(h, cx.dem.out[h]).is_zero_area() {
+        if !cx.fill_read(h) || cx.inside_of(h, cx.dem.out[h]).is_zero_area() {
             return;
         }
         let a = self.push_arm(vec![h], h);

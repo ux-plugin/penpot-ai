@@ -78,8 +78,10 @@ pub enum Op {
     /// A resolution boundary. inputs = `[value]`. From here the value runs at `target` of the
     /// frame's resolution, or lower when the store cannot hold it; `target = 1.0` restores frame
     /// resolution. It runs as a resample: a box average going down, bilinear going up, and a
-    /// texel-for-texel copy between equal resolutions, which the planner drops. The ops between a
-    /// pair never see the resample: their payloads and pads are read in the value's own texels.
+    /// texel-for-texel copy between equal resolutions, which the planner drops unless the value
+    /// is a spine's rows — then the copy is the chain's backdrop, taken at the chain's place in
+    /// z. The ops between a pair never see the resample: their payloads and pads are read in the
+    /// value's own texels.
     /// `key` names the effect the boundary belongs to, the same from frame to frame, so a
     /// scheduler can keep the resolution it chose.
     Resample { target: f32, key: u128 },

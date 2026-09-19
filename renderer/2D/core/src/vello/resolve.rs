@@ -177,7 +177,11 @@ pub(crate) fn stands_on(g: &FrameGraph, i: NodeId) -> NodeId {
 pub(crate) struct Res {
     /// The resolution each node's value runs at, a fraction of the frame's.
     pub k: Vec<f32>,
-    /// A resample between equal resolutions is nothing: it is dropped and its readers read through it.
+    /// A resample between equal resolutions is nothing: it is dropped and its readers read through
+    /// it — unless it reads a spine. A resample of a spine is the chain's backdrop, taken in the
+    /// spine's own tiles at the chain's place in z ([`crate::vello::bake::bits::SNAPSHOT`]); at
+    /// equal resolutions it is a copy, and the copy is what the chain reads instead of the rows
+    /// its compose rewrites.
     pub elided: Vec<bool>,
     /// The node a reader really reads: itself, or what an elided resample reads.
     pub alias: Vec<NodeId>,
@@ -194,7 +198,7 @@ impl Res {
         let mut alias: Vec<NodeId> = (0..n).collect();
         for (i, node) in g.nodes.iter().enumerate() {
             if let Op::Resample { .. } = node.op {
-                if k[node.inputs[0]] == k[i] {
+                if k[node.inputs[0]] == k[i] && !g.is_spine(node.inputs[0]) {
                     elided[i] = true;
                     alias[i] = alias[node.inputs[0]];
                 }
