@@ -1,161 +1,161 @@
 frame [0.0 0.0 1192.0 622.0] nodes 161 background [1.0, 1.0, 1.0, 1.0]
   0 | draw · 64 item(s)          in=[] Draw n=64 [0.0 0.0 1192.0 622.0] 1:body[0.0 0.0 149.0 77.8] 2:body[149.0 0.0 298.0 77.8] 3:body[298.0 0.0 447.0 77.8] 4:body[447.0 0.0 596.0 77.8] 5:body[596.0 0.0 745.0 77.8] 6:body[745.0 0.0 894.0 77.8] +58
-  1   s1 down                    in=[0] Scale → 1
+  1   s1 down                    in=[0] Resample → 1
   2   s1 lens warp               in=[1] Warp program 0
   3   s1 frost blur-X σ3.6       in=[2] Blur σ3.6 X srgb taps 193
   4   s1 frost blur-Y σ3.6       in=[3] Blur σ3.6 Y srgb taps 193
   5   s1 lens scatter            in=[4] Scatter
-  6   s1 up                      in=[5] Scale → 1
+  6   s1 up                      in=[5] Resample → 1
   7   s1 lens shade              in=[6] Shade
   8   s1 lens mask-mix           in=[7, 0] MaskMix program 0
   9   s1 gather mask             in=[] Draw n=1 [99.3 51.8 198.7 103.7] 41:coverage[99.3 51.8 198.7 103.7]
  10 | s1 gather → spine          in=[0, 8, 9] Compose MaskedMix
- 11   s2 down                    in=[10] Scale → 1
+ 11   s2 down                    in=[10] Resample → 1
  12   s2 lens warp               in=[11] Warp program 0
  13   s2 frost blur-X σ3.6       in=[12] Blur σ3.6 X srgb taps 193
  14   s2 frost blur-Y σ3.6       in=[13] Blur σ3.6 Y srgb taps 193
  15   s2 lens scatter            in=[14] Scatter
- 16   s2 up                      in=[15] Scale → 1
+ 16   s2 up                      in=[15] Resample → 1
  17   s2 lens shade              in=[16] Shade
  18   s2 lens mask-mix           in=[17, 10] MaskMix program 0
  19   s2 gather mask             in=[] Draw n=1 [397.3 51.8 496.7 103.7] 42:coverage[397.3 51.8 496.7 103.7]
  20 | s2 gather → spine          in=[10, 18, 19] Compose MaskedMix
- 21   s3 down                    in=[20] Scale → 1
+ 21   s3 down                    in=[20] Resample → 1
  22   s3 lens warp               in=[21] Warp program 0
  23   s3 frost blur-X σ3.6       in=[22] Blur σ3.6 X srgb taps 193
  24   s3 frost blur-Y σ3.6       in=[23] Blur σ3.6 Y srgb taps 193
  25   s3 lens scatter            in=[24] Scatter
- 26   s3 up                      in=[25] Scale → 1
+ 26   s3 up                      in=[25] Resample → 1
  27   s3 lens shade              in=[26] Shade
  28   s3 lens mask-mix           in=[27, 20] MaskMix program 0
  29   s3 gather mask             in=[] Draw n=1 [695.3 51.8 794.7 103.7] 43:coverage[695.3 51.8 794.7 103.7]
  30 | s3 gather → spine          in=[20, 28, 29] Compose MaskedMix
- 31   s4 down                    in=[30] Scale → 1
+ 31   s4 down                    in=[30] Resample → 1
  32   s4 lens warp               in=[31] Warp program 0
  33   s4 frost blur-X σ3.6       in=[32] Blur σ3.6 X srgb taps 193
  34   s4 frost blur-Y σ3.6       in=[33] Blur σ3.6 Y srgb taps 193
  35   s4 lens scatter            in=[34] Scatter
- 36   s4 up                      in=[35] Scale → 1
+ 36   s4 up                      in=[35] Resample → 1
  37   s4 lens shade              in=[36] Shade
  38   s4 lens mask-mix           in=[37, 30] MaskMix program 0
  39   s4 gather mask             in=[] Draw n=1 [993.3 51.8 1092.7 103.7] 44:coverage[993.3 51.8 1092.7 103.7]
  40 | s4 gather → spine          in=[30, 38, 39] Compose MaskedMix
- 41   s5 down                    in=[40] Scale → 1
+ 41   s5 down                    in=[40] Resample → 1
  42   s5 lens warp               in=[41] Warp program 0
  43   s5 frost blur-X σ3.6       in=[42] Blur σ3.6 X srgb taps 193
  44   s5 frost blur-Y σ3.6       in=[43] Blur σ3.6 Y srgb taps 193
  45   s5 lens scatter            in=[44] Scatter
- 46   s5 up                      in=[45] Scale → 1
+ 46   s5 up                      in=[45] Resample → 1
  47   s5 lens shade              in=[46] Shade
  48   s5 lens mask-mix           in=[47, 40] MaskMix program 0
  49   s5 gather mask             in=[] Draw n=1 [99.3 207.3 198.7 259.2] 45:coverage[99.3 207.3 198.7 259.2]
  50 | s5 gather → spine          in=[40, 48, 49] Compose MaskedMix
- 51   s6 down                    in=[50] Scale → 1
+ 51   s6 down                    in=[50] Resample → 1
  52   s6 lens warp               in=[51] Warp program 0
  53   s6 frost blur-X σ3.6       in=[52] Blur σ3.6 X srgb taps 193
  54   s6 frost blur-Y σ3.6       in=[53] Blur σ3.6 Y srgb taps 193
  55   s6 lens scatter            in=[54] Scatter
- 56   s6 up                      in=[55] Scale → 1
+ 56   s6 up                      in=[55] Resample → 1
  57   s6 lens shade              in=[56] Shade
  58   s6 lens mask-mix           in=[57, 50] MaskMix program 0
  59   s6 gather mask             in=[] Draw n=1 [397.3 207.3 496.7 259.2] 46:coverage[397.3 207.3 496.7 259.2]
  60 | s6 gather → spine          in=[50, 58, 59] Compose MaskedMix
- 61   s7 down                    in=[60] Scale → 1
+ 61   s7 down                    in=[60] Resample → 1
  62   s7 lens warp               in=[61] Warp program 0
  63   s7 frost blur-X σ3.6       in=[62] Blur σ3.6 X srgb taps 193
  64   s7 frost blur-Y σ3.6       in=[63] Blur σ3.6 Y srgb taps 193
  65   s7 lens scatter            in=[64] Scatter
- 66   s7 up                      in=[65] Scale → 1
+ 66   s7 up                      in=[65] Resample → 1
  67   s7 lens shade              in=[66] Shade
  68   s7 lens mask-mix           in=[67, 60] MaskMix program 0
  69   s7 gather mask             in=[] Draw n=1 [695.3 207.3 794.7 259.2] 47:coverage[695.3 207.3 794.7 259.2]
  70 | s7 gather → spine          in=[60, 68, 69] Compose MaskedMix
- 71   s8 down                    in=[70] Scale → 1
+ 71   s8 down                    in=[70] Resample → 1
  72   s8 lens warp               in=[71] Warp program 0
  73   s8 frost blur-X σ3.6       in=[72] Blur σ3.6 X srgb taps 193
  74   s8 frost blur-Y σ3.6       in=[73] Blur σ3.6 Y srgb taps 193
  75   s8 lens scatter            in=[74] Scatter
- 76   s8 up                      in=[75] Scale → 1
+ 76   s8 up                      in=[75] Resample → 1
  77   s8 lens shade              in=[76] Shade
  78   s8 lens mask-mix           in=[77, 70] MaskMix program 0
  79   s8 gather mask             in=[] Draw n=1 [993.3 207.3 1092.7 259.2] 48:coverage[993.3 207.3 1092.7 259.2]
  80 | s8 gather → spine          in=[70, 78, 79] Compose MaskedMix
- 81   s9 down                    in=[80] Scale → 1
+ 81   s9 down                    in=[80] Resample → 1
  82   s9 lens warp               in=[81] Warp program 0
  83   s9 frost blur-X σ3.6       in=[82] Blur σ3.6 X srgb taps 193
  84   s9 frost blur-Y σ3.6       in=[83] Blur σ3.6 Y srgb taps 193
  85   s9 lens scatter            in=[84] Scatter
- 86   s9 up                      in=[85] Scale → 1
+ 86   s9 up                      in=[85] Resample → 1
  87   s9 lens shade              in=[86] Shade
  88   s9 lens mask-mix           in=[87, 80] MaskMix program 0
  89   s9 gather mask             in=[] Draw n=1 [99.3 362.8 198.7 414.7] 49:coverage[99.3 362.8 198.7 414.7]
  90 | s9 gather → spine          in=[80, 88, 89] Compose MaskedMix
- 91   s10 down                   in=[90] Scale → 1
+ 91   s10 down                   in=[90] Resample → 1
  92   s10 lens warp              in=[91] Warp program 0
  93   s10 frost blur-X σ3.6      in=[92] Blur σ3.6 X srgb taps 193
  94   s10 frost blur-Y σ3.6      in=[93] Blur σ3.6 Y srgb taps 193
  95   s10 lens scatter           in=[94] Scatter
- 96   s10 up                     in=[95] Scale → 1
+ 96   s10 up                     in=[95] Resample → 1
  97   s10 lens shade             in=[96] Shade
  98   s10 lens mask-mix          in=[97, 90] MaskMix program 0
  99   s10 gather mask            in=[] Draw n=1 [397.3 362.8 496.7 414.7] 4a:coverage[397.3 362.8 496.7 414.7]
 100 | s10 gather → spine         in=[90, 98, 99] Compose MaskedMix
-101   s11 down                   in=[100] Scale → 1
+101   s11 down                   in=[100] Resample → 1
 102   s11 lens warp              in=[101] Warp program 0
 103   s11 frost blur-X σ3.6      in=[102] Blur σ3.6 X srgb taps 193
 104   s11 frost blur-Y σ3.6      in=[103] Blur σ3.6 Y srgb taps 193
 105   s11 lens scatter           in=[104] Scatter
-106   s11 up                     in=[105] Scale → 1
+106   s11 up                     in=[105] Resample → 1
 107   s11 lens shade             in=[106] Shade
 108   s11 lens mask-mix          in=[107, 100] MaskMix program 0
 109   s11 gather mask            in=[] Draw n=1 [695.3 362.8 794.7 414.7] 4b:coverage[695.3 362.8 794.7 414.7]
 110 | s11 gather → spine         in=[100, 108, 109] Compose MaskedMix
-111   s12 down                   in=[110] Scale → 1
+111   s12 down                   in=[110] Resample → 1
 112   s12 lens warp              in=[111] Warp program 0
 113   s12 frost blur-X σ3.6      in=[112] Blur σ3.6 X srgb taps 193
 114   s12 frost blur-Y σ3.6      in=[113] Blur σ3.6 Y srgb taps 193
 115   s12 lens scatter           in=[114] Scatter
-116   s12 up                     in=[115] Scale → 1
+116   s12 up                     in=[115] Resample → 1
 117   s12 lens shade             in=[116] Shade
 118   s12 lens mask-mix          in=[117, 110] MaskMix program 0
 119   s12 gather mask            in=[] Draw n=1 [993.3 362.8 1092.7 414.7] 4c:coverage[993.3 362.8 1092.7 414.7]
 120 | s12 gather → spine         in=[110, 118, 119] Compose MaskedMix
-121   s13 down                   in=[120] Scale → 1
+121   s13 down                   in=[120] Resample → 1
 122   s13 lens warp              in=[121] Warp program 0
 123   s13 frost blur-X σ3.6      in=[122] Blur σ3.6 X srgb taps 193
 124   s13 frost blur-Y σ3.6      in=[123] Blur σ3.6 Y srgb taps 193
 125   s13 lens scatter           in=[124] Scatter
-126   s13 up                     in=[125] Scale → 1
+126   s13 up                     in=[125] Resample → 1
 127   s13 lens shade             in=[126] Shade
 128   s13 lens mask-mix          in=[127, 120] MaskMix program 0
 129   s13 gather mask            in=[] Draw n=1 [99.3 518.3 198.7 570.2] 4d:coverage[99.3 518.3 198.7 570.2]
 130 | s13 gather → spine         in=[120, 128, 129] Compose MaskedMix
-131   s14 down                   in=[130] Scale → 1
+131   s14 down                   in=[130] Resample → 1
 132   s14 lens warp              in=[131] Warp program 0
 133   s14 frost blur-X σ3.6      in=[132] Blur σ3.6 X srgb taps 193
 134   s14 frost blur-Y σ3.6      in=[133] Blur σ3.6 Y srgb taps 193
 135   s14 lens scatter           in=[134] Scatter
-136   s14 up                     in=[135] Scale → 1
+136   s14 up                     in=[135] Resample → 1
 137   s14 lens shade             in=[136] Shade
 138   s14 lens mask-mix          in=[137, 130] MaskMix program 0
 139   s14 gather mask            in=[] Draw n=1 [397.3 518.3 496.7 570.2] 4e:coverage[397.3 518.3 496.7 570.2]
 140 | s14 gather → spine         in=[130, 138, 139] Compose MaskedMix
-141   s15 down                   in=[140] Scale → 1
+141   s15 down                   in=[140] Resample → 1
 142   s15 lens warp              in=[141] Warp program 0
 143   s15 frost blur-X σ3.6      in=[142] Blur σ3.6 X srgb taps 193
 144   s15 frost blur-Y σ3.6      in=[143] Blur σ3.6 Y srgb taps 193
 145   s15 lens scatter           in=[144] Scatter
-146   s15 up                     in=[145] Scale → 1
+146   s15 up                     in=[145] Resample → 1
 147   s15 lens shade             in=[146] Shade
 148   s15 lens mask-mix          in=[147, 140] MaskMix program 0
 149   s15 gather mask            in=[] Draw n=1 [695.3 518.3 794.7 570.2] 4f:coverage[695.3 518.3 794.7 570.2]
 150 | s15 gather → spine         in=[140, 148, 149] Compose MaskedMix
-151   s16 down                   in=[150] Scale → 1
+151   s16 down                   in=[150] Resample → 1
 152   s16 lens warp              in=[151] Warp program 0
 153   s16 frost blur-X σ3.6      in=[152] Blur σ3.6 X srgb taps 193
 154   s16 frost blur-Y σ3.6      in=[153] Blur σ3.6 Y srgb taps 193
 155   s16 lens scatter           in=[154] Scatter
-156   s16 up                     in=[155] Scale → 1
+156   s16 up                     in=[155] Resample → 1
 157   s16 lens shade             in=[156] Shade
 158   s16 lens mask-mix          in=[157, 150] MaskMix program 0
 159   s16 gather mask            in=[] Draw n=1 [993.3 518.3 1092.7 570.2] 50:coverage[993.3 518.3 1092.7 570.2]

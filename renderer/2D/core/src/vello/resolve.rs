@@ -172,14 +172,14 @@ pub(crate) fn stands_on(g: &FrameGraph, i: NodeId) -> NodeId {
     }
 }
 
-/// Every node's resolution and what follows from it alone: which scales are nothing, what a
+/// Every node's resolution and what follows from it alone: which resamples are nothing, what a
 /// reader really reads, who reads whom, and every extent.
 pub(crate) struct Res {
     /// The resolution each node's value runs at, a fraction of the frame's.
     pub k: Vec<f32>,
-    /// A scale between equal resolutions is nothing: it is dropped and its readers read through it.
+    /// A resample between equal resolutions is nothing: it is dropped and its readers read through it.
     pub elided: Vec<bool>,
-    /// The node a reader really reads: itself, or what an elided scale reads.
+    /// The node a reader really reads: itself, or what an elided resample reads.
     pub alias: Vec<NodeId>,
     pub readers: Vec<Vec<NodeId>>,
     pub ext: Vec<Rect>,
@@ -193,7 +193,7 @@ impl Res {
         let mut elided = vec![false; n];
         let mut alias: Vec<NodeId> = (0..n).collect();
         for (i, node) in g.nodes.iter().enumerate() {
-            if let Op::Scale { .. } = node.op {
+            if let Op::Resample { .. } = node.op {
                 if k[node.inputs[0]] == k[i] {
                     elided[i] = true;
                     alias[i] = alias[node.inputs[0]];
@@ -239,13 +239,13 @@ impl Res {
 
     /// The extent a reader may see of node `i`: the frame for the frame's spine (its rows hold
     /// the page colour everywhere), everything for a halo and the spine under it (their rows
-    /// hold the page colour past the draws) and for a scale of a spine, a leaf's bounds plus the
+    /// hold the page colour past the draws) and for a resample of a spine, a leaf's bounds plus the
     /// pixel its antialiased edge spills into, the node's own extent for any other chain value.
     pub fn visible_extent(&self, g: &FrameGraph, spines: &Spines, frame: Rect, i: NodeId) -> Rect {
         let node = &g.nodes[i];
         if g.is_spine(i) {
             spines.rect(g, i, frame)
-        } else if matches!(node.op, Op::Scale { .. }) && g.is_spine(node.inputs[0]) {
+        } else if matches!(node.op, Op::Resample { .. }) && g.is_spine(node.inputs[0]) {
             everything()
         } else if matches!(node.op, Op::Draw(_)) {
             self.ext[i].inflate(1.0, 1.0)
@@ -261,7 +261,7 @@ impl Res {
         r.intersect(self.in_space_of(spines.rect(g, sb, frame), sb, i))
     }
 
-    /// Whether scale `i` opens a pair: what it reads is not inside one.
+    /// Whether resample `i` opens a pair: what it reads is not inside one.
     fn is_down(g: &FrameGraph, i: NodeId) -> bool {
         let mut j = g.nodes[i].inputs[0];
         loop {
@@ -269,7 +269,7 @@ impl Res {
             if g.is_spine(j) || matches!(node.op, Op::Draw(_)) {
                 return true;
             }
-            if matches!(node.op, Op::Scale { .. }) {
+            if matches!(node.op, Op::Resample { .. }) {
                 return false;
             }
             j = node.inputs[0];
@@ -289,13 +289,13 @@ impl Res {
         } else if matches!(g.nodes[self.alias[d]].op, Op::Draw(_)) {
             links.push(self.alias[d]);
         } else {
-            links.extend((0..g.nodes.len()).filter(|&r| g.nodes[r].inputs.contains(&d) && !matches!(g.nodes[r].op, Op::Scale { .. })));
+            links.extend((0..g.nodes.len()).filter(|&r| g.nodes[r].inputs.contains(&d) && !matches!(g.nodes[r].op, Op::Resample { .. })));
         }
         links.retain(|&l| demanded(l));
         let mut i = 0;
         while i < links.len() {
             for &r in &self.readers[links[i]] {
-                if matches!(g.nodes[r].op, Op::Scale { .. }) || links.contains(&r) || g.is_spine(r) {
+                if matches!(g.nodes[r].op, Op::Resample { .. }) || links.contains(&r) || g.is_spine(r) {
                     continue;
                 }
                 if demanded(r) {
@@ -335,7 +335,7 @@ impl Res {
         let mut lowered: HashMap<NodeId, f32> = HashMap::new();
         let mut seen: Vec<u128> = Vec::new();
         for d in 0..g.nodes.len() {
-            let Op::Scale { target, key } = g.nodes[d].op else { continue };
+            let Op::Resample { target, key } = g.nodes[d].op else { continue };
             if !Self::is_down(g, d) {
                 continue;
             }
@@ -359,7 +359,7 @@ impl Res {
                 widest = widest.max(rows.width());
                 tallest = tallest.max(rows.height());
                 // The rows are alive while the first links read them: through the down node when
-                // it is nothing, the down node itself when it is a real scale.
+                // it is nothing, the down node itself when it is a real resample.
                 let reading = links.iter().filter(|&&l| l == d || g.nodes[l].inputs.contains(&d)).map(|&l| dem.out[l].area()).fold(0.0, f64::max);
                 peak = peak.max(rows.area() + reading);
             }
@@ -388,7 +388,7 @@ impl Res {
 /// One backward pass at a resolution: what each node must produce, and which items each draw
 /// keeps. A compose owes its demand to the state below and, less its offset, to its value; a
 /// neighbourhood op owes its input its own demand grown by its pad (a `Transparent` blur grows
-/// nothing — the clamp supplies zeros); a pointwise op passes its demand through; a scale owes
+/// nothing — the clamp supplies zeros); a pointwise op passes its demand through; a resample owes
 /// its input its demand in the input's texels; a halo owes its spine what lies past the rows it
 /// is filled from and owes `of` those rows. A node's output rect is its demand clipped to its
 /// extent, tile-rounded, and for a spine node to the rows its spine writes.
@@ -444,7 +444,7 @@ impl Demand {
                     let r = if *edge_clamp_style == EdgeClampStyle::Transparent { o } else { grown(pad_at(&node.op, k)) };
                     union_into(&mut wanted[node.inputs[0]], r);
                 }
-                Op::Scale { .. } => {
+                Op::Resample { .. } => {
                     let j = node.inputs[0];
                     union_into(&mut wanted[j], scale_rect(o, f64::from(res.k[j] / k)));
                 }
@@ -498,7 +498,7 @@ impl Demand {
     /// pad for a head, its output for a pointwise op, displaced for an `EraseBy` reference.
     pub fn read_of(&self, g: &FrameGraph, res: &Res, i: NodeId, j: NodeId) -> Rect {
         let node = &g.nodes[i];
-        let head = matches!(node.op, Op::Blur { .. } | Op::Warp(_) | Op::Scatter(_) | Op::Scale { .. });
+        let head = matches!(node.op, Op::Blur { .. } | Op::Warp(_) | Op::Scatter(_) | Op::Resample { .. });
         let r = match &node.op {
             Op::EraseBy(u) if node.inputs.get(1).map(|&x| res.alias[x]) == Some(j) => {
                 let shift = Vec2::new(f64::from(u.first().copied().unwrap_or(0.0)), f64::from(u.get(1).copied().unwrap_or(0.0)));

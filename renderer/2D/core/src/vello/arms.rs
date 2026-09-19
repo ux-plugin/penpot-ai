@@ -1,5 +1,5 @@
 //! Step 4: what the frame computes and what it holds. A chain is cut at its barriers into
-//! [`Arm`]s — a head (a blur axis, a warp, a scatter, a scale) or a pointwise op over a leaf or
+//! [`Arm`]s — a head (a blur axis, a warp, a scatter, a resample) or a pointwise op over a leaf or
 //! the spine starts an arm, and the pointwise ops after it ride along while the value has no
 //! other reader; the compose folds into the arm that makes its value — and every arm writes a
 //! [`Value`]: its tail's, or the rows of the spine its compose lands on. The frame's rows are
@@ -63,7 +63,7 @@ pub(crate) struct Work {
 }
 
 pub(crate) fn is_head(op: &Op) -> bool {
-    matches!(op, Op::Blur { .. } | Op::Warp(_) | Op::Scatter(_) | Op::Scale { .. })
+    matches!(op, Op::Blur { .. } | Op::Warp(_) | Op::Scatter(_) | Op::Resample { .. })
 }
 
 pub(crate) fn is_pointwise(op: &Op) -> bool {

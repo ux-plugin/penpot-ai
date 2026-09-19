@@ -46,7 +46,7 @@ pub(crate) fn emit(cx: &Resolved, work: &Work, s: &Schedule, params: Params) -> 
         let w = &mut work_word[s.round[a] as usize];
         for &i in &arm.nodes {
             *w |= match &cx.g.nodes[i].op {
-                Op::Scale { .. } | Op::Halo { .. } => frame_plan::work::SCALE,
+                Op::Resample { .. } | Op::Halo { .. } => frame_plan::work::RESAMPLE,
                 Op::Warp(_) => frame_plan::work::WARP,
                 Op::Blur { .. } => frame_plan::work::BLUR,
                 Op::Scatter(_) => frame_plan::work::SCATTER,

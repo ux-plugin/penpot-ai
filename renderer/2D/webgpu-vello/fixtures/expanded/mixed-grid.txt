@@ -1,115 +1,115 @@
 frame [0.0 0.0 1192.0 622.0] nodes 206 background [1.0, 1.0, 1.0, 1.0]
   0 | draw · 1300 item(s)        in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
   1   s1 drop silhouette         in=[] Draw n=1 [89.4 46.6 208.6 108.8] 515:coverage[89.4 46.6 208.6 108.8]
-  2   s1 down                    in=[1] Scale → 0.5
+  2   s1 down                    in=[1] Resample → 0.5
   3   s1 drop blur-X σ6.3        in=[2] Blur σ6.3 X srgb transparent taps 193
   4   s1 drop blur-Y σ6.3        in=[3] Blur σ6.3 Y srgb transparent taps 193
-  5   s1 up                      in=[4] Scale → 1
+  5   s1 up                      in=[4] Resample → 1
   6 | s1 drop → spine            in=[0, 5] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
   7 | draw · 1 item(s)           in=[6] Draw n=1 [89.4 46.6 208.6 108.8] 515:body[89.4 46.6 208.6 108.8]
   8 | draw · 1300 item(s) @0     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
   9 | fill of draw · 1300 item(s) @0 in=[8] Halo of 0
  10   s1 drop silhouette @0      in=[] Draw n=1 [89.4 46.6 208.6 108.8] 515:coverage[89.4 46.6 208.6 108.8]
- 11   s1 down @0                 in=[10] Scale → 0.5
+ 11   s1 down @0                 in=[10] Resample → 0.5
  12   s1 drop blur-X σ6.3 @0     in=[11] Blur σ6.3 X srgb transparent taps 193
  13   s1 drop blur-Y σ6.3 @0     in=[12] Blur σ6.3 Y srgb transparent taps 193
- 14   s1 up @0                   in=[13] Scale → 1
+ 14   s1 up @0                   in=[13] Resample → 1
  15 | s1 drop → spine @0         in=[9, 14] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
  16 | draw · 1 item(s) @0        in=[15] Draw n=1 [89.4 46.6 208.6 108.8] 515:body[89.4 46.6 208.6 108.8]
  17 | halo of draw · 1 item(s) @0 in=[16] Halo of 7
- 18   s2 down                    in=[17] Scale → 0.25
+ 18   s2 down                    in=[17] Resample → 0.25
  19   s2 gather blur-X σ14.4     in=[18] Blur σ14.4 X linear taps 193
  20   s2 gather blur-Y σ14.4     in=[19] Blur σ14.4 Y linear taps 193
- 21   s2 up                      in=[20] Scale → 1
+ 21   s2 up                      in=[20] Resample → 1
  22   s2 gather mask             in=[] Draw n=1 [387.4 46.6 506.6 108.8] 516:coverage[387.4 46.6 506.6 108.8]
  23 | s2 gather → spine          in=[7, 21, 22] Compose MaskedMix
  24   s3 drop silhouette         in=[] Draw n=1 [685.4 46.6 804.6 108.8] 517:coverage[685.4 46.6 804.6 108.8]
- 25   s3 down                    in=[24] Scale → 0.5
+ 25   s3 down                    in=[24] Resample → 0.5
  26   s3 drop blur-X σ6.3        in=[25] Blur σ6.3 X srgb transparent taps 193
  27   s3 drop blur-Y σ6.3        in=[26] Blur σ6.3 Y srgb transparent taps 193
- 28   s3 up                      in=[27] Scale → 1
+ 28   s3 up                      in=[27] Resample → 1
  29 | s3 drop → spine            in=[23, 28] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
  30 | draw · 1 item(s)           in=[29] Draw n=1 [685.4 46.6 804.6 108.8] 517:body[685.4 46.6 804.6 108.8]
  31 | draw · 1300 item(s) @1     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
  32 | draw · 1 item(s) @1        in=[31] Draw n=1 [89.4 46.6 208.6 108.8] 515:body[89.4 46.6 208.6 108.8]
  33 | fill of s2 gather → spine @1 in=[32] Halo of 23
  34   s3 drop silhouette @1      in=[] Draw n=1 [685.4 46.6 804.6 108.8] 517:coverage[685.4 46.6 804.6 108.8]
- 35   s3 down @1                 in=[34] Scale → 0.5
+ 35   s3 down @1                 in=[34] Resample → 0.5
  36   s3 drop blur-X σ6.3 @1     in=[35] Blur σ6.3 X srgb transparent taps 193
  37   s3 drop blur-Y σ6.3 @1     in=[36] Blur σ6.3 Y srgb transparent taps 193
- 38   s3 up @1                   in=[37] Scale → 1
+ 38   s3 up @1                   in=[37] Resample → 1
  39 | s3 drop → spine @1         in=[33, 38] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
  40 | draw · 1 item(s) @1        in=[39] Draw n=1 [685.4 46.6 804.6 108.8] 517:body[685.4 46.6 804.6 108.8]
  41 | halo of draw · 1 item(s) @1 in=[40] Halo of 30
- 42   s4 down                    in=[41] Scale → 0.25
+ 42   s4 down                    in=[41] Resample → 0.25
  43   s4 gather blur-X σ14.4     in=[42] Blur σ14.4 X linear taps 193
  44   s4 gather blur-Y σ14.4     in=[43] Blur σ14.4 Y linear taps 193
- 45   s4 up                      in=[44] Scale → 1
+ 45   s4 up                      in=[44] Resample → 1
  46   s4 gather mask             in=[] Draw n=1 [983.4 46.6 1102.6 108.8] 518:coverage[983.4 46.6 1102.6 108.8]
  47 | s4 gather → spine          in=[30, 45, 46] Compose MaskedMix
  48   s5 drop silhouette         in=[] Draw n=1 [89.4 202.2 208.6 264.4] 519:coverage[89.4 202.2 208.6 264.4]
- 49   s5 down                    in=[48] Scale → 0.5
+ 49   s5 down                    in=[48] Resample → 0.5
  50   s5 drop blur-X σ6.3        in=[49] Blur σ6.3 X srgb transparent taps 193
  51   s5 drop blur-Y σ6.3        in=[50] Blur σ6.3 Y srgb transparent taps 193
- 52   s5 up                      in=[51] Scale → 1
+ 52   s5 up                      in=[51] Resample → 1
  53 | s5 drop → spine            in=[47, 52] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
  54 | draw · 1 item(s)           in=[53] Draw n=1 [89.4 202.2 208.6 264.4] 519:body[89.4 202.2 208.6 264.4]
  55 | draw · 1300 item(s) @2     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
  56 | fill of draw · 1300 item(s) @2 in=[55] Halo of 0
  57   s1 drop silhouette @2      in=[] Draw n=1 [89.4 46.6 208.6 108.8] 515:coverage[89.4 46.6 208.6 108.8]
- 58   s1 down @2                 in=[57] Scale → 0.5
+ 58   s1 down @2                 in=[57] Resample → 0.5
  59   s1 drop blur-X σ6.3 @2     in=[58] Blur σ6.3 X srgb transparent taps 193
  60   s1 drop blur-Y σ6.3 @2     in=[59] Blur σ6.3 Y srgb transparent taps 193
- 61   s1 up @2                   in=[60] Scale → 1
+ 61   s1 up @2                   in=[60] Resample → 1
  62 | s1 drop → spine @2         in=[56, 61] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
  63 | draw · 1 item(s) @2        in=[62] Draw n=1 [89.4 46.6 208.6 108.8] 515:body[89.4 46.6 208.6 108.8]
  64 | fill of s2 gather → spine @2 in=[63] Halo of 23
  65   s3 drop silhouette @2      in=[] Draw n=1 [685.4 46.6 804.6 108.8] 517:coverage[685.4 46.6 804.6 108.8]
- 66   s3 down @2                 in=[65] Scale → 0.5
+ 66   s3 down @2                 in=[65] Resample → 0.5
  67   s3 drop blur-X σ6.3 @2     in=[66] Blur σ6.3 X srgb transparent taps 193
  68   s3 drop blur-Y σ6.3 @2     in=[67] Blur σ6.3 Y srgb transparent taps 193
- 69   s3 up @2                   in=[68] Scale → 1
+ 69   s3 up @2                   in=[68] Resample → 1
  70 | s3 drop → spine @2         in=[64, 69] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
  71 | draw · 1 item(s) @2        in=[70] Draw n=1 [685.4 46.6 804.6 108.8] 517:body[685.4 46.6 804.6 108.8]
  72 | draw · 1 item(s) @2        in=[71] Draw n=1 [89.4 202.2 208.6 264.4] 519:body[89.4 202.2 208.6 264.4]
  73 | halo of draw · 1 item(s) @2 in=[72] Halo of 54
- 74   s6 down                    in=[73] Scale → 0.25
+ 74   s6 down                    in=[73] Resample → 0.25
  75   s6 gather blur-X σ14.4     in=[74] Blur σ14.4 X linear taps 193
  76   s6 gather blur-Y σ14.4     in=[75] Blur σ14.4 Y linear taps 193
- 77   s6 up                      in=[76] Scale → 1
+ 77   s6 up                      in=[76] Resample → 1
  78   s6 gather mask             in=[] Draw n=1 [387.4 202.2 506.6 264.4] 51a:coverage[387.4 202.2 506.6 264.4]
  79 | s6 gather → spine          in=[54, 77, 78] Compose MaskedMix
  80   s7 drop silhouette         in=[] Draw n=1 [685.4 202.2 804.6 264.4] 51b:coverage[685.4 202.2 804.6 264.4]
- 81   s7 down                    in=[80] Scale → 0.5
+ 81   s7 down                    in=[80] Resample → 0.5
  82   s7 drop blur-X σ6.3        in=[81] Blur σ6.3 X srgb transparent taps 193
  83   s7 drop blur-Y σ6.3        in=[82] Blur σ6.3 Y srgb transparent taps 193
- 84   s7 up                      in=[83] Scale → 1
+ 84   s7 up                      in=[83] Resample → 1
  85 | s7 drop → spine            in=[79, 84] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
  86 | draw · 1 item(s)           in=[85] Draw n=1 [685.4 202.2 804.6 264.4] 51b:body[685.4 202.2 804.6 264.4]
  87 | draw · 1300 item(s) @3     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
  88 | draw · 1 item(s) @3        in=[87] Draw n=1 [89.4 46.6 208.6 108.8] 515:body[89.4 46.6 208.6 108.8]
  89 | fill of s2 gather → spine @3 in=[88] Halo of 23
  90   s3 drop silhouette @3      in=[] Draw n=1 [685.4 46.6 804.6 108.8] 517:coverage[685.4 46.6 804.6 108.8]
- 91   s3 down @3                 in=[90] Scale → 0.5
+ 91   s3 down @3                 in=[90] Resample → 0.5
  92   s3 drop blur-X σ6.3 @3     in=[91] Blur σ6.3 X srgb transparent taps 193
  93   s3 drop blur-Y σ6.3 @3     in=[92] Blur σ6.3 Y srgb transparent taps 193
- 94   s3 up @3                   in=[93] Scale → 1
+ 94   s3 up @3                   in=[93] Resample → 1
  95 | s3 drop → spine @3         in=[89, 94] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
  96 | draw · 1 item(s) @3        in=[95] Draw n=1 [685.4 46.6 804.6 108.8] 517:body[685.4 46.6 804.6 108.8]
  97 | draw · 1 item(s) @3        in=[96] Draw n=1 [89.4 202.2 208.6 264.4] 519:body[89.4 202.2 208.6 264.4]
  98 | draw · 1 item(s) @3        in=[97] Draw n=1 [685.4 202.2 804.6 264.4] 51b:body[685.4 202.2 804.6 264.4]
  99 | halo of draw · 1 item(s) @3 in=[98] Halo of 86
-100   s8 down                    in=[99] Scale → 0.25
+100   s8 down                    in=[99] Resample → 0.25
 101   s8 gather blur-X σ14.4     in=[100] Blur σ14.4 X linear taps 193
 102   s8 gather blur-Y σ14.4     in=[101] Blur σ14.4 Y linear taps 193
-103   s8 up                      in=[102] Scale → 1
+103   s8 up                      in=[102] Resample → 1
 104   s8 gather mask             in=[] Draw n=1 [983.4 202.2 1102.6 264.4] 51c:coverage[983.4 202.2 1102.6 264.4]
 105 | s8 gather → spine          in=[86, 103, 104] Compose MaskedMix
 106   s9 drop silhouette         in=[] Draw n=1 [89.4 357.6 208.6 419.8] 51d:coverage[89.4 357.6 208.6 419.8]
-107   s9 down                    in=[106] Scale → 0.5
+107   s9 down                    in=[106] Resample → 0.5
 108   s9 drop blur-X σ6.3        in=[107] Blur σ6.3 X srgb transparent taps 193
 109   s9 drop blur-Y σ6.3        in=[108] Blur σ6.3 Y srgb transparent taps 193
-110   s9 up                      in=[109] Scale → 1
+110   s9 up                      in=[109] Resample → 1
 111 | s9 drop → spine            in=[105, 110] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
 112 | draw · 1 item(s)           in=[111] Draw n=1 [89.4 357.6 208.6 419.8] 51d:body[89.4 357.6 208.6 419.8]
 113 | draw · 1300 item(s) @4     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
@@ -119,17 +119,17 @@ frame [0.0 0.0 1192.0 622.0] nodes 206 background [1.0, 1.0, 1.0, 1.0]
 117 | draw · 1 item(s) @4        in=[116] Draw n=1 [685.4 202.2 804.6 264.4] 51b:body[685.4 202.2 804.6 264.4]
 118 | draw · 1 item(s) @4        in=[117] Draw n=1 [89.4 357.6 208.6 419.8] 51d:body[89.4 357.6 208.6 419.8]
 119 | halo of draw · 1 item(s) @4 in=[118] Halo of 112
-120   s10 down                   in=[119] Scale → 0.25
+120   s10 down                   in=[119] Resample → 0.25
 121   s10 gather blur-X σ14.4    in=[120] Blur σ14.4 X linear taps 193
 122   s10 gather blur-Y σ14.4    in=[121] Blur σ14.4 Y linear taps 193
-123   s10 up                     in=[122] Scale → 1
+123   s10 up                     in=[122] Resample → 1
 124   s10 gather mask            in=[] Draw n=1 [387.4 357.6 506.6 419.8] 51e:coverage[387.4 357.6 506.6 419.8]
 125 | s10 gather → spine         in=[112, 123, 124] Compose MaskedMix
 126   s11 drop silhouette        in=[] Draw n=1 [685.4 357.6 804.6 419.8] 51f:coverage[685.4 357.6 804.6 419.8]
-127   s11 down                   in=[126] Scale → 0.5
+127   s11 down                   in=[126] Resample → 0.5
 128   s11 drop blur-X σ6.3       in=[127] Blur σ6.3 X srgb transparent taps 193
 129   s11 drop blur-Y σ6.3       in=[128] Blur σ6.3 Y srgb transparent taps 193
-130   s11 up                     in=[129] Scale → 1
+130   s11 up                     in=[129] Resample → 1
 131 | s11 drop → spine           in=[125, 130] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
 132 | draw · 1 item(s)           in=[131] Draw n=1 [685.4 357.6 804.6 419.8] 51f:body[685.4 357.6 804.6 419.8]
 133 | draw · 1300 item(s) @5     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
@@ -140,17 +140,17 @@ frame [0.0 0.0 1192.0 622.0] nodes 206 background [1.0, 1.0, 1.0, 1.0]
 138 | draw · 1 item(s) @5        in=[137] Draw n=1 [89.4 357.6 208.6 419.8] 51d:body[89.4 357.6 208.6 419.8]
 139 | draw · 1 item(s) @5        in=[138] Draw n=1 [685.4 357.6 804.6 419.8] 51f:body[685.4 357.6 804.6 419.8]
 140 | halo of draw · 1 item(s) @5 in=[139] Halo of 132
-141   s12 down                   in=[140] Scale → 0.25
+141   s12 down                   in=[140] Resample → 0.25
 142   s12 gather blur-X σ14.4    in=[141] Blur σ14.4 X linear taps 193
 143   s12 gather blur-Y σ14.4    in=[142] Blur σ14.4 Y linear taps 193
-144   s12 up                     in=[143] Scale → 1
+144   s12 up                     in=[143] Resample → 1
 145   s12 gather mask            in=[] Draw n=1 [983.4 357.6 1102.6 419.8] 520:coverage[983.4 357.6 1102.6 419.8]
 146 | s12 gather → spine         in=[132, 144, 145] Compose MaskedMix
 147   s13 drop silhouette        in=[] Draw n=1 [89.4 513.1 208.6 575.4] 521:coverage[89.4 513.1 208.6 575.4]
-148   s13 down                   in=[147] Scale → 0.5
+148   s13 down                   in=[147] Resample → 0.5
 149   s13 drop blur-X σ6.3       in=[148] Blur σ6.3 X srgb transparent taps 193
 150   s13 drop blur-Y σ6.3       in=[149] Blur σ6.3 Y srgb transparent taps 193
-151   s13 up                     in=[150] Scale → 1
+151   s13 up                     in=[150] Resample → 1
 152 | s13 drop → spine           in=[146, 151] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
 153 | draw · 1 item(s)           in=[152] Draw n=1 [89.4 513.1 208.6 575.4] 521:body[89.4 513.1 208.6 575.4]
 154 | draw · 1300 item(s) @6     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
@@ -162,24 +162,24 @@ frame [0.0 0.0 1192.0 622.0] nodes 206 background [1.0, 1.0, 1.0, 1.0]
 160 | draw · 1 item(s) @6        in=[159] Draw n=1 [685.4 357.6 804.6 419.8] 51f:body[685.4 357.6 804.6 419.8]
 161 | fill of s12 gather → spine @6 in=[160] Halo of 146
 162   s13 drop silhouette @6     in=[] Draw n=1 [89.4 513.1 208.6 575.4] 521:coverage[89.4 513.1 208.6 575.4]
-163   s13 down @6                in=[162] Scale → 0.5
+163   s13 down @6                in=[162] Resample → 0.5
 164   s13 drop blur-X σ6.3 @6    in=[163] Blur σ6.3 X srgb transparent taps 193
 165   s13 drop blur-Y σ6.3 @6    in=[164] Blur σ6.3 Y srgb transparent taps 193
-166   s13 up @6                  in=[165] Scale → 1
+166   s13 up @6                  in=[165] Resample → 1
 167 | s13 drop → spine @6        in=[161, 166] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
 168 | draw · 1 item(s) @6        in=[167] Draw n=1 [89.4 513.1 208.6 575.4] 521:body[89.4 513.1 208.6 575.4]
 169 | halo of draw · 1 item(s) @6 in=[168] Halo of 153
-170   s14 down                   in=[169] Scale → 0.25
+170   s14 down                   in=[169] Resample → 0.25
 171   s14 gather blur-X σ14.4    in=[170] Blur σ14.4 X linear taps 193
 172   s14 gather blur-Y σ14.4    in=[171] Blur σ14.4 Y linear taps 193
-173   s14 up                     in=[172] Scale → 1
+173   s14 up                     in=[172] Resample → 1
 174   s14 gather mask            in=[] Draw n=1 [387.4 513.1 506.6 575.4] 522:coverage[387.4 513.1 506.6 575.4]
 175 | s14 gather → spine         in=[153, 173, 174] Compose MaskedMix
 176   s15 drop silhouette        in=[] Draw n=1 [685.4 513.1 804.6 575.4] 523:coverage[685.4 513.1 804.6 575.4]
-177   s15 down                   in=[176] Scale → 0.5
+177   s15 down                   in=[176] Resample → 0.5
 178   s15 drop blur-X σ6.3       in=[177] Blur σ6.3 X srgb transparent taps 193
 179   s15 drop blur-Y σ6.3       in=[178] Blur σ6.3 Y srgb transparent taps 193
-180   s15 up                     in=[179] Scale → 1
+180   s15 up                     in=[179] Resample → 1
 181 | s15 drop → spine           in=[175, 180] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
 182 | draw · 1 item(s)           in=[181] Draw n=1 [685.4 513.1 804.6 575.4] 523:body[685.4 513.1 804.6 575.4]
 183 | draw · 1300 item(s) @7     in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
@@ -192,16 +192,16 @@ frame [0.0 0.0 1192.0 622.0] nodes 206 background [1.0, 1.0, 1.0, 1.0]
 190 | draw · 1 item(s) @7        in=[189] Draw n=1 [89.4 513.1 208.6 575.4] 521:body[89.4 513.1 208.6 575.4]
 191 | fill of s14 gather → spine @7 in=[190] Halo of 175
 192   s15 drop silhouette @7     in=[] Draw n=1 [685.4 513.1 804.6 575.4] 523:coverage[685.4 513.1 804.6 575.4]
-193   s15 down @7                in=[192] Scale → 0.5
+193   s15 down @7                in=[192] Resample → 0.5
 194   s15 drop blur-X σ6.3 @7    in=[193] Blur σ6.3 X srgb transparent taps 193
 195   s15 drop blur-Y σ6.3 @7    in=[194] Blur σ6.3 Y srgb transparent taps 193
-196   s15 up @7                  in=[195] Scale → 1
+196   s15 up @7                  in=[195] Resample → 1
 197 | s15 drop → spine @7        in=[191, 196] Compose Over colour [0.00, 0.00, 0.00, 0.67] offset 7.0,9.0
 198 | draw · 1 item(s) @7        in=[197] Draw n=1 [685.4 513.1 804.6 575.4] 523:body[685.4 513.1 804.6 575.4]
 199 | halo of draw · 1 item(s) @7 in=[198] Halo of 182
-200   s16 down                   in=[199] Scale → 0.25
+200   s16 down                   in=[199] Resample → 0.25
 201   s16 gather blur-X σ14.4    in=[200] Blur σ14.4 X linear taps 193
 202   s16 gather blur-Y σ14.4    in=[201] Blur σ14.4 Y linear taps 193
-203   s16 up                     in=[202] Scale → 1
+203   s16 up                     in=[202] Resample → 1
 204   s16 gather mask            in=[] Draw n=1 [983.4 513.1 1102.6 575.4] 524:coverage[983.4 513.1 1102.6 575.4]
 205 | s16 gather → spine         in=[182, 203, 204] Compose MaskedMix

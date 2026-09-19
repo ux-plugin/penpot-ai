@@ -2,7 +2,7 @@
 //! the frame is rerouted through an [`Op::Halo`], the spine's state at the node read, continued
 //! past the frame by a spine of its own: a root draw of the spine's items, the spine up to that
 //! node cloned (its draws kept; each chain whose footprint reaches the region read past the frame
-//! cloned over a fill point of its level, its leaves cloned, its scales verbatim; the other
+//! cloned over a fill point of its level, its leaves cloned, its resamples verbatim; the other
 //! composes passed over), and the halo on top, placed before the first node that reads it. One
 //! instance per spine node read and resolution read at. The scheduler plans the result and never
 //! makes a value that is not a node.
@@ -51,7 +51,7 @@ pub(crate) fn expand(g: &FrameGraph, frame: Rect, res: &Res, dem: &Demand, spine
             let x = if g.nodes[r].inputs.contains(&j) {
                 r
             } else {
-                g.nodes[r].inputs.iter().copied().find(|&e| res.elided[e] && g.nodes[e].inputs.contains(&j)).expect("a reader reads through an elided scale")
+                g.nodes[r].inputs.iter().copied().find(|&e| res.elided[e] && g.nodes[e].inputs.contains(&j)).expect("a reader reads through an elided resample")
             };
             match instances.iter_mut().find(|i| i.of == j && i.k == k) {
                 Some(i) => {
@@ -153,7 +153,7 @@ fn emit_instance(g: &FrameGraph, frame: Rect, res: &Res, inst: &Instance, ix: us
 }
 
 /// Chain node `i` cloned into instance `ix` (memoised in `clones`): its spine reads go to the
-/// instance's fill point `fill`, its scales keep their targets (the resolution rules make a
+/// instance's fill point `fill`, its resamples keep their targets (the resolution rules make a
 /// clone's pair open no higher than its spine and close at it), its keys are the instance's own.
 fn clone_chain(g: &FrameGraph, i: NodeId, fill: NodeId, ix: usize, clones: &mut HashMap<NodeId, NodeId>, push: &mut dyn FnMut(GNode) -> NodeId) -> NodeId {
     if g.is_spine(i) {
@@ -165,7 +165,7 @@ fn clone_chain(g: &FrameGraph, i: NodeId, fill: NodeId, ix: usize, clones: &mut 
     let node = &g.nodes[i];
     let inputs: Vec<NodeId> = node.inputs.iter().map(|&j| clone_chain(g, j, fill, ix, clones, push)).collect();
     let op = match &node.op {
-        Op::Scale { target, key } => Op::Scale { target: *target, key: key ^ ((ix as u128 + 1) << 64) },
+        Op::Resample { target, key } => Op::Resample { target: *target, key: key ^ ((ix as u128 + 1) << 64) },
         op => op.clone(),
     };
     let c = push(GNode { op, inputs, label: format!("{} @{ix}", node.label) });

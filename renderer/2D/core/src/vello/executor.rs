@@ -24,7 +24,7 @@ const FINE_BUCKET: usize = 40;
 /// The profiler bucket and label for a fine window's `work`.
 fn fine_slot(work: u32) -> (usize, &'static str) {
     match work_label(work) {
-        "scale" => (FINE_BUCKET, "fine:scale"),
+        "resample" => (FINE_BUCKET, "fine:resample"),
         "warp" => (FINE_BUCKET + 1, "fine:warp"),
         "blur" => (FINE_BUCKET + 2, "fine:blur"),
         "scatter" => (FINE_BUCKET + 3, "fine:scatter"),

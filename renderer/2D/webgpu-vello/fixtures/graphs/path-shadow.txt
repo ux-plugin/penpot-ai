@@ -1,17 +1,17 @@
 frame [0.0 0.0 1192.0 242.0] nodes 16 background [1.0, 1.0, 1.0, 1.0]
   0 | draw · 0 item(s)           in=[] Draw n=0 [0.0 0.0 0.0 0.0] 
   1   s1 drop silhouette         in=[] Draw n=1 [48.0 48.0 194.0 194.0] 1:coverage[48.0 48.0 194.0 194.0]
-  2   s1 down                    in=[1] Scale → 0.5
+  2   s1 down                    in=[1] Resample → 0.5
   3   s1 drop blur-X σ7.4        in=[2] Blur σ7.4 X srgb transparent taps 193
   4   s1 drop blur-Y σ7.4        in=[3] Blur σ7.4 Y srgb transparent taps 193
-  5   s1 up                      in=[4] Scale → 1
+  5   s1 up                      in=[4] Resample → 1
   6 | s1 drop → spine            in=[0, 5] Compose Over colour [0.00, 0.00, 0.00, 0.71] offset 16.0,20.0
   7 | draw · 1 item(s)           in=[6] Draw n=1 [48.0 48.0 194.0 194.0] 1:body[48.0 48.0 194.0 194.0]
   8 | draw · 1 item(s)           in=[7] Draw n=1 [238.0 48.0 384.0 194.0] 2:body[238.0 48.0 384.0 194.0]
   9   s2 drop silhouette         in=[] Draw n=1 [428.0 48.0 574.0 194.0] 3:coverage/glyph[428.0 48.0 574.0 194.0]
- 10   s2 down                    in=[9] Scale → 0.5
+ 10   s2 down                    in=[9] Resample → 0.5
  11   s2 drop blur-X σ6.3        in=[10] Blur σ6.3 X srgb transparent taps 193
  12   s2 drop blur-Y σ6.3        in=[11] Blur σ6.3 Y srgb transparent taps 193
- 13   s2 up                      in=[12] Scale → 1
+ 13   s2 up                      in=[12] Resample → 1
  14 | s2 drop → spine            in=[8, 13] Compose Over colour [0.00, 0.00, 0.00, 0.71] offset 6.0,8.0
  15 | draw · 1 item(s)           in=[14] Draw n=1 [428.0 48.0 574.0 194.0] 3:body[428.0 48.0 574.0 194.0]

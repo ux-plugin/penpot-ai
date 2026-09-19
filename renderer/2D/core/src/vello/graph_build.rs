@@ -18,7 +18,7 @@
 //!   `coverage → (blur) → EraseBy(coverage) → Compose{Over, colour}` with the punch's displacement
 //!   an `EraseBy` payload fact; a gather is `below → units → Compose{MaskedMix}` masked by a
 //!   coverage leaf; a body replacement is `body leaf → units → Compose{Over, offset}`;
-//! - every run of sampling ops in a chain sits between a `Scale` pair: down at the run's start, up
+//! - every run of sampling ops in a chain sits between a `Resample` pair: down at the run's start, up
 //!   before the pointwise tail that reads the state below. A run holding a blur of device σ ≥ 2
 //!   targets half resolution (a lens's authored `acceptable_downscale` lowers that further); any
 //!   other run targets 1. Every target is then scaled by the preset's effect resolution (the rows
@@ -114,7 +114,7 @@ struct Builder<'a> {
     /// Plain items awaiting their spine `Draw`.
     pending: Vec<DrawItem>,
     fx_no: u32,
-    /// The open scale pair of the chain being lowered: its down node and the authored ceiling.
+    /// The open resample pair of the chain being lowered: its down node and the authored ceiling.
     pair: Option<(NodeId, f32)>,
     /// The shape whose effects are being lowered, and how many pairs it has opened: a pair's key.
     shape: (ShapeId, u32),
@@ -244,7 +244,7 @@ impl Builder<'_> {
         self.push(Op::Draw(vec![item]), vec![], label)
     }
 
-    /// A separable Gaussian as its two axis nodes inside the chain's scale pair; a negligible
+    /// A separable Gaussian as its two axis nodes inside the chain's resample pair; a negligible
     /// sigma emits nothing.
     fn blur(&mut self, sigma: f32, linear: bool, edge: EdgeClampStyle, cur: NodeId, name: &str, tag: &str) -> NodeId {
         if sigma <= NEGLIGIBLE_SIGMA {
@@ -263,7 +263,7 @@ impl Builder<'_> {
         )
     }
 
-    /// The chain's scale pair, opened over `cur` if it is not open yet: the down node whose target
+    /// The chain's resample pair, opened over `cur` if it is not open yet: the down node whose target
     /// [`Self::close_pair`] decides once the run is known.
     fn open_pair(&mut self, cur: NodeId, name: &str) -> NodeId {
         match self.pair {
@@ -274,14 +274,14 @@ impl Builder<'_> {
             None => {
                 let key = self.shape.0 ^ u128::from(self.shape.1);
                 self.shape.1 += 1;
-                let down = self.push(Op::Scale { target: 1.0, key }, vec![cur], format!("{name} down"));
+                let down = self.push(Op::Resample { target: 1.0, key }, vec![cur], format!("{name} down"));
                 self.pair = Some((down, 1.0));
                 down
             }
         }
     }
 
-    /// Close the chain's scale pair, if open, after `cur`: the down node's target follows the
+    /// Close the chain's resample pair, if open, after `cur`: the down node's target follows the
     /// run's widest blur ([`soft_target`]), lowered further by the authored ceiling, scaled by
     /// the preset and rounded down the ladder of halves; the up node returns to frame
     /// resolution. Returns the node the tail continues from and whether the run runs below
@@ -300,9 +300,9 @@ impl Builder<'_> {
             })
             .fold(0.0f32, f32::max);
         let target = ladder(soft_target(widest).min(ceiling) * self.effect_scale);
-        let Op::Scale { key, .. } = self.nodes[down].op else { unreachable!("the pair opened on a scale") };
-        self.nodes[down].op = Op::Scale { target, key };
-        (self.push(Op::Scale { target: 1.0, key }, vec![cur], format!("{name} up")), target < 1.0)
+        let Op::Resample { key, .. } = self.nodes[down].op else { unreachable!("the pair opened on a resample") };
+        self.nodes[down].op = Op::Resample { target, key };
+        (self.push(Op::Resample { target: 1.0, key }, vec![cur], format!("{name} up")), target < 1.0)
     }
 
     fn compose(&mut self, mode: ComposeMode, colour: Option<[f32; 4]>, offset: [f32; 2], value: NodeId, coverage: Option<NodeId>, label: String) {
@@ -418,7 +418,7 @@ impl Builder<'_> {
     }
 
     /// The lens units over `cur`: warp (through a sampled distance for a path), the frost blur
-    /// and scatter inside the chain's scale pair, then shade and the mask-mix against the state
+    /// and scatter inside the chain's resample pair, then shade and the mask-mix against the state
     /// below at frame resolution — each carrying the lens's device field.
     fn lens(&mut self, id: ShapeId, node: &Node, cur: NodeId, name: &str) -> NodeId {
         let Some((g, geom)) = crate::effect_graph::lens_geometry(node, (self.modifier)(id)) else { return cur };
@@ -552,7 +552,7 @@ fn op(o: &Op) -> String {
         }
         Op::Warp(u) => format!("Warp program {:.0}", u.get(PAYLOAD_PROGRAM_SLOT).copied().unwrap_or(0.0)),
         Op::Scatter(_) => "Scatter".into(),
-        Op::Scale { target, .. } => format!("Scale → {target}"),
+        Op::Resample { target, .. } => format!("Resample → {target}"),
         Op::Halo { of } => format!("Halo of {of}"),
         Op::Shade(_) => "Shade".into(),
         Op::MaskMix(u) => format!("MaskMix program {:.0}", u.get(PAYLOAD_PROGRAM_SLOT).copied().unwrap_or(0.0)),
@@ -614,7 +614,7 @@ mod tests {
             assert!(chain.iter().any(|&j| matches!(g.nodes[j].op, Op::MaskMix(_))), "a mask-mix ends the lens");
             let warp = chain.iter().find(|&&j| matches!(g.nodes[j].op, Op::Warp(_))).copied().unwrap();
             let down = g.nodes[warp].inputs[0];
-            assert!(matches!(g.nodes[down].op, Op::Scale { .. }), "the warp runs inside a scale pair");
+            assert!(matches!(g.nodes[down].op, Op::Resample { .. }), "the warp runs inside a resample pair");
             assert!(g.is_spine(g.nodes[down].inputs[0]), "the pair reads the state below");
             let Op::Draw(items) = &g.nodes[n.inputs[2]].op else { panic!("coverage leaf") };
             assert!(matches!(items[0].style, DrawStyle::Coverage { analytic: true, spread } if spread == 0.0));
@@ -657,7 +657,7 @@ mod tests {
         let [flood, punch] = g.nodes[band].inputs[..] else { panic!("two inputs") };
         assert!(matches!(g.nodes[flood].op, Op::Draw(_)));
         let mut r = punch;
-        while let Op::Blur { .. } | Op::Scale { .. } = g.nodes[r].op {
+        while let Op::Blur { .. } | Op::Resample { .. } = g.nodes[r].op {
             r = g.nodes[r].inputs[0];
         }
         let (Op::Draw(a), Op::Draw(b)) = (&g.nodes[r].op, &g.nodes[flood].op) else { panic!("two floods") };
@@ -685,7 +685,7 @@ mod tests {
     #[test]
     fn the_preset_scales_every_pair_and_rounds_down_the_ladder() {
         let targets = |g: &FrameGraph| -> Vec<f32> {
-            g.nodes.iter().filter_map(|n| match n.op { Op::Scale { target, .. } if target < 1.0 || n.label.ends_with("down") => Some(target), _ => None }).collect()
+            g.nodes.iter().filter_map(|n| match n.op { Op::Resample { target, .. } if target < 1.0 || n.label.ends_with("down") => Some(target), _ => None }).collect()
         };
         let at = graph_of(|| { crate::vello::abi::load_stack_glass_scene(2, 1); }, 1.0);
         let full = targets(&at);

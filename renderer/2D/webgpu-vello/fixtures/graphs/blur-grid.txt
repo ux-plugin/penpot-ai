@@ -1,98 +1,98 @@
 frame [0.0 0.0 1192.0 622.0] nodes 97 background [1.0, 1.0, 1.0, 1.0]
   0 | draw · 1300 item(s)        in=[] Draw n=1300 [0.0 0.0 1200.0 624.0] 1:body[0.0 0.0 24.0 24.0] 2:body[24.0 0.0 48.0 24.0] 3:body[48.0 0.0 72.0 24.0] 4:body[72.0 0.0 96.0 24.0] 5:body[96.0 0.0 120.0 24.0] 6:body[120.0 0.0 144.0 24.0] +1294
-  1   s1 down                    in=[0] Scale → 0.25
+  1   s1 down                    in=[0] Resample → 0.25
   2   s1 gather blur-X σ14.4     in=[1] Blur σ14.4 X linear taps 193
   3   s1 gather blur-Y σ14.4     in=[2] Blur σ14.4 Y linear taps 193
-  4   s1 up                      in=[3] Scale → 1
+  4   s1 up                      in=[3] Resample → 1
   5   s1 gather mask             in=[] Draw n=1 [99.3 51.8 198.7 103.7] 515:coverage[99.3 51.8 198.7 103.7]
   6 | s1 gather → spine          in=[0, 4, 5] Compose MaskedMix
-  7   s2 down                    in=[6] Scale → 0.25
+  7   s2 down                    in=[6] Resample → 0.25
   8   s2 gather blur-X σ14.4     in=[7] Blur σ14.4 X linear taps 193
   9   s2 gather blur-Y σ14.4     in=[8] Blur σ14.4 Y linear taps 193
- 10   s2 up                      in=[9] Scale → 1
+ 10   s2 up                      in=[9] Resample → 1
  11   s2 gather mask             in=[] Draw n=1 [397.3 51.8 496.7 103.7] 516:coverage[397.3 51.8 496.7 103.7]
  12 | s2 gather → spine          in=[6, 10, 11] Compose MaskedMix
- 13   s3 down                    in=[12] Scale → 0.25
+ 13   s3 down                    in=[12] Resample → 0.25
  14   s3 gather blur-X σ14.4     in=[13] Blur σ14.4 X linear taps 193
  15   s3 gather blur-Y σ14.4     in=[14] Blur σ14.4 Y linear taps 193
- 16   s3 up                      in=[15] Scale → 1
+ 16   s3 up                      in=[15] Resample → 1
  17   s3 gather mask             in=[] Draw n=1 [695.3 51.8 794.7 103.7] 517:coverage[695.3 51.8 794.7 103.7]
  18 | s3 gather → spine          in=[12, 16, 17] Compose MaskedMix
- 19   s4 down                    in=[18] Scale → 0.25
+ 19   s4 down                    in=[18] Resample → 0.25
  20   s4 gather blur-X σ14.4     in=[19] Blur σ14.4 X linear taps 193
  21   s4 gather blur-Y σ14.4     in=[20] Blur σ14.4 Y linear taps 193
- 22   s4 up                      in=[21] Scale → 1
+ 22   s4 up                      in=[21] Resample → 1
  23   s4 gather mask             in=[] Draw n=1 [993.3 51.8 1092.7 103.7] 518:coverage[993.3 51.8 1092.7 103.7]
  24 | s4 gather → spine          in=[18, 22, 23] Compose MaskedMix
- 25   s5 down                    in=[24] Scale → 0.25
+ 25   s5 down                    in=[24] Resample → 0.25
  26   s5 gather blur-X σ14.4     in=[25] Blur σ14.4 X linear taps 193
  27   s5 gather blur-Y σ14.4     in=[26] Blur σ14.4 Y linear taps 193
- 28   s5 up                      in=[27] Scale → 1
+ 28   s5 up                      in=[27] Resample → 1
  29   s5 gather mask             in=[] Draw n=1 [99.3 207.3 198.7 259.2] 519:coverage[99.3 207.3 198.7 259.2]
  30 | s5 gather → spine          in=[24, 28, 29] Compose MaskedMix
- 31   s6 down                    in=[30] Scale → 0.25
+ 31   s6 down                    in=[30] Resample → 0.25
  32   s6 gather blur-X σ14.4     in=[31] Blur σ14.4 X linear taps 193
  33   s6 gather blur-Y σ14.4     in=[32] Blur σ14.4 Y linear taps 193
- 34   s6 up                      in=[33] Scale → 1
+ 34   s6 up                      in=[33] Resample → 1
  35   s6 gather mask             in=[] Draw n=1 [397.3 207.3 496.7 259.2] 51a:coverage[397.3 207.3 496.7 259.2]
  36 | s6 gather → spine          in=[30, 34, 35] Compose MaskedMix
- 37   s7 down                    in=[36] Scale → 0.25
+ 37   s7 down                    in=[36] Resample → 0.25
  38   s7 gather blur-X σ14.4     in=[37] Blur σ14.4 X linear taps 193
  39   s7 gather blur-Y σ14.4     in=[38] Blur σ14.4 Y linear taps 193
- 40   s7 up                      in=[39] Scale → 1
+ 40   s7 up                      in=[39] Resample → 1
  41   s7 gather mask             in=[] Draw n=1 [695.3 207.3 794.7 259.2] 51b:coverage[695.3 207.3 794.7 259.2]
  42 | s7 gather → spine          in=[36, 40, 41] Compose MaskedMix
- 43   s8 down                    in=[42] Scale → 0.25
+ 43   s8 down                    in=[42] Resample → 0.25
  44   s8 gather blur-X σ14.4     in=[43] Blur σ14.4 X linear taps 193
  45   s8 gather blur-Y σ14.4     in=[44] Blur σ14.4 Y linear taps 193
- 46   s8 up                      in=[45] Scale → 1
+ 46   s8 up                      in=[45] Resample → 1
  47   s8 gather mask             in=[] Draw n=1 [993.3 207.3 1092.7 259.2] 51c:coverage[993.3 207.3 1092.7 259.2]
  48 | s8 gather → spine          in=[42, 46, 47] Compose MaskedMix
- 49   s9 down                    in=[48] Scale → 0.25
+ 49   s9 down                    in=[48] Resample → 0.25
  50   s9 gather blur-X σ14.4     in=[49] Blur σ14.4 X linear taps 193
  51   s9 gather blur-Y σ14.4     in=[50] Blur σ14.4 Y linear taps 193
- 52   s9 up                      in=[51] Scale → 1
+ 52   s9 up                      in=[51] Resample → 1
  53   s9 gather mask             in=[] Draw n=1 [99.3 362.8 198.7 414.7] 51d:coverage[99.3 362.8 198.7 414.7]
  54 | s9 gather → spine          in=[48, 52, 53] Compose MaskedMix
- 55   s10 down                   in=[54] Scale → 0.25
+ 55   s10 down                   in=[54] Resample → 0.25
  56   s10 gather blur-X σ14.4    in=[55] Blur σ14.4 X linear taps 193
  57   s10 gather blur-Y σ14.4    in=[56] Blur σ14.4 Y linear taps 193
- 58   s10 up                     in=[57] Scale → 1
+ 58   s10 up                     in=[57] Resample → 1
  59   s10 gather mask            in=[] Draw n=1 [397.3 362.8 496.7 414.7] 51e:coverage[397.3 362.8 496.7 414.7]
  60 | s10 gather → spine         in=[54, 58, 59] Compose MaskedMix
- 61   s11 down                   in=[60] Scale → 0.25
+ 61   s11 down                   in=[60] Resample → 0.25
  62   s11 gather blur-X σ14.4    in=[61] Blur σ14.4 X linear taps 193
  63   s11 gather blur-Y σ14.4    in=[62] Blur σ14.4 Y linear taps 193
- 64   s11 up                     in=[63] Scale → 1
+ 64   s11 up                     in=[63] Resample → 1
  65   s11 gather mask            in=[] Draw n=1 [695.3 362.8 794.7 414.7] 51f:coverage[695.3 362.8 794.7 414.7]
  66 | s11 gather → spine         in=[60, 64, 65] Compose MaskedMix
- 67   s12 down                   in=[66] Scale → 0.25
+ 67   s12 down                   in=[66] Resample → 0.25
  68   s12 gather blur-X σ14.4    in=[67] Blur σ14.4 X linear taps 193
  69   s12 gather blur-Y σ14.4    in=[68] Blur σ14.4 Y linear taps 193
- 70   s12 up                     in=[69] Scale → 1
+ 70   s12 up                     in=[69] Resample → 1
  71   s12 gather mask            in=[] Draw n=1 [993.3 362.8 1092.7 414.7] 520:coverage[993.3 362.8 1092.7 414.7]
  72 | s12 gather → spine         in=[66, 70, 71] Compose MaskedMix
- 73   s13 down                   in=[72] Scale → 0.25
+ 73   s13 down                   in=[72] Resample → 0.25
  74   s13 gather blur-X σ14.4    in=[73] Blur σ14.4 X linear taps 193
  75   s13 gather blur-Y σ14.4    in=[74] Blur σ14.4 Y linear taps 193
- 76   s13 up                     in=[75] Scale → 1
+ 76   s13 up                     in=[75] Resample → 1
  77   s13 gather mask            in=[] Draw n=1 [99.3 518.3 198.7 570.2] 521:coverage[99.3 518.3 198.7 570.2]
  78 | s13 gather → spine         in=[72, 76, 77] Compose MaskedMix
- 79   s14 down                   in=[78] Scale → 0.25
+ 79   s14 down                   in=[78] Resample → 0.25
  80   s14 gather blur-X σ14.4    in=[79] Blur σ14.4 X linear taps 193
  81   s14 gather blur-Y σ14.4    in=[80] Blur σ14.4 Y linear taps 193
- 82   s14 up                     in=[81] Scale → 1
+ 82   s14 up                     in=[81] Resample → 1
  83   s14 gather mask            in=[] Draw n=1 [397.3 518.3 496.7 570.2] 522:coverage[397.3 518.3 496.7 570.2]
  84 | s14 gather → spine         in=[78, 82, 83] Compose MaskedMix
- 85   s15 down                   in=[84] Scale → 0.25
+ 85   s15 down                   in=[84] Resample → 0.25
  86   s15 gather blur-X σ14.4    in=[85] Blur σ14.4 X linear taps 193
  87   s15 gather blur-Y σ14.4    in=[86] Blur σ14.4 Y linear taps 193
- 88   s15 up                     in=[87] Scale → 1
+ 88   s15 up                     in=[87] Resample → 1
  89   s15 gather mask            in=[] Draw n=1 [695.3 518.3 794.7 570.2] 523:coverage[695.3 518.3 794.7 570.2]
  90 | s15 gather → spine         in=[84, 88, 89] Compose MaskedMix
- 91   s16 down                   in=[90] Scale → 0.25
+ 91   s16 down                   in=[90] Resample → 0.25
  92   s16 gather blur-X σ14.4    in=[91] Blur σ14.4 X linear taps 193
  93   s16 gather blur-Y σ14.4    in=[92] Blur σ14.4 Y linear taps 193
- 94   s16 up                     in=[93] Scale → 1
+ 94   s16 up                     in=[93] Resample → 1
  95   s16 gather mask            in=[] Draw n=1 [993.3 518.3 1092.7 570.2] 524:coverage[993.3 518.3 1092.7 570.2]
  96 | s16 gather → spine         in=[90, 94, 95] Compose MaskedMix

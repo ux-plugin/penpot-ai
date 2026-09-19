@@ -307,7 +307,7 @@ pub struct Sink {
     /// non-generic allocation helpers (`ensure_surface`, the atlas + scratch textures) can OR it in
     /// without threading the backend through. Hybrid renders as an attachment; classic adds storage.
     pub(crate) raster_usage: wgpu::TextureUsages,
-    /// The resolution each scale pair ran at last frame, by its key, so a zoom does not flicker.
+    /// The resolution each resample pair ran at last frame, by its key, so a zoom does not flicker.
     scale_memory: HashMap<u128, f32>,
 
     /// Recycled render-target textures, so a dirty frame reuses last frame's surfaces instead of

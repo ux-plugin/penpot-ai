@@ -77,10 +77,12 @@ pub enum Op {
     Colour(Vec<f32>),
     /// A resolution boundary. inputs = `[value]`. From here the value runs at `target` of the
     /// frame's resolution, or lower when the store cannot hold it; `target = 1.0` restores frame
-    /// resolution. The ops between a pair never see the scale: their payloads and pads are read in
-    /// the value's own texels. `key` names the effect the boundary belongs to, the same from frame
-    /// to frame, so a scheduler can keep the resolution it chose.
-    Scale { target: f32, key: u128 },
+    /// resolution. It runs as a resample: a box average going down, bilinear going up, and a
+    /// texel-for-texel copy between equal resolutions, which the planner drops. The ops between a
+    /// pair never see the resample: their payloads and pads are read in the value's own texels.
+    /// `key` names the effect the boundary belongs to, the same from frame to frame, so a
+    /// scheduler can keep the resolution it chose.
+    Resample { target: f32, key: u128 },
     /// Land a value on the state below. inputs = `[below, value]` or `[below, value, coverage]`.
     /// `offset` translates the value as it is read — a shadow's displacement — so the value is
     /// never drawn displaced.
@@ -131,7 +133,7 @@ impl Op {
     pub fn arity(&self) -> (usize, usize) {
         match self {
             Op::Draw(_) => (0, 1),
-            Op::Blur { .. } | Op::Scatter(_) | Op::Shade(_) | Op::Colour(_) | Op::Scale { .. } | Op::Halo { .. } => (1, 1),
+            Op::Blur { .. } | Op::Scatter(_) | Op::Shade(_) | Op::Colour(_) | Op::Resample { .. } | Op::Halo { .. } => (1, 1),
             Op::Warp(_) => (1, 2),
             Op::MaskMix(_) | Op::EraseBy(_) | Op::ClipToSource(_) => (2, 2),
             Op::Compose { .. } => (2, 3),
@@ -265,9 +267,9 @@ impl FrameGraph {
             } else if n.inputs.is_empty() && !matches!(n.op, Op::Draw(_)) {
                 return Err(format!("node {i} ({}): a chain op with no value", n.label));
             }
-            if let Op::Scale { target, .. } = n.op {
+            if let Op::Resample { target, .. } = n.op {
                 if !(target > 0.0 && target <= 1.0) {
-                    return Err(format!("node {i} ({}): scale target {target} is not in (0, 1]", n.label));
+                    return Err(format!("node {i} ({}): resample target {target} is not in (0, 1]", n.label));
                 }
             }
             if let Op::Halo { of } = n.op {
@@ -305,9 +307,9 @@ impl FrameGraph {
     }
 
     /// The resolution each node's value runs at, as a fraction of the frame's, when every
-    /// [`Op::Scale`] sits at its target: the frame's spine is 1; a scale opening a chain runs at
+    /// [`Op::Resample`] sits at its target: the frame's spine is 1; a resample opening a chain runs at
     /// its target and no higher than the spine its chain composes on; a chain op runs at its
-    /// value's resolution below a pair and at its reader's above one, so a scale closing a chain
+    /// value's resolution below a pair and at its reader's above one, so a resample closing a chain
     /// and the tail after it run at the compose's, and a chain with no pair does too; a leaf runs
     /// at its readers' (a leaf is drawn straight into the space that reads it); and a
     /// [`Op::Halo`] with the spine under it runs at its reader's (the halo is drawn straight into
@@ -317,7 +319,7 @@ impl FrameGraph {
         self.resolutions_with(&|_, target| target)
     }
 
-    /// [`Self::resolutions`] with every scale's target passed through `decide(node, target)`, for
+    /// [`Self::resolutions`] with every resample's target passed through `decide(node, target)`, for
     /// a scheduler that lowers some of them.
     #[must_use]
     pub fn resolutions_with(&self, decide: &dyn Fn(NodeId, f32) -> f32) -> Vec<f32> {
@@ -344,7 +346,7 @@ impl FrameGraph {
                 .enumerate()
                 .find(|(_, r)| r.inputs.contains(&i))
                 .map_or(1.0, |(r, rn)| match rn.op {
-                    Op::Scale { target, .. } => decide(r, target),
+                    Op::Resample { target, .. } => decide(r, target),
                     _ => 1.0,
                 });
             spine[i] = kh;
@@ -363,19 +365,19 @@ impl FrameGraph {
         let mut k = vec![1.0f32; n];
         for (i, node) in self.nodes.iter().enumerate() {
             k[i] = match &node.op {
-                Op::Scale { target, .. } => decide(i, *target).min(cap[i]),
+                Op::Resample { target, .. } => decide(i, *target).min(cap[i]),
                 _ if self.is_spine(i) => spine[i],
                 Op::Draw(_) => 1.0,
                 _ => k[node.inputs[0]],
             };
         }
         for (i, node) in self.nodes.iter().enumerate().rev() {
-            let scale = matches!(node.op, Op::Scale { .. });
+            let resample = matches!(node.op, Op::Resample { .. });
             for &j in &node.inputs {
                 if self.is_spine(j) {
                     continue;
                 }
-                if !scale || matches!(self.nodes[j].op, Op::Draw(_)) {
+                if !resample || matches!(self.nodes[j].op, Op::Draw(_)) {
                     k[j] = k[i];
                 }
             }
@@ -385,8 +387,8 @@ impl FrameGraph {
 
     /// Every node's extent, computed forward, in the texels of its own resolution (see
     /// [`Self::resolutions`]): a draw is its items' union over the state below; a neighbourhood
-    /// op inflates its value by [`pad_at`]; a pointwise op keeps its value's extent; a scale
-    /// rescales it — a scale of the spine rescales the rows the spine holds, the frame or a
+    /// op inflates its value by [`pad_at`]; a pointwise op keeps its value's extent; a resample
+    /// rescales it — a resample of the spine rescales the rows the spine holds, the frame or a
     /// halo's, which carry the page colour past the draws; a compose is the state below joined
     /// with the value, translated by its offset.
     #[must_use]
@@ -414,11 +416,11 @@ impl FrameGraph {
                 Op::Shade(_) | Op::Colour(_) | Op::MaskMix(_) | Op::EraseBy(_) | Op::ClipToSource(_) => {
                     of(n.inputs[0])
                 }
-                Op::Scale { .. } if self.is_spine(n.inputs[0]) => {
+                Op::Resample { .. } if self.is_spine(n.inputs[0]) => {
                     let rows = if self.spine_root(n.inputs[0]) == 0 { self.frame } else { Rect::new(-1e9, -1e9, 1e9, 1e9) };
                     scale_rect(rows, f64::from(k[i] / k[n.inputs[0]]))
                 }
-                Op::Scale { .. } => scale_rect(of(n.inputs[0]), f64::from(k[i] / k[n.inputs[0]])),
+                Op::Resample { .. } => scale_rect(of(n.inputs[0]), f64::from(k[i] / k[n.inputs[0]])),
                 Op::Compose { offset, .. } => {
                     let v = of(n.inputs[1]) + crate::kurbo::Vec2::new(f64::from(offset[0]), f64::from(offset[1]));
                     of(n.inputs[0]).union(v)
@@ -477,15 +479,15 @@ mod tests {
         let frame = Rect::new(0.0, 0.0, 400.0, 300.0);
         let g = FrameGraph::new(frame, Color::WHITE, vec![
             GNode { op: Op::Draw(vec![item(1, 0.0, 100.0, 400.0, 300.0)]), inputs: vec![], label: "page".into() },
-            GNode { op: Op::Scale { target: 0.5, key: 1 }, inputs: vec![0], label: "down".into() },
+            GNode { op: Op::Resample { target: 0.5, key: 1 }, inputs: vec![0], label: "down".into() },
             GNode { op: Op::Blur { sigma: 8.0, axis: BlurAxis::X, linear: true, edge_clamp_style: EdgeClampStyle::Extend, taps: BLUR_TAPS }, inputs: vec![1], label: "bx".into() },
-            GNode { op: Op::Scale { target: 0.5, key: 1 }, inputs: vec![2], label: "up".into() },
+            GNode { op: Op::Resample { target: 0.5, key: 1 }, inputs: vec![2], label: "up".into() },
             GNode { op: Op::Draw(vec![DrawItem { shape: 2, style: DrawStyle::Coverage { analytic: true, spread: 0.0 }, bounds: Rect::new(100.0, 50.0, 300.0, 200.0) }]), inputs: vec![], label: "cov".into() },
             GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![0, 3, 4], label: "glass".into() },
         ]);
         g.validate().expect("valid");
         let ext = g.extents();
-        assert_eq!(ext[1], Rect::new(0.0, 0.0, 200.0, 150.0), "the spine's rows hold the page colour above its first draw, so its scale covers the whole frame at half");
+        assert_eq!(ext[1], Rect::new(0.0, 0.0, 200.0, 150.0), "the spine's rows hold the page colour above its first draw, so its resample covers the whole frame at half");
         assert!(ext[2].y0 < 0.0, "the blur reaches past the frame, not past the draw: {:?}", ext[2]);
         assert!(ext[3].contains(crate::kurbo::Point::new(50.0, 20.0)), "the value the glass reads exists above the page draw: {:?}", ext[3]);
     }

@@ -5,7 +5,7 @@
 //! 1. **Demand** (`resolve::Demand`). Backward from the frame: a compose owes its demand to the
 //!    state below and, less its offset, to its value; a neighbourhood op owes its input its own
 //!    demand grown by its pad (a `Transparent` blur grows nothing — the clamp supplies zeros); a
-//!    pointwise op passes its demand through; a scale owes its input its demand in the input's
+//!    pointwise op passes its demand through; a resample owes its input its demand in the input's
 //!    texels. A node's output rect is its demand clipped to its extent — the frame for the spine,
 //!    and for a chain node whatever it reaches, past the frame included; a draw item that misses
 //!    its draw's demand is dropped.
@@ -24,12 +24,12 @@
 //!    resample is a whole box; there is no floor. Across frames a pair keeps its resolution until
 //!    the rule that set it has moved by a margin, so a zoom does not flicker.
 //! 4. **Arms** (`arms::Work`). A chain is cut at its barriers: a head (a blur axis, a warp, a
-//!    scatter, a scale) or a pointwise op over a leaf or the spine starts an arm, and the pointwise
+//!    scatter, a resample) or a pointwise op over a leaf or the spine starts an arm, and the pointwise
 //!    ops after it ride along while the value has no other reader. The compose folds into the arm
 //!    that makes its value, which then writes its spine's rows in place: the frame (value 0), or
 //!    a halo's value. A halo spine has one value, the rows its nodes demand joined; every halo on
 //!    it is filled from the frame where it overlaps it, by a copy at the frame's resolution or a
-//!    keep-scale arm below it, once the node it continues is ready there.
+//!    keep-resample arm below it, once the node it continues is ready there.
 //! 5. **Rounds** (`schedule::Schedule`). An arm runs one round after everything it reads: the
 //!    spine at a node is the round of the last compose below it, a halo the later of its fill and
 //!    its spine, an arm is its own round, and a leaf or halo root is drawn the round before its
@@ -214,10 +214,10 @@ mod tests {
                 shade(1),
                 GNode { op: Op::Draw(vec![cov(2, ra)]), inputs: vec![], label: "maskA".into() },
                 GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![0, 2, 3], label: "glassA".into() },
-                GNode { op: Op::Scale { target: 0.5, key }, inputs: vec![4], label: "down".into() },
+                GNode { op: Op::Resample { target: 0.5, key }, inputs: vec![4], label: "down".into() },
                 warp(5),
                 shade(6),
-                GNode { op: Op::Scale { target: 1.0, key }, inputs: vec![7], label: "up".into() },
+                GNode { op: Op::Resample { target: 1.0, key }, inputs: vec![7], label: "up".into() },
                 GNode { op: Op::Draw(vec![cov(3, rb)]), inputs: vec![], label: "maskB".into() },
                 GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![4, 8, 9], label: "glassB".into() },
             ])
@@ -257,10 +257,10 @@ mod tests {
                 GNode { op: Op::Draw(vec![cov(2, ra)]), inputs: vec![], label: "maskA'".into() },
                 glass(6, 8, 9, "glassA'"),
                 GNode { op: Op::Halo { of: 4 }, inputs: vec![10], label: "halo".into() },
-                GNode { op: Op::Scale { target, key }, inputs: vec![11], label: "down".into() },
+                GNode { op: Op::Resample { target, key }, inputs: vec![11], label: "down".into() },
                 warp(12),
                 shade(13),
-                GNode { op: Op::Scale { target: 1.0, key }, inputs: vec![14], label: "up".into() },
+                GNode { op: Op::Resample { target: 1.0, key }, inputs: vec![14], label: "up".into() },
                 GNode { op: Op::Draw(vec![cov(3, rb)]), inputs: vec![], label: "maskB".into() },
                 glass(4, 15, 16, "glassB"),
             ])
@@ -298,7 +298,7 @@ mod tests {
         assert_eq!(ps.arms[clone].value, Operand::Value { v: halo, shift: Vec2::ZERO }, "the clone's warp reads the halo value as its spine");
         assert_eq!(ps.arms[outer].value, Operand::Value { v: halo, shift: Vec2::ZERO }, "B's warp reads the halo, not the frame");
         let desc = &params[ps.arms[fill].off as usize..];
-        assert_eq!((desc[0] as u32 & bake::bits::SCALE, desc[2], desc[3]), (bake::bits::SCALE, 2.0, bake::SCALE_KEEP), "a keep-scale by two");
+        assert_eq!((desc[0] as u32 & bake::bits::RESAMPLE, desc[2], desc[3]), (bake::bits::RESAMPLE, 2.0, bake::RESAMPLE_KEEP), "a keep-resample by two");
     }
 
     #[test]
@@ -387,26 +387,26 @@ mod tests {
         p.validate().unwrap_or_else(|e| panic!("{e}"));
     }
 
-    /// [`graph`] with a scale pair of `target` around the shadow's blurs and another around the
+    /// [`graph`] with a resample pair of `target` around the shadow's blurs and another around the
     /// lens's warp.
     fn scaled_graph(target: f32) -> FrameGraph {
         let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
         let b = Rect::new(100.0, 100.0, 300.0, 260.0);
         let g = Rect::new(200.0, 200.0, 400.0, 380.0);
         let blur = |axis, input| GNode { op: Op::Blur { sigma: 4.0, axis, linear: false, edge_clamp_style: EdgeClampStyle::Transparent, taps: BLUR_TAPS }, inputs: vec![input], label: String::new() };
-        let scale = |target, input| GNode { op: Op::Scale { target, key: 0 }, inputs: vec![input], label: String::new() };
+        let resample = |target, input| GNode { op: Op::Resample { target, key: 0 }, inputs: vec![input], label: String::new() };
         let g = FrameGraph::new(frame, Color::WHITE, vec![
                 GNode { op: Op::Draw(vec![body(1, frame)]), inputs: vec![], label: "ground".into() },
                 GNode { op: Op::Draw(vec![cov(2, b)]), inputs: vec![], label: "sil".into() },
-                scale(target, 1),
+                resample(target, 1),
                 blur(BlurAxis::X, 2),
                 blur(BlurAxis::Y, 3),
-                scale(1.0, 4),
+                resample(1.0, 4),
                 GNode { op: Op::Compose { mode: ComposeMode::Over, colour: Some([0.0, 0.0, 0.0, 0.5]), offset: [6.0, 8.0] }, inputs: vec![0, 5], label: "drop".into() },
                 GNode { op: Op::Draw(vec![body(2, b)]), inputs: vec![6], label: "body".into() },
-                scale(target, 7),
+                resample(target, 7),
                 GNode { op: Op::Warp(vec![0.0; 24]), inputs: vec![8], label: "warp".into() },
-                scale(1.0, 9),
+                resample(1.0, 9),
                 GNode { op: Op::Shade(vec![0.0; 24]), inputs: vec![10], label: "shade".into() },
                 GNode { op: Op::MaskMix(vec![0.0; 24]), inputs: vec![11, 7], label: "mix".into() },
                 GNode { op: Op::Draw(vec![cov(3, g)]), inputs: vec![], label: "mask".into() },
@@ -450,10 +450,10 @@ mod tests {
         assert_eq!(w.values[sil].rect, Rect::new(48.0, 48.0, 160.0, 144.0), "the silhouette at half, with its AA, in tiles");
         assert_eq!(w.values[by].rect, Rect::new(16.0, 16.0, 192.0, 160.0), "the blur at half, padded twice by the half-resolution pad");
         let desc = |a: usize| &params[ps.arms[a].off as usize..][..4];
-        let at = |a: usize| (desc(a)[0] as u32 & bake::bits::SCALE != 0, desc(a)[2], desc(a)[3]);
-        assert_eq!(at(2), (true, 0.5, bake::SCALE_TRANSPARENT), "up from a transparent chain");
-        assert_eq!(at(3), (true, 2.0, bake::SCALE_CLAMP), "down from the spine, inside the frame");
-        assert_eq!(at(5), (true, 0.5, bake::SCALE_CLAMP), "up from the backdrop chain");
+        let at = |a: usize| (desc(a)[0] as u32 & bake::bits::RESAMPLE != 0, desc(a)[2], desc(a)[3]);
+        assert_eq!(at(2), (true, 0.5, bake::RESAMPLE_TRANSPARENT), "up from a transparent chain");
+        assert_eq!(at(3), (true, 2.0, bake::RESAMPLE_CLAMP), "down from the spine, inside the frame");
+        assert_eq!(at(5), (true, 0.5, bake::RESAMPLE_CLAMP), "up from the backdrop chain");
         assert!(!at(0).0);
         let p = plan(&g, 640, 480, 8192, 4.0, &mut HashMap::new());
         p.validate().unwrap_or_else(|e| panic!("{e}"));
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!((c[0], c[3]), (0.5, 0.5), "the leaf is drawn at half");
     }
 
-    /// `n` drop shadows of sigma `sigma`, each under its own scale pair, over one ground.
+    /// `n` drop shadows of sigma `sigma`, each under its own resample pair, over one ground.
     fn shadows(n: usize, sigma: f32, edge: EdgeClampStyle) -> FrameGraph {
         let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
         let mut nodes = vec![GNode { op: Op::Draw(vec![body(1, frame)]), inputs: vec![], label: "ground".into() }];
@@ -475,10 +475,10 @@ mod tests {
             let spine = nodes.len() - 1;
             let sil = nodes.len();
             nodes.push(GNode { op: Op::Draw(vec![cov(2 + i as u128, b)]), inputs: vec![], label: "sil".into() });
-            nodes.push(GNode { op: Op::Scale { target: 1.0, key: i as u128 }, inputs: vec![sil], label: "down".into() });
+            nodes.push(GNode { op: Op::Resample { target: 1.0, key: i as u128 }, inputs: vec![sil], label: "down".into() });
             nodes.push(GNode { op: Op::Blur { sigma, axis: BlurAxis::X, linear: false, edge_clamp_style: edge, taps: BLUR_TAPS }, inputs: vec![sil + 1], label: "bx".into() });
             nodes.push(GNode { op: Op::Blur { sigma, axis: BlurAxis::Y, linear: false, edge_clamp_style: edge, taps: BLUR_TAPS }, inputs: vec![sil + 2], label: "by".into() });
-            nodes.push(GNode { op: Op::Scale { target: 1.0, key: i as u128 }, inputs: vec![sil + 3], label: "up".into() });
+            nodes.push(GNode { op: Op::Resample { target: 1.0, key: i as u128 }, inputs: vec![sil + 3], label: "up".into() });
             nodes.push(GNode { op: Op::Compose { mode: ComposeMode::Over, colour: Some([0.0, 0.0, 0.0, 0.5]), offset: [6.0, 8.0] }, inputs: vec![spine, sil + 4], label: "drop".into() });
         }
         let g = FrameGraph::new(frame, Color::WHITE, nodes);
@@ -501,10 +501,10 @@ mod tests {
         let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
         let g = FrameGraph::new(frame, Color::WHITE, vec![
                 GNode { op: Op::Draw(vec![body(1, frame)]), inputs: vec![], label: "ground".into() },
-                GNode { op: Op::Scale { target: 1.0, key: 7 }, inputs: vec![0], label: "down".into() },
+                GNode { op: Op::Resample { target: 1.0, key: 7 }, inputs: vec![0], label: "down".into() },
                 GNode { op: Op::Blur { sigma: 100.0, axis: BlurAxis::X, linear: true, edge_clamp_style: EdgeClampStyle::Extend, taps: BLUR_TAPS }, inputs: vec![1], label: "bx".into() },
                 GNode { op: Op::Blur { sigma: 100.0, axis: BlurAxis::Y, linear: true, edge_clamp_style: EdgeClampStyle::Extend, taps: BLUR_TAPS }, inputs: vec![2], label: "by".into() },
-                GNode { op: Op::Scale { target: 1.0, key: 7 }, inputs: vec![3], label: "up".into() },
+                GNode { op: Op::Resample { target: 1.0, key: 7 }, inputs: vec![3], label: "up".into() },
                 GNode { op: Op::Draw(vec![cov(3, Rect::new(100.0, 100.0, 540.0, 380.0))]), inputs: vec![], label: "mask".into() },
                 GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![0, 4, 5], label: "blur".into() },
             ]);

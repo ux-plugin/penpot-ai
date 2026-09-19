@@ -45,7 +45,7 @@ pub enum Pass {
 
 /// The kinds of work a `Fine` window runs, as bits of `Pass::Fine::work`.
 pub mod work {
-    pub const SCALE: u32 = 1;
+    pub const RESAMPLE: u32 = 1;
     pub const WARP: u32 = 2;
     pub const BLUR: u32 = 4;
     pub const SCATTER: u32 = 8;
@@ -120,7 +120,7 @@ pub fn work_label(work: u32) -> &'static str {
     }
     match work {
         0 => "idle",
-        work::SCALE => "scale",
+        work::RESAMPLE => "resample",
         work::WARP => "warp",
         work::BLUR => "blur",
         work::SCATTER => "scatter",

@@ -58,8 +58,8 @@ pub mod bits {
     pub const FLOOD_ERASE: u32 = 4096;
     /// Sampling head: resample the value between resolutions (`u[0].x` = input texels per
     /// output texel: a box average when whole, bilinear otherwise; `u[0].y` = what a read past the
-    /// value yields, one of [`SCALE_CLAMP`], [`SCALE_TRANSPARENT`], [`SCALE_KEEP`]).
-    pub const SCALE: u32 = 8192;
+    /// value yields, one of [`RESAMPLE_CLAMP`], [`RESAMPLE_TRANSPARENT`], [`RESAMPLE_KEEP`]).
+    pub const RESAMPLE: u32 = 8192;
     /// COMPOSE MODE — how the arm's result lands, a one-hot enum over three bits (all clear = the
     /// default field/coverage-masked mix). Mutually exclusive by construction: an arm composites one
     /// way. `COLOUR_OVER` (bit 7): the value is a COVERAGE — lay the straight colour in `u[3]`
@@ -178,12 +178,12 @@ pub fn arm_bits(run: &[UnitOp], p: Policy) -> u32 {
 /// field it measures without anything downstream classifying the chain.
 pub const PAYLOAD_PROGRAM_SLOT: usize = 22;
 
-/// A scale arm's read past its value: the value's clamped edge.
-pub const SCALE_CLAMP: f32 = 0.0;
-/// A scale arm's read past its value: transparent.
-pub const SCALE_TRANSPARENT: f32 = 1.0;
-/// A scale arm's read past its value: the output pixel as it is — a halo's rows drawn there before.
-pub const SCALE_KEEP: f32 = 2.0;
+/// A resample arm's read past its value: the value's clamped edge.
+pub const RESAMPLE_CLAMP: f32 = 0.0;
+/// A resample arm's read past its value: transparent.
+pub const RESAMPLE_TRANSPARENT: f32 = 1.0;
+/// A resample arm's read past its value: the output pixel as it is — a halo's rows drawn there before.
+pub const RESAMPLE_KEEP: f32 = 2.0;
 
 /// `u` with its device-pixel quantities scaled to resolution `k`, by the field program the payload
 /// declares: a lens's box, bezel and device scale; a noise warp's reach, grain and anchor; a

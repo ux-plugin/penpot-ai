@@ -139,7 +139,7 @@ thread_local! {
     /// the tiled-path gather/atlas diagnostics; 16..28 are the per-pass GPU profiler's accumulators
     /// (16..27 pass/phase deltas, 28 = profiled-frame count) — a different render path, so no clash;
     /// 26..31 the plan executor's CPU phases; 40..47 the executor's fine windows by work kind
-    /// (scale, warp, blur, scatter, pointwise, draw, paint, mixed) in GPU ms; 48 frames whose
+    /// (resample, warp, blur, scatter, pointwise, draw, paint, mixed) in GPU ms; 48 frames whose
     /// front-end overflowed a pool; 49/50 the tile and bin records the last front-end was sized for.
     static DBG: std::cell::RefCell<[f64; DBG_N]> = const { std::cell::RefCell::new([0.0; DBG_N]) };
 }

@@ -116,7 +116,7 @@ impl Params {
             Op::MaskMix(u) => UnitOp::MaskMix(bake::payload_at(u, cx.res.k[i])),
             Op::ClipToSource(u) => UnitOp::ClipToSource(u.clone()),
             Op::EraseBy(_) => UnitOp::EraseBy(Vec::new()),
-            Op::Colour(_) | Op::Draw(_) | Op::Compose { .. } | Op::Scale { .. } | Op::Halo { .. } => return None,
+            Op::Colour(_) | Op::Draw(_) | Op::Compose { .. } | Op::Resample { .. } | Op::Halo { .. } => return None,
         })
     }
 
@@ -146,7 +146,7 @@ impl Params {
         let mut edge_coverage = false;
         let mut blur: Option<(f32, u32, bool, bool)> = None;
         let mut program: Option<f32> = None;
-        let mut scale: Option<(f32, f32)> = None;
+        let mut resample: Option<(f32, f32)> = None;
         for (k, &i) in nodes.iter().enumerate() {
             let node = &cx.g.nodes[i];
             match &node.op {
@@ -154,14 +154,14 @@ impl Params {
                     blur = Some((*sigma * cx.res.k[i], *taps, *linear, *axis == BlurAxis::Y));
                     edge_coverage = *edge_clamp_style == EdgeClampStyle::Transparent;
                 }
-                Op::Scale { .. } => {
+                Op::Resample { .. } => {
                     let j = cx.input(i, 0);
-                    let past = if Work::rooted_in_leaf(cx, i) { bake::SCALE_TRANSPARENT } else { bake::SCALE_CLAMP };
-                    scale = Some((cx.res.k[j] / cx.res.k[i], past));
+                    let past = if Work::rooted_in_leaf(cx, i) { bake::RESAMPLE_TRANSPARENT } else { bake::RESAMPLE_CLAMP };
+                    resample = Some((cx.res.k[j] / cx.res.k[i], past));
                 }
                 Op::Colour(c) => tint = Some([c[0], c[1], c[2], c[3]]),
                 Op::MaskMix(u) if u.get(bake::PAYLOAD_PROGRAM_SLOT).copied() == Some(bake::PROGRAM_RADIAL) => program = Some(bake::PROGRAM_RADIAL),
-                Op::Halo { of } => scale = Some((cx.res.k[*of] / cx.res.k[i], bake::SCALE_KEEP)),
+                Op::Halo { of } => resample = Some((cx.res.k[*of] / cx.res.k[i], bake::RESAMPLE_KEEP)),
                 _ => {}
             }
             if let Some(u) = Self::unit_of(cx, i) {
@@ -228,8 +228,8 @@ impl Params {
             Some((sigma, taps, linear, axis_y)) => bake::blur_arm(sigma, taps, linear, axis_y, policy, tint.filter(|_| policy.colour_over)),
             None => bake::arm_descriptor(&run, policy, program),
         };
-        if let Some((ratio, past)) = scale {
-            desc[0] = (desc[0] as u32 | bake::bits::SCALE) as f32;
+        if let Some((ratio, past)) = resample {
+            desc[0] = (desc[0] as u32 | bake::bits::RESAMPLE) as f32;
             desc[2] = ratio;
             desc[3] = past;
         }
