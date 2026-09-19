@@ -1,23 +1,31 @@
 /**
  * Interactions IR — the stored, declarative model for prototyping interactions.
  *
- * Two layers live here:
- *   1. The stored ECA-sugar (what the panel edits, what serializes) — Variable,
- *      Derived, Interaction, AppRule, Binding, NodeStates, Repeater,
- *      gathered per page in `PageInteractions`.
- *   2. The normalized reactive graph (`GraphNode`) the sugar compiles into —
- *      Signals + Events + a fixed combinator set. A compile artifact, not stored.
+ * Three ideas, and nothing else:
+ *   1. CELLS are the one kind of state. A cell belongs to an owner (the document,
+ *      the page, or a node — a component's own state), has a type, and either
+ *      holds a value or is a FORMULA over other cells. A node's variant set is a
+ *      cell of enum type; a value the real app supplies is a cell that lives in a
+ *      STORE.
+ *   2. INTERACTIONS write cells. A trigger fires, a guard passes, actions run; an
+ *      action targets a cell (or does one of the few non-state things: navigate,
+ *      open a URL).
+ *   3. NODE PROPERTIES REFERENCE CELLS. Instead of a literal, a property holds an
+ *      expression over cells (`text: 'count'`, `disabled: 'draft == ""'`); the
+ *      preview and the emitter resolve it. A field whose `value` references a
+ *      writable cell edits that cell; a node whose `repeat` references a list is
+ *      repeated over it.
  *
- * Design rules (see docs/interactions/PHASE_0_PLAN.md):
- *   - ECA is surface sugar; the Signal/Event graph is the foundation.
- *   - Trigger/Action types are OPEN string unions backed by a catalog registry
- *     (./catalog), so new interaction types are additive entries, never a change
- *     to these core types.
- *   - Expressions are stored as source text (a constrained JS subset) and parsed
- *     by ./expression at compile time. Storing the sugar keeps the IR diffable
- *     and round-trippable to the (future) text DSL.
- *   - IR is page-scoped and references shapes by id (the key in
- *     `IndexedPage.objects`); it never modifies the shape/render model.
+ * Two layers live here: the stored sugar above (what the inspector edits, what
+ * serializes, page-scoped and referencing shapes by id) and the normalized
+ * reactive graph (`GraphNode`) it compiles into — a compile artifact, never
+ * stored. Trigger/action types are OPEN string unions backed by the catalog
+ * (./catalog), so new interaction types are additive entries. Expressions are
+ * stored as source text (a constrained JS subset, ./expression) and parsed at
+ * compile time, which keeps the IR diffable.
+ *
+ * Stores are DOCUMENT-wide (a data source is the same on every page); they live
+ * on the document (`DocumentMeta.stores`), and a cell names its store by id.
  */
 
 /** A shape id — the key in `IndexedPage.objects`. */
@@ -34,15 +42,13 @@ export type Expr = string
 
 /**
  * A reference in the addressing grammar (see ./addressing), stored as source:
- *   `items` | `addBtn.disabled` | `card.state` | `onSave`
+ *   `items` | `card.state` | `onSave`
  */
 export type Ref = string
 
-export type Scope = 'local' | 'page' | 'global'
-
 export type Persistence = 'none' | 'local-storage'
 
-/** Variable / port value type. */
+/** Cell type. `{ enum }` is a variant set: the cell holds one of its values. */
 export type ValueType =
   | 'string'
   | 'number'
@@ -50,18 +56,19 @@ export type ValueType =
   | 'object'
   | 'any'
   | { collection: ValueType }
+  | { enum: string[] }
 
 /**
- * A named container the designer CREATES — a store, table, or "app state" — the
- * same way they create a component. It holds cells (`Variable`s tagged with its
- * id) filled with sample data.
- *
- * A store is the seam to real data: it is the thing a real database or API binds
- * to at handover, and its cells are supplied from outside rather than decided by
- * the design. That is why membership replaces the old per-cell `outside` flag —
- * "comes from outside" is not a checkbox on a value, it is the value living in a
- * container the designer built for exactly that.
- *
+ * Who a cell belongs to — and so where the inspector shows it: the document's
+ * cells and the page's on the page (nothing selected), a node's on that node.
+ */
+export type Owner = { kind: 'document' } | { kind: 'page' } | { kind: 'node'; node: NodeId }
+
+/**
+ * A named container the designer CREATES — a store, table, or "app state". It is
+ * the seam to real data: the thing a real database or API binds to at handover.
+ * Its cells are supplied from outside rather than decided by the design, which
+ * is why membership (`Cell.store`) is the whole "comes from outside" statement.
  * `description` says what real data the store maps to, for whoever binds it.
  */
 export interface Store {
@@ -70,54 +77,63 @@ export interface Store {
 }
 
 /**
- * A named cell — the ONE kind of addressable state. Lowers to a `source`
- * producing a Signal.
+ * The one kind of state.
  *
- * There is deliberately no second kind of value and no "is this external" flag.
- * A cell either lives on its own (a component's private state) or in a `store`
- * the designer created — and *that membership* is the whole "comes from outside"
- * statement. Everything an interaction can read or write is one of these, so
- * "wire this button to that value" never depends on which sort of value it is.
- *
- * `scope` is set by the DESIGNER and changeable at any time — never inferred,
- * never auto-promoted. Wiring a component's own `open` flag to a store is a
- * legitimate thing to want, not a mistake to prevent.
+ * A cell either holds a value (`initial` is what the preview starts from — the
+ * sample, if it lives in a store) or is a FORMULA (`formula` present): computed
+ * from other cells and therefore read-only. A variant set is a cell of `{ enum }`
+ * type owned by its node. Nothing a designer wires to is anything but one of
+ * these, so "wire this button to that value" never depends on which sort of
+ * value it is.
  */
-export interface Variable {
+export interface Cell {
   id: string
+  owner: Owner
   type: ValueType
-  scope: Scope
-  /**
-   * What the cell holds to begin with. On its own that is the initial value; in a
-   * store it is the SAMPLE — the same slot, because operationally they are the
-   * same thing: what the preview starts from.
-   */
+  /** The starting value — the sample, for a store cell. Ignored by a formula. */
   initial: Json
-  /**
-   * The `Store` this cell lives in, or absent for a component's own state.
-   * Present ⇔ the value is supplied from outside; what a write has to DO to reach
-   * the real source is derived at lowering, never authored (see `emitReactComponent`).
-   */
+  /** Present ⇒ computed, read-only. */
+  formula?: Expr
+  /** The store this cell lives in. Present ⇔ the value is supplied from outside. */
   store?: string
-  /**
-   * Optional prose for a store cell: what real value this is, in the designer's
-   * words. What gets handed over is the design, so this is what tells whoever
-   * binds it that `productTitle: "Sample product"` is a database field and not
-   * deliberate copy. Meaningless on a component-local cell.
-   */
+  /** Prose for a store cell: what real value this is, in the designer's words. */
   description?: string
   persist?: Persistence
 }
 
 /** Whether a cell is supplied from outside — i.e. lives in a store. */
-export function isBacked(v: Variable): boolean {
-  return v.store != null
+export function isBacked(c: Cell): boolean {
+  return c.store != null
 }
 
-/** A computed, read-only value. Lowers to a `derive` node. */
-export interface Derived {
-  id: string
-  expr: Expr
+export function isFormula(c: Cell): boolean {
+  return c.formula != null
+}
+
+export function isEnumType(t: ValueType): t is { enum: string[] } {
+  return typeof t === 'object' && t !== null && 'enum' in t
+}
+
+export function isCollectionType(t: ValueType | undefined): t is { collection: ValueType } {
+  return typeof t === 'object' && t !== null && 'collection' in t
+}
+
+/**
+ * How a cell is named in expressions and action targets: a page or document
+ * cell by its id, a node's cell as `<node>.<id>` (see `nodeRef`). Also the key
+ * the preview runtime stores its value under.
+ */
+export function cellRef(c: Cell): Ref {
+  return c.owner.kind === 'node' ? `${nodeRef(c.owner.node)}.${c.id}` : c.id
+}
+
+/**
+ * A node as an expression root. A shape id that is a valid identifier (test
+ * fixtures name nodes `card`) is used as is; a real UUID is not an identifier, so
+ * it is mangled to one. `buildScope` registers the same spelling.
+ */
+export function nodeRef(node: NodeId): string {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(node) ? node : `n_${node.replace(/[^A-Za-z0-9_]/g, '_')}`
 }
 
 // ---- triggers & actions (open unions; schemas live in ./catalog) ----
@@ -140,7 +156,7 @@ export interface Trigger {
  */
 export interface Action {
   type: ActionType
-  /** Address the action writes to / navigates to (variable, node.state, screen). */
+  /** Address the action writes to / navigates to (a cell, a slot, a screen). */
   target?: Ref
   /** Value expression (item to append, value to set, url, …). */
   value?: Expr
@@ -157,8 +173,6 @@ export function actionParam(a: Action, key: string): Expr | undefined {
   return typeof v === 'string' && v.trim() ? v : undefined
 }
 
-// ---- ECA sugar (node-scoped & app-scoped) ----
-
 /** A node-attached interaction: trigger -> guard -> actions. */
 export interface Interaction {
   id?: string
@@ -171,7 +185,6 @@ export interface Interaction {
 /**
  * An app/page-scoped rule with no owning node — on-load, timer, key, scroll-end,
  * resize, data-change, hardware back. Same shape, page-level source.
- * (Locked core decision: app-rule scope, PHASE_0_PLAN §G1.)
  */
 export interface AppRule {
   id?: string
@@ -180,117 +193,88 @@ export interface AppRule {
   do: Action[]
 }
 
-// ---- bindings, states, repeaters ----
-
-/** Binds an expression to a node prop. Lowers to a `sink`. */
-export interface Binding {
-  node: NodeId
-  /** e.g. 'disabled' | 'x' | 'opacity' | 'text' | 'visible' | 'state'. */
-  prop: string
-  from: Expr
-}
+// ---- property references ----
 
 /**
- * Addressable variant states for a node. The design/AI styles each named state;
- * which one is active is a Signal — driven either by the node's own state machine
- * (`'self'`) or bound to a derived expression.
+ * A node's properties that reference cells instead of holding a literal. Each
+ * entry lowers to a `sink`. Two property names are reserved:
+ *   - `value` on a node, when the expression is a bare writable cell, makes the
+ *     node EDIT that cell (two-way): the read is the sink, the write folds the
+ *     node's change event back into the cell. The node's role becomes a field.
+ *   - `repeat` marks the node as a template repeated over the list the
+ *     expression names; runtime instances carry `data-instance-key`. `item`
+ *     names the loop variable (default `item`) and keys the instances.
  */
-export interface NodeStates {
+export interface NodeRefs {
   node: NodeId
-  states: string[]
-  active: { from: 'self'; initial?: string } | { bind: Expr }
+  props: Record<string, Expr>
+  /** Loop settings, meaningful only with `props.repeat`. */
+  item?: { as?: string; key?: Expr }
 }
 
-/**
- * A node that EDITS a state cell — the two-way sugar.
- *
- * Read: `node.prop ← target`. Write: the node's change event folds into
- * `target`. It is stored as sugar rather than as the expanded graph on purpose:
- * some targets have a NATIVE two-way primitive (SwiftUI `$x`, Vue `v-model`,
- * Svelte `bind:`) and can only emit it if the emitter can still see that the
- * author said "this edits that". Recovering that from an expanded
- * sink+source+fold would mean pattern-matching the graph.
- *
- * `normalize` expands it into exactly those three existing primitives, so the
- * reactive graph stays acyclic and one-directional — there is no bidirectional
- * edge anywhere. The read is a Signal, the write is Event-driven; that split is
- * why this is not a feedback loop, and is the same reason a React controlled
- * input terminates.
- */
-export interface Editable {
-  node: NodeId
-  /** Semantic property the node edits through — `value` for a text field. */
-  prop: string
-  /** The cell being edited. Writability is a property of the cell — see `editableError`. */
-  target: Ref
-}
+export const REPEAT_PROP = 'repeat'
+export const VALUE_PROP = 'value'
 
-/**
- * Marks a node as a template repeated over a collection. The node id is a
- * TEMPLATE anchor; runtime instances carry data-node-id + data-instance-key.
- */
-export interface Repeater {
-  node: NodeId
-  /** Collection variable reference, e.g. 'items'. */
-  over: Ref
-  /** Loop item name in expressions (default 'item'). */
-  as?: string
-  /** Item key expression (default 'item.id'). */
-  key?: Expr
-}
-
-// ---- the page-scoped block (locked storage decision: PHASE_0_PLAN §6.1) ----
+// ---- the page-scoped block ----
 
 export interface PageInteractions {
-  version: 1
-  /** Named containers the designer created; cells reference one via `Variable.store`. */
-  stores: Store[]
-  variables: Variable[]
-  derived: Derived[]
+  version: 2
+  cells: Cell[]
+  refs: NodeRefs[]
   interactions: Interaction[]
   appRules: AppRule[]
-  bindings: Binding[]
-  editable: Editable[]
-  states: NodeStates[]
-  repeaters: Repeater[]
-}
-
-/**
- * Why a cell cannot be edited, or null if it can.
- *
- * Only ONE thing is genuinely unwritable: a formula, which is a function of other
- * cells, so writing to it is a category error rather than a missing feature. An
- * `outside` cell is editable — the designer decides what wires to what, and what
- * a write has to do to reach the real source is derived plumbing, not a reason to
- * refuse the wiring.
- */
-export function editableError(ir: PageInteractions, target: Ref): string | null {
-  if (!target.trim()) return 'Pick a value to edit'
-  if (ir.derived.some((d) => d.id === target)) return `${target} is a formula — computed, not editable`
-  if (!ir.variables.some((v) => v.id === target)) return `${target} is not a value on this page`
-  return null
 }
 
 export function emptyPageInteractions(): PageInteractions {
-  return {
-    version: 1,
-    stores: [],
-    variables: [],
-    derived: [],
-    interactions: [],
-    appRules: [],
-    bindings: [],
-    editable: [],
-    states: [],
-    repeaters: [],
-  }
+  return { version: 2, cells: [], refs: [], interactions: [], appRules: [] }
 }
 
-// ---- regenerate / merge contract (locked core decision: PHASE_0_PLAN §G3) ----
+/** The cell `ref` names, if any: `items`, or `card.state` for a node's cell. */
+export function findCell(ir: PageInteractions, ref: Ref): Cell | undefined {
+  return ir.cells.find((c) => cellRef(c) === ref)
+}
+
+/** A node's property references, or none. */
+export function refsOf(ir: PageInteractions, node: NodeId): NodeRefs | undefined {
+  return ir.refs.find((r) => r.node === node)
+}
+
+/** The expression a node's property references, if it references one. */
+export function propRef(ir: PageInteractions, node: NodeId, prop: string): Expr | undefined {
+  return refsOf(ir, node)?.props[prop]
+}
+
+/**
+ * Whether a node EDITS a cell through `value`: the property references a bare
+ * cell that can be written. Read-only because it is a formula, or an expression
+ * over cells rather than a cell, is a plain one-way reference.
+ */
+export function editedCell(ir: PageInteractions, node: NodeId): Cell | undefined {
+  const expr = propRef(ir, node, VALUE_PROP)
+  if (!expr) return undefined
+  const cell = findCell(ir, expr.trim())
+  return cell && !isFormula(cell) ? cell : undefined
+}
+
+/**
+ * Why a cell cannot be edited, or null if it can. Only ONE thing is genuinely
+ * unwritable: a formula, which is a function of other cells, so writing to it is
+ * a category error rather than a missing feature. A store cell is editable — what
+ * a write has to do to reach the real source is derived plumbing.
+ */
+export function editableError(ir: PageInteractions, target: Ref): string | null {
+  if (!target.trim()) return 'Pick a value to edit'
+  const cell = findCell(ir, target)
+  if (!cell) return `${target} is not a value on this page`
+  if (isFormula(cell)) return `${target} is a formula — computed, not editable`
+  return null
+}
+
+// ---- regenerate / merge contract ----
 
 export interface MergeReport {
   /** Behavior whose owning node no longer exists in the regenerated presentation. */
-  dangling: { kind: 'interaction' | 'binding' | 'editable' | 'state' | 'repeater'; node: NodeId }[]
+  dangling: { kind: 'interaction' | 'refs' | 'cell'; node: NodeId }[]
   ok: boolean
 }
 
@@ -298,10 +282,8 @@ export interface MergeReport {
 export function referencedNodeIds(ir: PageInteractions): Set<NodeId> {
   const ids = new Set<NodeId>()
   for (const it of ir.interactions) ids.add(it.on.node)
-  for (const b of ir.bindings) ids.add(b.node)
-  for (const e of ir.editable) ids.add(e.node)
-  for (const s of ir.states) ids.add(s.node)
-  for (const r of ir.repeaters) ids.add(r.node)
+  for (const r of ir.refs) ids.add(r.node)
+  for (const c of ir.cells) if (c.owner.kind === 'node') ids.add(c.owner.node)
   return ids
 }
 
@@ -313,30 +295,120 @@ export function referencedNodeIds(ir: PageInteractions): Set<NodeId> {
 export function reconcile(ir: PageInteractions, presentNodeIds: Set<NodeId>): MergeReport {
   const dangling: MergeReport['dangling'] = []
   for (const it of ir.interactions) if (!presentNodeIds.has(it.on.node)) dangling.push({ kind: 'interaction', node: it.on.node })
-  for (const b of ir.bindings) if (!presentNodeIds.has(b.node)) dangling.push({ kind: 'binding', node: b.node })
-  for (const e of ir.editable) if (!presentNodeIds.has(e.node)) dangling.push({ kind: 'editable', node: e.node })
-  for (const s of ir.states) if (!presentNodeIds.has(s.node)) dangling.push({ kind: 'state', node: s.node })
-  for (const r of ir.repeaters) if (!presentNodeIds.has(r.node)) dangling.push({ kind: 'repeater', node: r.node })
+  for (const r of ir.refs) if (!presentNodeIds.has(r.node)) dangling.push({ kind: 'refs', node: r.node })
+  for (const c of ir.cells) if (c.owner.kind === 'node' && !presentNodeIds.has(c.owner.node)) dangling.push({ kind: 'cell', node: c.owner.node })
   return { dangling, ok: dangling.length === 0 }
+}
+
+// ---- version 1 → 2 ----
+//
+// Version 1 stored six things a version-2 document says with two: variables and
+// derived values (cells), node variant states (a node's enum cell, named `state`
+// so `card.state` keeps meaning what it meant), bindings and editables and
+// repeaters (property references). Stores were page-scoped; `upgrade` hands them
+// back for the caller to hoist onto the document.
+
+interface V1Variable {
+  id: string
+  type: ValueType
+  scope: 'local' | 'page' | 'global'
+  initial: Json
+  store?: string
+  description?: string
+  persist?: Persistence
+}
+
+interface V1PageInteractions {
+  version: 1
+  stores: Store[]
+  variables: V1Variable[]
+  derived: { id: string; expr: Expr }[]
+  interactions: Interaction[]
+  appRules: AppRule[]
+  bindings: { node: NodeId; prop: string; from: Expr }[]
+  editable: { node: NodeId; prop: string; target: Ref }[]
+  states: { node: NodeId; states: string[]; active: { from: 'self'; initial?: string } | { bind: Expr } }[]
+  repeaters: { node: NodeId; over: Ref; as?: string; key?: Expr }[]
+}
+
+/** The node's variant cell is named `state`, as `<node>.state` was in version 1. */
+export const STATE_CELL = 'state'
+
+export type AnyPageInteractions = PageInteractions | V1PageInteractions
+
+/** Whether a stored block still has the version-1 shape. */
+export function isV1(ir: AnyPageInteractions): ir is V1PageInteractions {
+  return (ir as { version?: number }).version === 1
+}
+
+/**
+ * Upgrade a version-1 block. Returns the version-2 block and the stores it
+ * carried, for the document to adopt. Pure; a version-2 block passes through
+ * with no stores.
+ */
+export function upgradePageInteractions(ir: AnyPageInteractions): { ir: PageInteractions; stores: Store[] } {
+  if (!isV1(ir)) return { ir, stores: [] }
+  const cells: Cell[] = []
+  for (const v of ir.variables ?? []) {
+    const owner: Owner = v.scope === 'global' ? { kind: 'document' } : { kind: 'page' }
+    const cell: Cell = { id: v.id, owner, type: v.type, initial: v.initial }
+    if (v.store) cell.store = v.store
+    if (v.description) cell.description = v.description
+    if (v.persist) cell.persist = v.persist
+    cells.push(cell)
+  }
+  for (const d of ir.derived ?? []) cells.push({ id: d.id, owner: { kind: 'page' }, type: 'any', initial: null, formula: d.expr })
+  for (const s of ir.states ?? []) {
+    const cell: Cell = { id: STATE_CELL, owner: { kind: 'node', node: s.node }, type: { enum: s.states }, initial: null }
+    if ('bind' in s.active) cell.formula = s.active.bind
+    else cell.initial = s.active.initial ?? s.states[0] ?? null
+    cells.push(cell)
+  }
+
+  const refs = new Map<NodeId, NodeRefs>()
+  const at = (node: NodeId): NodeRefs => {
+    let r = refs.get(node)
+    if (!r) {
+      r = { node, props: {} }
+      refs.set(node, r)
+    }
+    return r
+  }
+  for (const b of ir.bindings ?? []) at(b.node).props[b.prop] = b.from
+  for (const e of ir.editable ?? []) at(e.node).props[e.prop] = e.target
+  for (const rep of ir.repeaters ?? []) {
+    const r = at(rep.node)
+    r.props[REPEAT_PROP] = rep.over
+    const item: NonNullable<NodeRefs['item']> = {}
+    if (rep.as) item.as = rep.as
+    if (rep.key) item.key = rep.key
+    if (Object.keys(item).length) r.item = item
+  }
+
+  // `node.setState` on `<node>.state` is `set-variable` on the node's cell.
+  const action = (a: Action): Action => (a.type === 'node.setState' ? { ...a, type: 'set-variable' } : a)
+  const interactions = (ir.interactions ?? []).map((it) => ({ ...it, do: it.do.map(action) }))
+  const appRules = (ir.appRules ?? []).map((ar) => ({ ...ar, do: ar.do.map(action) }))
+
+  return {
+    ir: { version: 2, cells, refs: [...refs.values()], interactions, appRules },
+    stores: ir.stores ?? [],
+  }
 }
 
 // ---- normalized reactive graph (compile artifact; built by ./compile/normalize) ----
 //
-// The semantic target the ECA-sugar compiles into.
-//
-// NOTE the asymmetry with the stored sugar above: `port` survives HERE and only
-// here. That is the whole shape of the design — the designer authors one kind of
-// cell and never says "port", while the graph, which is where plumbing lives,
-// still needs to express "this value crosses the boundary". A cell with `outside`
-// set lowers to a port node; a write to it grows an edge out of one. Both are
-// derived, so neither is anything the designer has to name.
+// The semantic target the sugar compiles into. NOTE the asymmetry with the stored
+// sugar: `port` survives HERE and only here. The designer authors one kind of
+// cell and never says "port"; the graph, where plumbing lives, still expresses
+// "this value crosses the boundary". A store cell lowers to a port node; a write
+// to it grows an edge out of one. Both are derived.
 
 export type GraphValueKind = 'signal' | 'event'
 
 export type SourceOf =
   | { source: 'event'; node?: NodeId; trigger: TriggerType }
-  | { source: 'state'; variable: string }
-  | { source: 'derived'; derived: string }
+  | { source: 'state'; cell: Ref }
   | { source: 'port'; port: string }
 
 export type GraphNode =

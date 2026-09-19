@@ -9,15 +9,15 @@ import { initRuntime } from '../../../../src/lib/renderer/interactions/preview/r
 const ZERO = '00000000-0000-0000-0000-000000000000'
 
 describe('runtime clone — proxy-safe (DataCloneError regression)', () => {
-  it('clones a Proxy-wrapped variable initial without throwing', () => {
+  it('clones a Proxy-wrapped cell initial without throwing', () => {
     // useSnapshot wraps the IR in a tracking Proxy that structuredClone rejects.
     const ir = emptyPageInteractions()
-    ir.variables.push({
+    ir.cells.push({
       id: 'items',
+      owner: { kind: 'page' },
       type: { collection: 'object' },
-      scope: 'page',
       initial: new Proxy([{ a: 1 }], {}) as unknown as [],
-          })
+    })
     const rt = initRuntime(ir)
     expect(rt.store.items).toEqual([{ a: 1 }])
   })
@@ -94,20 +94,20 @@ describe('emit-react — style prop', () => {
   })
 })
 
-describe('emit-react — style-prop bindings (wire fill to state)', () => {
-  it('routes a background binding into inline style, overriding the static fill', () => {
+describe('emit-react — style-prop references (wire fill to state)', () => {
+  it('routes a background reference into inline style, overriding the static fill', () => {
     const ir = emptyPageInteractions()
-    ir.variables.push({ id: 'accent', type: 'string', scope: 'page', initial: '#e11d48' })
-    ir.bindings.push({ node: 'btn', prop: 'background', from: 'accent' })
+    ir.cells.push({ id: 'accent', owner: { kind: 'page' }, type: 'string', initial: '#e11d48' })
+    ir.refs.push({ node: 'btn', props: { background: 'accent' } })
     const root: PNode = { nodeId: 'btn', role: 'button', text: 'Buy', style: { background: '#999999' } }
     const code = emitReactComponent(ir, root, { componentName: 'Screen' })
     expect(code).toContain('"background": accent') // dynamic expression
     expect(code).not.toContain('"background": "#999999"') // static fill overridden, not duplicated
   })
 
-  it('a non-CSS binding stays a raw element prop', () => {
+  it('a non-CSS reference stays a raw element prop', () => {
     const ir = emptyPageInteractions()
-    ir.bindings.push({ node: 'inp', prop: 'value', from: 'query' })
+    ir.refs.push({ node: 'inp', props: { value: 'query' } })
     const root: PNode = { nodeId: 'inp', role: 'field' }
     const code = emitReactComponent(ir, root, { componentName: 'Screen' })
     expect(code).toContain('value={query}')

@@ -21,6 +21,7 @@ import { emptyPageInteractions } from '../../../../src/lib/renderer/interactions
 import { validatePageInteractions } from '../../../../src/lib/renderer/interactions/addressing'
 import { normalize } from '../../../../src/lib/renderer/interactions/compile/normalize'
 import { requiredAnchors } from '../../../../src/lib/renderer/interactions/anchor'
+import { pageCell, listCell, formulaCell, variantCell } from './todo-ir'
 
 beforeEach(() => {
   resetCatalog()
@@ -40,13 +41,12 @@ describe('Phase 0 sanity gate — future needs are catalog-only, zero core chang
     expect(normalize(ir).nodes.some((n) => n.kind === 'source' && n.produces === 'event')).toBe(true)
   })
 
-  it('GESTURE (continuous): a drag value is an outside cell + a binding — already expressible', () => {
+  it('GESTURE (continuous): a drag value is an outside cell + a reference — already expressible', () => {
     const ir = emptyPageInteractions()
     // A continuous gesture value is an external signal, i.e. a cell that lives in
     // a store the designer made — not a second kind of thing, just where it lives.
-    ir.stores.push({ id: 'gesture' })
-    ir.variables.push({ id: 'dragX', type: 'number', scope: 'local', initial: 0, store: 'gesture' })
-    ir.bindings.push({ node: 'row', prop: 'x', from: 'dragX' })
+    ir.cells.push(pageCell('dragX', 'number', 0, { store: 'gesture' }))
+    ir.refs.push({ node: 'row', props: { x: 'dragX' } })
     expect(validatePageInteractions(ir, new Set(['row']))).toEqual([])
     // lowers to an inbound port node — derived plumbing, no new IR kind needed
     expect(normalize(ir).nodes.some((n) => n.kind === 'port' && n.dir === 'in')).toBe(true)
@@ -55,17 +55,17 @@ describe('Phase 0 sanity gate — future needs are catalog-only, zero core chang
   it('ASYNC / backend: an effectful action is a catalog entry', () => {
     registerActions([{ key: 'api.save', label: 'Save to API', platforms: ['web', 'native'], lowers: 'effect', expects: { value: true } }])
     const ir = emptyPageInteractions()
-    ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
+    ir.cells.push(listCell('items'))
     ir.interactions.push({ on: { node: 'saveBtn', trigger: { type: 'press' } }, do: [{ type: 'api.save', value: 'items' }] })
     expect(validatePageInteractions(ir, new Set(['saveBtn']))).toEqual([])
     expect(normalize(ir).nodes.some((n) => n.kind === 'effect')).toBe(true)
   })
 
-  it('STATE-VARIANT (data-driven): "disabled when empty" is already core — a bound NodeStates', () => {
+  it('STATE-VARIANT (data-driven): "disabled when empty" is already core — a formula-driven variant cell', () => {
     const ir = emptyPageInteractions()
-    ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
-    ir.derived.push({ id: 'isEmpty', expr: 'items.length == 0' })
-    ir.states.push({ node: 'addBtn', states: ['enabled', 'disabled'], active: { bind: "isEmpty ? 'disabled' : 'enabled'" } })
+    ir.cells.push(listCell('items'))
+    ir.cells.push(formulaCell('isEmpty', 'items.length == 0'))
+    ir.cells.push(variantCell('addBtn', ['enabled', 'disabled'], { formula: "isEmpty ? 'disabled' : 'enabled'" }))
     expect(validatePageInteractions(ir, new Set(['addBtn']))).toEqual([])
     expect(requiredAnchors(ir).has('addBtn')).toBe(true)
   })

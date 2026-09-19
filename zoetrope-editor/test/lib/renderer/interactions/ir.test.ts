@@ -3,6 +3,11 @@ import {
   emptyPageInteractions,
   reconcile,
   referencedNodeIds,
+  upgradePageInteractions,
+  isV1,
+  cellRef,
+  nodeRef,
+  STATE_CELL,
   type PageInteractions,
 } from '../../../../src/lib/renderer/interactions/ir'
 import {
@@ -14,23 +19,38 @@ import {
   resetCatalog,
   initDefaultCatalog,
 } from '../../../../src/lib/renderer/interactions/catalog'
+import { listCell, formulaCell, variantCell } from './todo-ir'
 
 function sampleIR(): PageInteractions {
   const ir = emptyPageInteractions()
-  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
-  ir.derived.push({ id: 'isEmpty', expr: 'items.length == 0' })
+  ir.cells.push(listCell('items'))
+  ir.cells.push(formulaCell('isEmpty', 'items.length == 0'))
+  ir.cells.push(variantCell('card', ['collapsed', 'expanded'], { initial: 'collapsed' }))
   ir.interactions.push({
     on: { node: 'addBtn', trigger: { type: 'press' } },
     do: [{ type: 'collection.append', target: 'items', value: '{ label: "" }' }],
   })
-  ir.bindings.push({ node: 'addBtn', prop: 'disabled', from: 'isEmpty' })
-  ir.repeaters.push({ node: 'list', over: 'items' })
-  ir.states.push({ node: 'card', states: ['collapsed', 'expanded'], active: { from: 'self', initial: 'collapsed' } })
+  ir.refs.push({ node: 'addBtn', props: { disabled: 'isEmpty' } })
+  ir.refs.push({ node: 'list', props: { repeat: 'items' } })
   return ir
 }
 
+describe('cell references', () => {
+  it('address a page cell by id and a node cell as <node>.<cell>', () => {
+    expect(cellRef(listCell('items'))).toBe('items')
+    expect(cellRef(variantCell('card', ['a']))).toBe('card.state')
+  })
+
+  it('mangle a node id that is not an identifier, so a UUID node still has an address', () => {
+    expect(nodeRef('card')).toBe('card')
+    const uuid = '2f1c3a9e-0000-4000-8000-000000000001'
+    expect(nodeRef(uuid)).toMatch(/^n_[A-Za-z0-9_]+$/)
+    expect(cellRef(variantCell(uuid, ['a']))).toBe(`${nodeRef(uuid)}.state`)
+  })
+})
+
 describe('referencedNodeIds', () => {
-  it('collects node ids across interactions, bindings, repeaters, states', () => {
+  it('collects node ids across interactions, references and node cells', () => {
     const ids = referencedNodeIds(sampleIR())
     expect([...ids].sort()).toEqual(['addBtn', 'card', 'list'])
   })
@@ -47,13 +67,84 @@ describe('reconcile (regenerate/merge contract)', () => {
     const r = reconcile(sampleIR(), new Set(['addBtn']))
     expect(r.ok).toBe(false)
     const kinds = r.dangling.map((d) => `${d.kind}:${d.node}`).sort()
-    expect(kinds).toEqual(['repeater:list', 'state:card'])
+    expect(kinds).toEqual(['cell:card', 'refs:list'])
   })
 
   it('does not treat new behaviorless nodes as errors', () => {
     const r = reconcile(emptyPageInteractions(), new Set(['brandNewNode']))
     expect(r.ok).toBe(true)
     expect(r.dangling).toHaveLength(0)
+  })
+})
+
+describe('upgrade — a version-1 block becomes cells and references', () => {
+  /** The pre-cells shape: separate variables, derived, bindings, states, repeaters, editable. */
+  const v1 = {
+    version: 1 as const,
+    stores: [{ id: 'app', description: 'the backend' }],
+    variables: [
+      { id: 'items', type: { collection: 'object' }, scope: 'page' as const, initial: [] },
+      { id: 'theme', type: 'string', scope: 'global' as const, initial: 'light' },
+      { id: 'user', type: 'string', scope: 'page' as const, initial: 'Ada', store: 'app', description: 'who is signed in' },
+    ],
+    derived: [{ id: 'isEmpty', expr: 'items.length == 0' }],
+    interactions: [
+      {
+        id: 'i1',
+        on: { node: 'card', trigger: { type: 'press' as const } },
+        do: [{ type: 'node.setState', target: 'card.state', value: '"expanded"' }],
+      },
+    ],
+    appRules: [],
+    bindings: [{ node: 'row', prop: 'text', from: 'item.label' }],
+    states: [
+      { node: 'card', states: ['collapsed', 'expanded'], active: { from: 'self' as const, initial: 'collapsed' } },
+      { node: 'addBtn', states: ['enabled', 'disabled'], active: { bind: "isEmpty ? 'disabled' : 'enabled'" } },
+    ],
+    repeaters: [{ node: 'row', over: 'items', as: 'todo', key: 'todo.id' }],
+    editable: [{ node: 'field', prop: 'value', target: 'user' }],
+  }
+
+  it('recognizes the old shape and passes the new one through untouched', () => {
+    expect(isV1(v1)).toBe(true)
+    const fresh = emptyPageInteractions()
+    expect(upgradePageInteractions(fresh)).toEqual({ ir: fresh, stores: [] })
+  })
+
+  it('turns variables, derived and states into cells with the right owners', () => {
+    const { ir } = upgradePageInteractions(v1)
+    expect(ir.version).toBe(2)
+    expect(ir.cells.map(cellRef).sort()).toEqual(['addBtn.state', 'card.state', 'isEmpty', 'items', 'theme', 'user'])
+    expect(ir.cells.find((c) => c.id === 'theme')?.owner).toEqual({ kind: 'document' }) // global → document
+    expect(ir.cells.find((c) => c.id === 'items')?.owner).toEqual({ kind: 'page' })
+    expect(ir.cells.find((c) => c.id === 'isEmpty')).toMatchObject({ formula: 'items.length == 0' })
+    expect(ir.cells.find((c) => c.id === 'user')).toMatchObject({ store: 'app', description: 'who is signed in', initial: 'Ada' })
+  })
+
+  it('turns a variant set into an enum cell the node owns, formula-driven when it was bound', () => {
+    const { ir } = upgradePageInteractions(v1)
+    const card = ir.cells.find((c) => cellRef(c) === 'card.state')
+    expect(card).toMatchObject({ id: STATE_CELL, owner: { kind: 'node', node: 'card' }, type: { enum: ['collapsed', 'expanded'] }, initial: 'collapsed' })
+    expect(card).not.toHaveProperty('formula')
+    const addBtn = ir.cells.find((c) => cellRef(c) === 'addBtn.state')
+    expect(addBtn).toMatchObject({ formula: "isEmpty ? 'disabled' : 'enabled'" })
+  })
+
+  it('folds bindings, editable and repeaters into one references block per node', () => {
+    const { ir } = upgradePageInteractions(v1)
+    expect(ir.refs).toContainEqual({ node: 'row', props: { text: 'item.label', repeat: 'items' }, item: { as: 'todo', key: 'todo.id' } })
+    expect(ir.refs).toContainEqual({ node: 'field', props: { value: 'user' } })
+  })
+
+  it('rewrites node.setState as a plain write to the node cell', () => {
+    const { ir } = upgradePageInteractions(v1)
+    expect(ir.interactions[0].do[0]).toEqual({ type: 'set-variable', target: 'card.state', value: '"expanded"' })
+  })
+
+  it('hands the stores to the document — they are not page state anymore', () => {
+    const { ir, stores } = upgradePageInteractions(v1)
+    expect(stores).toEqual([{ id: 'app', description: 'the backend' }])
+    expect(ir).not.toHaveProperty('stores')
   })
 })
 

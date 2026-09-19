@@ -36,15 +36,11 @@ function sseResponse(contentChunks: string[]): Response {
 /** A minimal valid `{ reply, ir }` envelope, split into small chunks to exercise streaming reassembly. */
 function envelopeChunks(): string[] {
   const ir = {
-    version: 1,
-    stores: [],
-    variables: [],
-    derived: [],
+    version: 2,
+    cells: [],
+    refs: [],
     interactions: [{ id: 'i1', on: { node: 'btn', trigger: { type: 'click' } }, do: [{ type: 'set', target: 'open', value: 'true' }] }],
     appRules: [],
-    bindings: [],
-    states: [],
-    repeaters: [],
   }
   const envelope = JSON.stringify({ reply: 'Added a click handler', ir })
   return envelope.match(/.{1,12}/g) ?? [envelope]
@@ -65,7 +61,7 @@ describe('ApiSession (web/platform path)', () => {
 
     expect(res.offline).toBeFalsy()
     expect(res.reply).toBe('Added a click handler')
-    expect(res.ir?.version).toBe(1)
+    expect(res.ir?.version).toBe(2)
     expect(res.ir?.interactions).toHaveLength(1)
     expect(session.history().map((t) => t.role)).toEqual(['user', 'assistant'])
   })

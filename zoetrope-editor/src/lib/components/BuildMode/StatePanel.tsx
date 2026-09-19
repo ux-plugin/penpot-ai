@@ -22,6 +22,7 @@
 
 import { cn } from '@/lib/utils'
 import type { PageInteractions } from '../../renderer/interactions/ir'
+import { cellRef, isFormula } from '../../renderer/interactions/ir'
 import { leavesDesign, type LoggedActivity, type StateChange } from '../../renderer/interactions/preview/runtime'
 
 /** Compact one-line rendering of a runtime value. */
@@ -32,6 +33,13 @@ function fmt(v: unknown): string {
   if (typeof v === 'string') return JSON.stringify(v)
   if (typeof v === 'object') return '{…}'
   return String(v)
+}
+
+/** Read `draft` or `card.state` out of an evaluation environment. */
+function readRef(env: Record<string, unknown>, ref: string): unknown {
+  const [root, member] = ref.split('.')
+  const v = env[root]
+  return member && v && typeof v === 'object' ? (v as Record<string, unknown>)[member] : v
 }
 
 function changeLabel(c: StateChange): string {
@@ -51,7 +59,7 @@ export function StatePanel({
   onSelect,
 }: {
   ir: PageInteractions
-  /** Current evaluation environment — variables plus computed derived values. */
+  /** Current evaluation environment — cells plus computed formulas. */
   env: Record<string, unknown>
   log: LoggedActivity[]
   open: boolean
@@ -63,7 +71,7 @@ export function StatePanel({
 }) {
   const latest = log[0]
   const justChanged = new Set((latest?.changes ?? []).map((c) => c.id))
-  const hasState = ir.variables.length > 0 || ir.derived.length > 0
+  const hasState = ir.cells.length > 0
 
   return (
     <div className="shrink-0 border-t border-border bg-white/60">
@@ -95,10 +103,10 @@ export function StatePanel({
                   own with the same shape, because that is what it is — the badge
                   is the only difference, and it says the number you're looking at
                   is a stand-in the design chose, not something it decided. */}
-              {ir.variables.map((v) => (
-                <div key={v.id} className={rowCls}>
-                  <span className="text-muted-foreground">{v.id}</span>
-                  <span className="text-foreground">{fmt(env[v.id])}</span>
+              {ir.cells.filter((c) => !isFormula(c)).map((v) => (
+                <div key={cellRef(v)} className={rowCls}>
+                  <span className="text-muted-foreground">{cellRef(v)}</span>
+                  <span className="text-foreground">{fmt(readRef(env, cellRef(v)))}</span>
                   {v.store && (
                     <span
                       className="rounded bg-muted px-1.5 text-[10px] text-muted-foreground"
@@ -111,18 +119,18 @@ export function StatePanel({
                       {v.store}
                     </span>
                   )}
-                  {justChanged.has(v.id) && (
+                  {justChanged.has(cellRef(v)) && (
                     <span className="rounded bg-amber-100 px-1.5 text-[10px] text-amber-900">
                       {v.store ? 'changed ↗ leaves the design' : 'changed'}
                     </span>
                   )}
                 </div>
               ))}
-              {ir.derived.map((d) => (
-                <div key={d.id} className={rowCls}>
-                  <span className="text-muted-foreground">{d.id}</span>
-                  <span className="text-foreground">{fmt(env[d.id])}</span>
-                  <span className="text-[10px] text-muted-foreground" title={d.expr}>
+              {ir.cells.filter(isFormula).map((d) => (
+                <div key={cellRef(d)} className={rowCls}>
+                  <span className="text-muted-foreground">{cellRef(d)}</span>
+                  <span className="text-foreground">{fmt(readRef(env, cellRef(d)))}</span>
+                  <span className="text-[10px] text-muted-foreground" title={d.formula}>
                     ƒ
                   </span>
                 </div>

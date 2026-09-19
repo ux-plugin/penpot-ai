@@ -7,23 +7,9 @@ import {
   validatePresentation,
   formatAnchorReport,
 } from '../../../../src/lib/renderer/interactions/anchor'
-import { emptyPageInteractions, type PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
 import { emitReactComponent, type PNode } from '../../../../src/lib/renderer/interactions/compile/emit-react'
 import { initDefaultCatalog } from '../../../../src/lib/renderer/interactions/catalog'
-
-function todoIR(): PageInteractions {
-  const ir = emptyPageInteractions()
-  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
-  ir.derived.push({ id: 'isEmpty', expr: 'items.length == 0' })
-  ir.interactions.push({
-    on: { node: 'addBtn', trigger: { type: 'press' } },
-    do: [{ type: 'collection.append', target: 'items', value: '{ label: "" }' }],
-  })
-  ir.bindings.push({ node: 'addBtn', prop: 'disabled', from: 'isEmpty' })
-  ir.bindings.push({ node: 'row', prop: 'text', from: 'item.label' })
-  ir.repeaters.push({ node: 'row', over: 'items', as: 'item' })
-  return ir
-}
+import { todoIR } from './todo-ir'
 
 const presentation: PNode = {
   nodeId: 'page',

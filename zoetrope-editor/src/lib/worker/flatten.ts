@@ -7,7 +7,8 @@ import type { PenpotNode, PenpotPage } from 'penpot-exporter/types'
 import { ZERO_UUID } from '@zoetrope-editor/common/conversions'
 import { applyGeometryDefaults } from '@zoetrope-editor/common/shape-defaults'
 import type { IndexedPage, IndexedShape } from './types'
-import type { PageInteractions } from '../renderer/interactions/ir'
+import type { PageInteractions, AnyPageInteractions } from '../renderer/interactions/ir'
+import { upgradePageInteractions } from '../renderer/interactions/ir'
 
 /**
  * Truncate a UUID-like string to the standard 36-char format when it has extra garbage
@@ -56,7 +57,10 @@ function flattenChildrenRec(
 
 export function flattenPageToIndexed(page: PenpotPage): IndexedPage {
   const children = page.children ?? []
-  const interactions = (page as { interactions?: PageInteractions }).interactions
+  // A stored version-1 block is upgraded on the way in; the stores it carried
+  // are hoisted onto the document by `DocumentModel.loadDocument`.
+  const stored = (page as { interactions?: AnyPageInteractions }).interactions
+  const interactions: PageInteractions | undefined = stored ? upgradePageInteractions(stored).ir : undefined
   const rootFrame = children[0]
   if (!rootFrame) {
     return {

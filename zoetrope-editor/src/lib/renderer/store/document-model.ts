@@ -16,6 +16,7 @@ import { setSelectedIds } from './document-selection'
 import { docProxy, getActiveOrSinglePageId, type DocumentMeta } from './doc-proxy'
 import { emptyTokensLib } from '../../tokens/types'
 import { hydrateScene3dFromDocument } from '../three/scene3d-sync'
+import { upgradePageInteractions, type AnyPageInteractions, type Store } from '../interactions/ir'
 
 function buildPageMap(children: PenpotDocument['children']): Map<string, IndexedPage> {
   const map = new Map<string, IndexedPage>()
@@ -73,6 +74,15 @@ export class DocumentModel {
     useJournalStore.getState().clear()
     const { children, ...meta } = doc
     docProxy.meta = meta as DocumentMeta
+    // Stores are document-wide. A document saved before that carried them per
+    // page (version-1 interactions); adopt those onto the document, by id.
+    const stores: Store[] = [...(docProxy.meta.stores ?? [])]
+    for (const page of children ?? []) {
+      const stored = (page as { interactions?: AnyPageInteractions }).interactions
+      if (!stored) continue
+      for (const s of upgradePageInteractions(stored).stores) if (!stores.some((x) => x.id === s.id)) stores.push(s)
+    }
+    docProxy.meta.stores = stores
     // Tokens live as a runtime TokensLib at the editor layer. Coerce away any
     // serialized DTCG container (import is deferred) and guarantee the slot exists.
     if (!Array.isArray((docProxy.meta.tokens as { sets?: unknown } | undefined)?.sets)) {

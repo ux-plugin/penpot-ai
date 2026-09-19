@@ -29,13 +29,30 @@ function makePage(interactions?: PageInteractions): PenpotPage {
 describe('serialization — interactions survive flatten/unflatten', () => {
   it('carries PageInteractions through the round-trip', () => {
     const ir = emptyPageInteractions()
-    ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
+    ir.cells.push({ id: 'items', owner: { kind: 'page' }, type: { collection: 'object' }, initial: [] })
 
     const indexed = flattenPageToIndexed(makePage(ir))
-    expect(indexed.interactions?.variables.map((v) => v.id)).toEqual(['items'])
+    expect(indexed.interactions?.cells.map((c) => c.id)).toEqual(['items'])
 
     const page = unflattenIndexedPageToPage(indexed) as PenpotPage & { interactions?: PageInteractions }
-    expect(page.interactions?.variables[0]?.id).toBe('items')
+    expect(page.interactions?.cells[0]?.id).toBe('items')
+  })
+
+  it('upgrades a stored version-1 block on read, so old documents open on the cells model', () => {
+    const v1 = {
+      version: 1,
+      variables: [{ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] }],
+      derived: [],
+      interactions: [],
+      appRules: [],
+      bindings: [{ node: 'row', prop: 'text', from: 'item.label' }],
+      states: [],
+      repeaters: [{ node: 'row', over: 'items' }],
+    }
+    const indexed = flattenPageToIndexed(makePage(v1 as unknown as PageInteractions))
+    expect(indexed.interactions?.version).toBe(2)
+    expect(indexed.interactions?.cells.map((c) => c.id)).toEqual(['items'])
+    expect(indexed.interactions?.refs).toEqual([{ node: 'row', props: { text: 'item.label', repeat: 'items' } }])
   })
 
   it('leaves interactions undefined when the page has none', () => {
@@ -71,10 +88,10 @@ describe('nodesToPresentation — shapes -> PNode tree with anchors', () => {
 
   it('derives roles from the behaviour authored on each node', () => {
     const ir = emptyPageInteractions()
-    ir.variables.push({ id: 'draft', type: 'string', scope: 'page', initial: '' })
-    ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
-    ir.editable.push({ node: 'addBtn', prop: 'value', target: 'draft' })
-    ir.repeaters.push({ node: 'row', over: 'items' })
+    ir.cells.push({ id: 'draft', owner: { kind: 'page' }, type: 'string', initial: '' })
+    ir.cells.push({ id: 'items', owner: { kind: 'page' }, type: { collection: 'object' }, initial: [] })
+    ir.refs.push({ node: 'addBtn', props: { value: 'draft' } })
+    ir.refs.push({ node: 'row', props: { repeat: 'items' } })
 
     const root = nodesToPresentation(flattenPageToIndexed(makePage(ir)))
     const kids = root?.children ?? []

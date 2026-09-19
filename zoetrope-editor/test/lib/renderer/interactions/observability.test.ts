@@ -5,12 +5,13 @@
  * preview isn't showing. Since `applyAction` is pure, "what changed" and "which
  * nodes now render differently" are computable, and these tests pin that down —
  * especially the off-screen case: a variable change reaching a node through a
- * binding, with no visible connection to the element that was clicked.
+ * property reference, with no visible connection to the element that was clicked.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest'
 import { initDefaultCatalog } from '../../../../src/lib/renderer/interactions/catalog'
 import { emptyPageInteractions, type PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
+import { pageCell, listCell, variantCell } from './todo-ir'
 import {
   initRuntime,
   buildEnv,
@@ -25,22 +26,12 @@ import {
 
 beforeAll(() => initDefaultCatalog())
 
-const rtOf = (
-  store: Record<string, unknown>,
-  nodeStates = {},
-  slotViews = {},
-  emitted: RuntimeState['emitted'] = [],
-): RuntimeState => ({
-  store,
-  nodeStates,
-  slotViews,
-  emitted,
-})
+const rtOf = (store: Record<string, unknown>, slotViews = {}): RuntimeState => ({ store, slotViews })
 
 describe('diffRuntime', () => {
-  it('reports a changed variable with both sides', () => {
+  it('reports a changed cell with both sides', () => {
     const changes = diffRuntime(rtOf({ status: 'draft' }), rtOf({ status: 'done' }))
-    expect(changes).toEqual([{ kind: 'variable', id: 'status', before: 'draft', after: 'done' }])
+    expect(changes).toEqual([{ kind: 'cell', id: 'status', before: 'draft', after: 'done' }])
   })
 
   it('says nothing when the state is untouched', () => {
@@ -52,22 +43,22 @@ describe('diffRuntime', () => {
     expect(diffRuntime(rtOf({ items: [1] }), rtOf({ items: [1, 2] }))).toHaveLength(1)
   })
 
-  it('covers variant state and slot swaps, not just variables', () => {
-    const changes = diffRuntime(rtOf({}, { card: 'idle' }, { outlet: 'home' }), rtOf({}, { card: 'open' }, { outlet: 'about' }))
+  it("covers a node's own cell and slot swaps, not just page cells", () => {
+    const changes = diffRuntime(rtOf({ 'card.state': 'idle' }, { outlet: 'home' }), rtOf({ 'card.state': 'open' }, { outlet: 'about' }))
     expect(changes.map((c) => [c.kind, c.id])).toEqual([
-      ['node-state', 'card'],
+      ['cell', 'card.state'],
       ['slot', 'outlet'],
     ])
   })
 })
 
 describe('affectedNodes — where an effect actually lands', () => {
-  /** Click Save → status flips; a Badge elsewhere reads status through a binding. */
+  /** Click Save → status flips; a Badge elsewhere reads status through a reference. */
   function ir(): PageInteractions {
     const it = emptyPageInteractions()
-    it.variables.push({ id: 'status', type: 'string', scope: 'page', initial: 'draft' })
-    it.bindings.push({ node: 'badge', prop: 'text', from: 'status' })
-    it.bindings.push({ node: 'footer', prop: 'text', from: '"static"' })
+    it.cells.push(pageCell('status', 'string', 'draft'))
+    it.refs.push({ node: 'badge', props: { text: 'status' } })
+    it.refs.push({ node: 'footer', props: { text: '"static"' } })
     it.interactions.push({
       id: 'i1',
       on: { node: 'saveBtn', trigger: { type: 'press' } },
@@ -76,7 +67,7 @@ describe('affectedNodes — where an effect actually lands', () => {
     return it
   }
 
-  it('names the node whose binding changed — not the node that was clicked', () => {
+  it('names the node whose reference changed — not the node that was clicked', () => {
     const model = ir()
     const before = initRuntime(model)
     const after = runInteraction(model, before, model.interactions[0], buildEnv(model, before))
@@ -88,25 +79,26 @@ describe('affectedNodes — where an effect actually lands', () => {
     expect(affected.map((a) => a.node)).not.toContain('saveBtn')
   })
 
-  it('leaves bindings that do not depend on the change alone', () => {
+  it('leaves references that do not depend on the change alone', () => {
     const model = ir()
     const before = initRuntime(model)
     const after = runInteraction(model, before, model.interactions[0], buildEnv(model, before))
     expect(affectedNodes(model, before, after).map((a) => a.node)).not.toContain('footer')
   })
 
-  it('flags a repeater template when its collection changes', () => {
+  it('flags a repeated template when its list changes', () => {
     const model = emptyPageInteractions()
-    model.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
-    model.repeaters.push({ node: 'row', over: 'items' })
+    model.cells.push(listCell('items'))
+    model.refs.push({ node: 'row', props: { repeat: 'items' } })
     const before = initRuntime(model)
     const after = { ...before, store: { items: [{ id: 1 }] } }
     expect(affectedNodes(model, before, after)).toEqual([{ node: 'row', props: ['list'] }])
   })
 
-  it('flags a node whose variant state changed and a slot that swapped', () => {
+  it('flags a node whose own cell changed and a slot that swapped', () => {
     const model = emptyPageInteractions()
-    const affected = affectedNodes(model, rtOf({}, { card: 'idle' }, {}), rtOf({}, { card: 'open' }, { outlet: 'about' }))
+    model.cells.push(variantCell('card', ['idle', 'open']))
+    const affected = affectedNodes(model, rtOf({ 'card.state': 'idle' }, {}), rtOf({ 'card.state': 'open' }, { outlet: 'about' }))
     expect(affected).toEqual([
       { node: 'card', props: ['state'] },
       { node: 'outlet', props: ['view'] },
@@ -146,8 +138,8 @@ describe('pushActivity', () => {
 
   it('does not collapse when the same trigger changed something different', () => {
     let log: LoggedActivity[] = []
-    log = pushActivity(log, entry('press', 'n', [{ kind: 'variable', id: 'c', before: 0, after: 1 }]))
-    log = pushActivity(log, entry('press', 'n', [{ kind: 'variable', id: 'c', before: 1, after: 2 }]))
+    log = pushActivity(log, entry('press', 'n', [{ kind: 'cell', id: 'c', before: 0, after: 1 }]))
+    log = pushActivity(log, entry('press', 'n', [{ kind: 'cell', id: 'c', before: 1, after: 2 }]))
     expect(log).toHaveLength(2)
   })
 

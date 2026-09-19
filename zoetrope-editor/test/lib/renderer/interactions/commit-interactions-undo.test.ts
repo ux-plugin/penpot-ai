@@ -9,7 +9,7 @@ import {
 } from '../../../../src/lib/renderer/interactions/document/commit-interactions'
 import { undo, redo } from '../../../../src/lib/page-crud'
 import { emptyPageInteractions } from '../../../../src/lib/renderer/interactions/ir'
-import type { PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
+import type { PageInteractions, Cell } from '../../../../src/lib/renderer/interactions/ir'
 
 const PAGE_ID = 'page1'
 const ROOT = '00000000-0000-0000-0000-000000000000'
@@ -21,11 +21,13 @@ function makePage(): IndexedPage {
   } as unknown as IndexedPage
 }
 
+const formula = (id: string, expr: string): Cell => ({ id, owner: { kind: 'page' }, type: 'any', initial: null, formula: expr })
+
 function irA(): PageInteractions {
-  return { ...emptyPageInteractions(), derived: [{ id: 'd1', expr: '1 + 1' }] }
+  return { ...emptyPageInteractions(), cells: [formula('d1', '1 + 1')] }
 }
 function irB(): PageInteractions {
-  return { ...emptyPageInteractions(), derived: [{ id: 'd1', expr: '2 + 2' }, { id: 'd2', expr: '3' }] }
+  return { ...emptyPageInteractions(), cells: [formula('d1', '2 + 2'), formula('d2', '3')] }
 }
 
 describe('interaction edits are undoable through the global history', () => {

@@ -15,7 +15,8 @@ import { docProxy } from '../../store/doc-proxy'
 import { commitChanges } from '../../store/commit'
 import { buildSetPageInteractions } from '../../../changes/page-interactions-change'
 import type { IndexedPage } from '../../../worker/types'
-import type { PageInteractions } from '../ir'
+import type { Change } from 'penpot-exporter/types'
+import type { PageInteractions, Store } from '../ir'
 
 export async function commitInteractions(pageId: string, next: PageInteractions): Promise<void> {
   const page = docProxy.pageMap.get(pageId) as IndexedPage | undefined
@@ -28,4 +29,38 @@ export async function commitInteractions(pageId: string, next: PageInteractions)
 export function currentInteractions(pageId: string): PageInteractions | undefined {
   const page = docProxy.pageMap.get(pageId) as IndexedPage | undefined
   return page?.interactions
+}
+
+// ---- stores (document-wide; see DocumentMeta.stores) ----
+
+/** The document's stores, or none. */
+export function currentStores(): Store[] {
+  return docProxy.meta?.stores ?? []
+}
+
+/**
+ * Persist the document's stores. Page edits that belong to the same gesture
+ * (detaching a deleted store's cells on every page) ride the same undo frame,
+ * so one Cmd+Z reverses the whole thing.
+ */
+export async function commitStores(
+  next: Store[],
+  pages: ReadonlyArray<{ pageId: string; next: PageInteractions }> = [],
+): Promise<void> {
+  const redoChanges: Change[] = []
+  const undoChanges: Change[] = []
+  for (const edit of pages) {
+    const page = docProxy.pageMap.get(edit.pageId) as IndexedPage | undefined
+    if (!page) continue
+    const { redo, undo } = buildSetPageInteractions(edit.pageId, page.interactions, edit.next)
+    redoChanges.push(redo)
+    undoChanges.push(undo)
+  }
+  await commitChanges({
+    redoChanges,
+    undoChanges,
+    docMetaRedoChanges: [{ type: 'set-stores', stores: next }],
+    docMetaUndoChanges: [{ type: 'set-stores', stores: currentStores() }],
+    saveUndo: true,
+  })
 }

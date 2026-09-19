@@ -83,6 +83,8 @@ export function docMetaField(change: DocMetaChange): string {
       return `component:${change.component.id}`
     case 'del-component':
       return `component:${change.id}`
+    case 'set-stores':
+      return 'stores'
   }
 }
 

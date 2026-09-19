@@ -1,6 +1,7 @@
 import { proxy } from 'valtio'
 import { proxyMap, proxySet } from 'valtio/utils'
 import type { PenpotDocument } from 'penpot-exporter/types'
+import type { Store } from '../interactions/ir'
 import type { LocalComponent } from '../../common/component'
 import type { TokensLib } from '../../tokens/types'
 import type { IndexedNode, IndexedPage } from '../../worker/types'
@@ -13,6 +14,8 @@ import type { IndexedNode, IndexedPage } from '../../worker/types'
 export type DocumentMeta = Omit<PenpotDocument, 'children' | 'tokens' | 'components'> & {
   tokens?: TokensLib
   components: Record<string, LocalComponent>
+  /** Interaction stores: document-wide data sources cells can live in (see interactions/ir). */
+  stores?: Store[]
 }
 
 export interface DocState {

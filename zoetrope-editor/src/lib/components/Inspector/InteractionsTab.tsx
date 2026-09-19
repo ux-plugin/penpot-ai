@@ -14,17 +14,23 @@ import type { IndexedShape } from '../../worker/types'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
 import {
   emptyPageInteractions,
+  cellRef,
+  isFormula,
+  isCollectionType,
+  refsOf,
+  propRef,
+  editedCell,
+  editableError,
+  REPEAT_PROP,
+  VALUE_PROP,
   type PageInteractions,
   type Interaction,
   type Action,
-  type Variable,
+  type Cell,
+  type Owner,
   type Store,
   type ValueType,
-  type Binding,
-  type Derived,
   type Json,
-  type Scope,
-  editableError,
 } from '../../renderer/interactions/ir'
 import { listTriggers, listActions, getAction, isPlanned, type CatalogStatus } from '../../renderer/interactions/catalog'
 import { isSlotShape, isFrameShape } from '../../worker/geometry/shapes'
@@ -41,38 +47,34 @@ import {
   setActionTarget,
   setActionValue,
   setActionParam,
-  getEditable,
-  setEditable,
-  addVariable,
-  removeVariable,
-  makeCollectionVariable,
-  makeScalarVariable,
-  toVariableId,
-  setVariableValue,
-  setVariableType,
-  setRepeater,
-  clearRepeater,
-  moveRepeater,
-  addBinding,
-  setBindingProp,
-  setBindingFrom,
-  removeBinding,
-  addDerived,
-  setDerivedExpr,
-  removeDerived,
-  setVariableStore,
-  setVariableScope,
+  addCell,
+  removeCell,
+  makeListCell,
+  makeCell,
+  makeFormula,
+  toCellId,
+  setCellValue,
+  setCellType,
+  setCellFormula,
+  setCellOwner,
+  setCellStore,
+  setRepeat,
+  clearRepeat,
+  moveRepeat,
+  setRef,
+  clearRef,
+  moveRef,
 } from '../../renderer/interactions/document/edit-interactions'
-import { commitInteractions, currentInteractions } from '../../renderer/interactions/document/commit-interactions'
+import {
+  commitInteractions,
+  currentInteractions,
+  currentStores,
+} from '../../renderer/interactions/document/commit-interactions'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
 type Commit = (next: PageInteractions) => void
 type LiveIR = () => PageInteractions
-
-function isCollection(t: ValueType): boolean {
-  return typeof t === 'object' && t !== null && 'collection' in t
-}
 
 function exprError(src?: string): string | null {
   if (!src || !src.trim()) return null
@@ -120,14 +122,15 @@ function valuePlaceholder(type: string): string {
 function ActionRow({
   it,
   index,
-  variables,
+  cells,
   nodes,
   commit,
   liveIR,
 }: {
   it: Interaction
   index: number
-  variables: readonly Variable[]
+  /** Every cell an action may write — anything but a formula. */
+  cells: readonly Cell[]
   nodes: readonly IndexedShape[]
   commit: Commit
   liveIR: LiveIR
@@ -140,8 +143,7 @@ function ActionRow({
   const id = it.id as string
   const err = exprError(action.value)
 
-  const collections = variables.filter((v) => isCollection(v.type))
-  const targetVars = expectsTarget === 'collection' ? collections : variables
+  const targets = expectsTarget === 'collection' ? cells.filter((c) => isCollectionType(c.type)) : cells
 
   // Slot swap ("Show here"): target picks the slot, value picks the view frame.
   // Both are plain node pickers — no routing/history vocabulary (derived at lowering).
@@ -170,28 +172,12 @@ function ActionRow({
             className={selectCls}
             value={action.target ?? ''}
             onChange={(e) => commit(setActionTarget(liveIR(), id, index, e.target.value))}
-            aria-label="Target variable"
+            aria-label="Target value"
           >
-            <option value="">{targetVars.length ? 'choose…' : 'add a value below'}</option>
-            {targetVars.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.id}
-              </option>
-            ))}
-          </select>
-        )}
-
-        {expectsTarget === 'node.state' && (
-          <select
-            className={selectCls}
-            value={action.target ?? ''}
-            onChange={(e) => commit(setActionTarget(liveIR(), id, index, e.target.value))}
-            aria-label="Target node"
-          >
-            <option value="">choose…</option>
-            {nodes.map((n) => (
-              <option key={n.id} value={n.id}>
-                {n.name ?? n.id.slice(0, 8)}
+            <option value="">{targets.length ? 'choose…' : 'add a value below'}</option>
+            {targets.map((c) => (
+              <option key={cellRef(c)} value={cellRef(c)}>
+                {cellRef(c)}
               </option>
             ))}
           </select>
@@ -302,14 +288,14 @@ function ActionRow({
 function InteractionCard({
   it,
   triggers,
-  variables,
+  cells,
   nodes,
   commit,
   liveIR,
 }: {
   it: Interaction
   triggers: ReturnType<typeof listTriggers>
-  variables: readonly Variable[]
+  cells: readonly Cell[]
   nodes: readonly IndexedShape[]
   commit: Commit
   liveIR: LiveIR
@@ -351,7 +337,7 @@ function InteractionCard({
             key={i}
             it={it}
             index={i}
-            variables={variables}
+            cells={cells}
             nodes={nodes}
             commit={commit}
             liveIR={liveIR}
@@ -387,9 +373,9 @@ function InteractionCard({
 
 /**
  * List authoring on a CONTAINER: a frame "shows" a list, and one of its children
- * is the per-item template. The repeater is stored on the template child
- * (Repeater.node = child id), so the IR/runtime/emitter are unchanged — only the
- * authoring surface moves from the leaf to the parent frame.
+ * is the per-item template. The `repeat` reference is stored on the template
+ * child, so the IR/runtime/emitter are unchanged — only the authoring surface
+ * moves from the leaf to the parent frame.
  */
 function ListSection({
   node,
@@ -408,18 +394,18 @@ function ListSection({
   liveIR: LiveIR
 }) {
   const children = (node.shapes ?? []).map((id) => objects[id]).filter((c): c is IndexedShape => Boolean(c))
-  const template = children.find((c) => ir.repeaters.some((r) => r.node === c.id))
-  const rep = template ? ir.repeaters.find((r) => r.node === template.id) : undefined
+  const template = children.find((c) => propRef(ir, c.id, REPEAT_PROP) !== undefined)
+  const rep = template ? refsOf(ir, template.id) : undefined
   const on = Boolean(rep && template)
   const hasLists = lists.length > 0
-  const over = rep?.over ?? ''
+  const over = rep?.props[REPEAT_PROP] ?? ''
   const overMissing = on && over !== '' && !lists.some((v) => v.id === over)
-  const keyErr = exprError(rep?.key)
+  const keyErr = exprError(rep?.item?.key)
   const childName = (c: IndexedShape) => c.name ?? c.id.slice(0, 8)
 
   const toggle = () => {
-    if (on && template) commit(clearRepeater(liveIR(), template.id))
-    else if (hasLists && children[0]) commit(setRepeater(liveIR(), children[0].id, { over: lists[0].id, as: 'item' }))
+    if (on && template) commit(clearRepeat(liveIR(), template.id))
+    else if (hasLists && children[0]) commit(setRepeat(liveIR(), children[0].id, { over: lists[0].id, as: 'item' }))
   }
 
   return (
@@ -447,7 +433,7 @@ function ListSection({
             <select
               className={selectCls}
               value={over}
-              onChange={(e) => commit(setRepeater(liveIR(), template.id, { over: e.target.value }))}
+              onChange={(e) => commit(setRepeat(liveIR(), template.id, { over: e.target.value }))}
               aria-label="Shows list"
             >
               <option value="">choose…</option>
@@ -459,10 +445,10 @@ function ListSection({
             </select>
             <span>as</span>
             <input
-              key={`${template.id}-as-${rep.as ?? ''}`}
+              key={`${template.id}-as-${rep.item?.as ?? ''}`}
               className="h-7 w-20 rounded-md border border-border bg-background px-2 font-mono text-[11px] text-foreground outline-none focus:border-ring"
-              defaultValue={rep.as ?? 'item'}
-              onBlur={(e) => commit(setRepeater(liveIR(), template.id, { as: e.target.value }))}
+              defaultValue={rep.item?.as ?? 'item'}
+              onBlur={(e) => commit(setRepeat(liveIR(), template.id, { as: e.target.value }))}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
               }}
@@ -476,7 +462,7 @@ function ListSection({
               <select
                 className={selectCls}
                 value={template.id}
-                onChange={(e) => commit(moveRepeater(liveIR(), template.id, e.target.value))}
+                onChange={(e) => commit(moveRepeat(liveIR(), template.id, e.target.value))}
                 aria-label="Item template"
               >
                 {children.map((c) => (
@@ -491,11 +477,11 @@ function ListSection({
           {overMissing && <p className="text-[10px] text-destructive">List “{over}” was removed — pick another.</p>}
 
           <input
-            key={`${template.id}-key-${rep.key ?? ''}`}
+            key={`${template.id}-key-${rep.item?.key ?? ''}`}
             className={cn(inputCls, keyErr && 'border-destructive')}
-            defaultValue={rep.key ?? ''}
+            defaultValue={rep.item?.key ?? ''}
             placeholder="key (optional), e.g. item.id"
-            onBlur={(e) => commit(setRepeater(liveIR(), template.id, { key: e.target.value }))}
+            onBlur={(e) => commit(setRepeat(liveIR(), template.id, { key: e.target.value }))}
             onKeyDown={(e) => {
               if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
             }}
@@ -517,28 +503,28 @@ function ListSection({
 
 function BindRow({
   nodeId,
-  occ,
-  binding,
+  prop,
+  expr,
   forEachItem,
   commit,
   liveIR,
 }: {
   nodeId: string
-  occ: number
-  binding: Binding
+  prop: string
+  expr: string
   forEachItem: boolean
   commit: Commit
   liveIR: LiveIR
 }) {
-  const err = exprError(binding.from)
-  const props = COMMON_PROPS.includes(binding.prop) ? COMMON_PROPS : [binding.prop, ...COMMON_PROPS]
+  const err = exprError(expr)
+  const props = COMMON_PROPS.includes(prop) ? COMMON_PROPS : [prop, ...COMMON_PROPS]
   return (
     <div className="rounded-md border border-border/70 p-2">
       <div className="flex items-center gap-1.5">
         <select
           className={selectCls}
-          value={binding.prop}
-          onChange={(e) => commit(setBindingProp(liveIR(), nodeId, occ, e.target.value))}
+          value={prop}
+          onChange={(e) => commit(moveRef(liveIR(), nodeId, prop, e.target.value))}
           aria-label="Bound prop"
         >
           {props.map((p) => (
@@ -553,18 +539,18 @@ function BindRow({
           className="ml-auto shrink-0 rounded p-1 text-muted-foreground hover:text-destructive"
           aria-label="Remove binding"
           title="Remove binding"
-          onClick={() => commit(removeBinding(liveIR(), nodeId, occ))}
+          onClick={() => commit(clearRef(liveIR(), nodeId, prop))}
         >
           ✕
         </button>
       </div>
       <div className="mt-1.5">
         <input
-          key={`${nodeId}-${occ}-${binding.prop}-from`}
+          key={`${nodeId}-${prop}-from`}
           className={cn(inputCls, err && 'border-destructive')}
-          defaultValue={binding.from}
+          defaultValue={expr}
           placeholder={forEachItem ? 'expression, e.g. item.label' : 'expression, e.g. count'}
-          onBlur={(e) => commit(setBindingFrom(liveIR(), nodeId, occ, e.target.value))}
+          onBlur={(e) => commit(setRef(liveIR(), nodeId, prop, e.target.value))}
           onKeyDown={(e) => {
             if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
           }}
@@ -595,10 +581,12 @@ function EditsSection({
   commit: Commit
   liveIR: LiveIR
 }) {
-  const current = getEditable(ir, nodeId)
+  const current = editedCell(ir, nodeId)
   // Anything the engine would accept a write into.
-  const writable = ir.variables.filter((v) => !editableError(ir, v.id))
-  const err = current ? editableError(ir, current.target) : null
+  const writable = ir.cells.filter((c) => !editableError(ir, cellRef(c)))
+  const err = current ? editableError(ir, cellRef(current)) : null
+  const setEdits = (target: string) =>
+    commit(target ? setRef(liveIR(), nodeId, VALUE_PROP, target) : clearRef(liveIR(), nodeId, VALUE_PROP))
 
   return (
     <section className="flex flex-col gap-1.5 border-t border-border p-3">
@@ -613,14 +601,14 @@ function EditsSection({
             <span className="text-[11px] text-muted-foreground">this edits</span>
             <select
               className={selectCls}
-              value={current?.target ?? ''}
-              onChange={(e) => commit(setEditable(liveIR(), nodeId, e.target.value))}
+              value={current ? cellRef(current) : ''}
+              onChange={(e) => setEdits(e.target.value)}
               aria-label="Value this node edits"
             >
               <option value="">nothing</option>
-              {writable.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.id}
+              {writable.map((c) => (
+                <option key={cellRef(c)} value={cellRef(c)}>
+                  {cellRef(c)}
                 </option>
               ))}
             </select>
@@ -628,7 +616,7 @@ function EditsSection({
           {err && <p className="text-[10px] text-destructive">{err}</p>}
           {current && !err && (
             <p className="text-[10px] text-muted-foreground">
-              Typing here sets <span className="font-mono">{current.target}</span>, and it shows the current value.
+              Typing here sets <span className="font-mono">{cellRef(current)}</span>, and it shows the current value.
             </p>
           )}
         </>
@@ -650,20 +638,31 @@ function BindSection({
   commit: Commit
   liveIR: LiveIR
 }) {
-  const bindings = ir.bindings.filter((b) => b.node === nodeId)
+  // `repeat` is authored in the List section and an edited `value` in Edits;
+  // everything else a property references shows here.
+  const edited = editedCell(ir, nodeId)
+  const bindings = Object.entries(refsOf(ir, nodeId)?.props ?? {}).filter(
+    ([prop]) => prop !== REPEAT_PROP && !(edited && prop === VALUE_PROP),
+  )
+  const add = () => {
+    const live = liveIR()
+    const prop = COMMON_PROPS.find((p) => propRef(live, nodeId, p) === undefined) ?? 'text'
+    const first = live.cells.find((c) => c.owner.kind !== 'node')
+    commit(setRef(live, nodeId, prop, first ? cellRef(first) : '""'))
+  }
   return (
     <section className="border-b border-border p-3">
       <h3 className={sectionHeadCls}>{forEachItem ? 'Bind · for each item' : 'Bind'}</h3>
       {bindings.length === 0 && <p className="mb-1.5 text-[11px] text-muted-foreground/70">No bindings yet.</p>}
       <div className="mb-2 flex flex-col gap-1.5">
-        {bindings.map((b, i) => (
-          <BindRow key={i} nodeId={nodeId} occ={i} binding={b} forEachItem={forEachItem} commit={commit} liveIR={liveIR} />
+        {bindings.map(([prop, expr]) => (
+          <BindRow key={prop} nodeId={nodeId} prop={prop} expr={expr} forEachItem={forEachItem} commit={commit} liveIR={liveIR} />
         ))}
       </div>
       <button
         type="button"
         className="self-start text-[11px] text-muted-foreground hover:text-foreground"
-        onClick={() => commit(addBinding(liveIR(), nodeId, 'text', ''))}
+        onClick={add}
       >
         + Add binding
       </button>
@@ -754,24 +753,20 @@ function ValueEditor({
   )
 }
 
-/** The value editor for a variable's initial value, by type. */
-function VariableValueEditor({ v, commit, liveIR }: { v: Variable; commit: Commit; liveIR: LiveIR }) {
-  return (
-    <ValueEditor
-      id={v.id}
-      type={v.type}
-      value={v.initial}
-      set={(value) => commit(setVariableValue(liveIR(), v.id, value))}
-    />
-  )
+/** The value editor for a cell's initial value, by type. */
+function CellValueEditor({ c, commit, liveIR }: { c: Cell; commit: Commit; liveIR: LiveIR }) {
+  const ref = cellRef(c)
+  return <ValueEditor id={ref} type={c.type} value={c.initial} set={(value) => commit(setCellValue(liveIR(), ref, value))} />
 }
 
 /** Where a cell lives, in the designer's words. */
-const SCOPE_LABEL: Record<Scope, string> = {
-  local: 'this component',
+const OWNER_LABEL: Record<Owner['kind'], string> = {
+  node: 'this component',
   page: 'this page',
-  global: 'whole document',
+  document: 'whole document',
 }
+/** The owners a cell can be moved to from here; a node's cell stays on its node. */
+const OWNERS: Owner[] = [{ kind: 'page' }, { kind: 'document' }]
 
 /**
  * One component-local cell — the design's own state. Name, type, where it lives,
@@ -782,30 +777,32 @@ const SCOPE_LABEL: Record<Scope, string> = {
  * outside" is where a value lives, not a checkbox on it. `stores` lets the row
  * offer "move into a store" — the designer decides what wires to what.
  */
-function VariableRow({
-  v,
+function CellRow({
+  c,
   stores,
   commit,
   liveIR,
 }: {
-  v: Variable
+  c: Cell
   stores: readonly Store[]
   commit: Commit
   liveIR: LiveIR
 }) {
-  const cur = typeKey(v.type)
+  const ref = cellRef(c)
+  const cur = typeKey(c.type)
   const keys = TYPE_KEYS.includes(cur) ? TYPE_KEYS : [cur, ...TYPE_KEYS]
+  const owners = c.owner.kind === 'node' ? [c.owner, ...OWNERS] : OWNERS
   return (
     <div className="rounded-md border border-border/70 p-2">
       <div className="flex items-center gap-1.5">
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground" title={v.id}>
-          {v.id}
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground" title={ref}>
+          {ref}
         </span>
         <select
           className={typeSelectCls}
           value={cur}
-          onChange={(e) => commit(setVariableType(liveIR(), v.id, typeFromKey(e.target.value)))}
-          aria-label={`${v.id} type`}
+          onChange={(e) => commit(setCellType(liveIR(), ref, typeFromKey(e.target.value)))}
+          aria-label={`${ref} type`}
         >
           {keys.map((k) => (
             <option key={k} value={k}>
@@ -816,8 +813,8 @@ function VariableRow({
         <button
           type="button"
           className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-destructive"
-          aria-label={`Remove ${v.id}`}
-          onClick={() => commit(removeVariable(liveIR(), v.id))}
+          aria-label={`Remove ${ref}`}
+          onClick={() => commit(removeCell(liveIR(), ref))}
         >
           ✕
         </button>
@@ -826,13 +823,16 @@ function VariableRow({
       <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <select
           className={typeSelectCls}
-          value={v.scope}
-          onChange={(e) => commit(setVariableScope(liveIR(), v.id, e.target.value as Scope))}
-          aria-label={`${v.id} lives in`}
+          value={c.owner.kind}
+          onChange={(e) => {
+            const owner = owners.find((o) => o.kind === e.target.value)
+            if (owner) commit(setCellOwner(liveIR(), ref, owner))
+          }}
+          aria-label={`${ref} lives in`}
         >
-          {(Object.keys(SCOPE_LABEL) as Scope[]).map((s) => (
-            <option key={s} value={s}>
-              {SCOPE_LABEL[s]}
+          {owners.map((o) => (
+            <option key={o.kind} value={o.kind}>
+              {OWNER_LABEL[o.kind]}
             </option>
           ))}
         </select>
@@ -840,8 +840,8 @@ function VariableRow({
           <select
             className={typeSelectCls}
             value=""
-            onChange={(e) => e.target.value && commit(setVariableStore(liveIR(), v.id, e.target.value))}
-            aria-label={`Move ${v.id} into a store`}
+            onChange={(e) => e.target.value && commit(setCellStore(liveIR(), ref, e.target.value, stores))}
+            aria-label={`Move ${ref} into a store`}
             title="Move this value into a store — mark it as supplied by the real app"
           >
             <option value="">move to store…</option>
@@ -854,41 +854,42 @@ function VariableRow({
         )}
         <div className="ml-auto flex min-w-0 items-center gap-1">
           <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">starts as</span>
-          <VariableValueEditor v={v} commit={commit} liveIR={liveIR} />
+          <CellValueEditor c={c} commit={commit} liveIR={liveIR} />
         </div>
       </div>
     </div>
   )
 }
 
-function DerivedRow({ d, commit, liveIR }: { d: Derived; commit: Commit; liveIR: LiveIR }) {
-  const err = exprError(d.expr)
+function FormulaRow({ c, commit, liveIR }: { c: Cell; commit: Commit; liveIR: LiveIR }) {
+  const ref = cellRef(c)
+  const err = exprError(c.formula)
   return (
     <div className="rounded-md border border-border/70 p-2">
       <div className="flex items-center gap-1.5">
-        <span className="font-mono text-xs text-foreground">{d.id}</span>
+        <span className="font-mono text-xs text-foreground">{ref}</span>
         <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground" title="derived — read-only formula">
           ƒ
         </span>
         <button
           type="button"
           className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground hover:text-destructive"
-          aria-label={`Remove ${d.id}`}
-          onClick={() => commit(removeDerived(liveIR(), d.id))}
+          aria-label={`Remove ${ref}`}
+          onClick={() => commit(removeCell(liveIR(), ref))}
         >
           ✕
         </button>
       </div>
       <input
-        key={`${d.id}-expr`}
+        key={`${ref}-expr`}
         className={cn(inputCls, 'mt-1.5', err && 'border-destructive')}
-        defaultValue={d.expr}
+        defaultValue={c.formula ?? ''}
         placeholder="formula, e.g. items.length == 0"
-        onBlur={(e) => commit(setDerivedExpr(liveIR(), d.id, e.target.value))}
+        onBlur={(e) => commit(setCellFormula(liveIR(), ref, e.target.value))}
         onKeyDown={(e) => {
           if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
         }}
-        aria-label={`${d.id} formula`}
+        aria-label={`${ref} formula`}
       />
       {err && <p className="mt-0.5 text-[10px] text-destructive">{err}</p>}
     </div>
@@ -903,11 +904,14 @@ export function InteractionsTab() {
   const singleId = selectedIds.size === 1 ? Array.from(selectedIds)[0] : null
 
   const ir = page?.interactions ?? emptyPageInteractions()
-  const variables = ir.variables
-  // Store cells are authored in the Data panel; this section is the design's own
-  // local state. Both remain one namespace an interaction can name.
-  const localCells = variables.filter((v) => !v.store)
-  const collections = variables.filter((v) => isCollection(v.type))
+  const stores = doc.meta?.stores ?? []
+  const cells = ir.cells as Cell[]
+  // Store cells are authored in the Data panel and formulas below; this section
+  // is the design's own state. All remain one namespace an interaction can name.
+  const localCells = cells.filter((c) => !c.store && !isFormula(c))
+  const formulas = cells.filter(isFormula)
+  const writable = cells.filter((c) => !isFormula(c))
+  const lists = cells.filter((c) => isCollectionType(c.type)).map((c) => ({ id: cellRef(c) }))
   const triggers = useMemo(() => listTriggers().filter((t) => t.scope === 'node'), [])
   const nodes: IndexedShape[] = page
     ? (Object.values(page.objects) as IndexedShape[]).filter((o) => o.id !== ROOT_UUID)
@@ -918,22 +922,19 @@ export function InteractionsTab() {
     if (pid) void commitInteractions(pid, next)
   }
 
-  const derived = ir.derived
-
   const [newVar, setNewVar] = useState('')
   const addVar = (collection: boolean) => {
-    const id = toVariableId(newVar)
+    const id = toCellId(newVar)
     if (!id) return
-    const v: Variable = collection ? makeCollectionVariable(id) : makeScalarVariable(id, 'string', '')
-    commit(addVariable(liveIR(), v))
+    commit(addCell(liveIR(), collection ? makeListCell(id) : makeCell(id, 'string', ''), currentStores()))
     setNewVar('')
   }
 
   const [newDerived, setNewDerived] = useState('')
   const addFormula = () => {
-    const id = toVariableId(newDerived)
+    const id = toCellId(newDerived)
     if (!id) return
-    commit(addDerived(liveIR(), id, ''))
+    commit(addCell(liveIR(), makeFormula(id), currentStores()))
     setNewDerived('')
   }
 
@@ -941,7 +942,7 @@ export function InteractionsTab() {
   const node = singleId ? objects[singleId] : undefined
   const nodeInteractions = singleId ? ir.interactions.filter((it) => it.on.node === singleId) : []
   const isContainer = (node?.shapes?.length ?? 0) > 0
-  const isTemplate = node ? ir.repeaters.some((r) => r.node === node.id) : false
+  const isTemplate = node ? propRef(ir, node.id, REPEAT_PROP) !== undefined : false
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-auto">
@@ -954,8 +955,8 @@ export function InteractionsTab() {
           </p>
         )}
         <div className="mb-2 flex flex-col gap-1.5">
-          {localCells.map((v) => (
-            <VariableRow key={v.id} v={v} stores={ir.stores} commit={commit} liveIR={liveIR} />
+          {localCells.map((c) => (
+            <CellRow key={cellRef(c)} c={c} stores={stores as Store[]} commit={commit} liveIR={liveIR} />
           ))}
         </div>
         <div className="flex items-center gap-1.5">
@@ -972,7 +973,7 @@ export function InteractionsTab() {
           <button
             type="button"
             className="h-7 shrink-0 rounded-md border border-border px-2 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
-            disabled={!toVariableId(newVar)}
+            disabled={!toCellId(newVar)}
             onClick={() => addVar(false)}
           >
             + Value
@@ -980,7 +981,7 @@ export function InteractionsTab() {
           <button
             type="button"
             className="h-7 shrink-0 rounded-md border border-border px-2 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
-            disabled={!toVariableId(newVar)}
+            disabled={!toCellId(newVar)}
             onClick={() => addVar(true)}
           >
             + List
@@ -991,12 +992,12 @@ export function InteractionsTab() {
       {/* Derived — read-only formulas over other state */}
       <section className="border-b border-border p-3">
         <h3 className="mb-1.5 text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground">Derived</h3>
-        {derived.length === 0 && (
+        {formulas.length === 0 && (
           <p className="mb-1.5 text-[11px] text-muted-foreground/70">No formulas yet — e.g. a count or an empty check.</p>
         )}
         <div className="mb-2 flex flex-col gap-1.5">
-          {derived.map((d) => (
-            <DerivedRow key={d.id} d={d} commit={commit} liveIR={liveIR} />
+          {formulas.map((c) => (
+            <FormulaRow key={cellRef(c)} c={c} commit={commit} liveIR={liveIR} />
           ))}
         </div>
         <div className="flex items-center gap-1.5">
@@ -1013,7 +1014,7 @@ export function InteractionsTab() {
           <button
             type="button"
             className="h-7 shrink-0 rounded-md border border-border px-2 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
-            disabled={!toVariableId(newDerived)}
+            disabled={!toCellId(newDerived)}
             onClick={addFormula}
           >
             + Formula
@@ -1031,7 +1032,7 @@ export function InteractionsTab() {
         <>
           {/* A container frame can SHOW a list — author it here; the repeater lands on the template child */}
           {isContainer && (
-            <ListSection node={node} objects={objects} ir={ir} lists={collections} commit={commit} liveIR={liveIR} />
+            <ListSection node={node} objects={objects} ir={ir} lists={lists} commit={commit} liveIR={liveIR} />
           )}
 
           {/* Two-way: this node EDITS a value (a field), rather than only displaying one */}
@@ -1050,7 +1051,7 @@ export function InteractionsTab() {
                 key={it.id}
                 it={it}
                 triggers={triggers}
-                variables={variables}
+                cells={writable}
                 nodes={nodes}
                 commit={commit}
                 liveIR={liveIR}

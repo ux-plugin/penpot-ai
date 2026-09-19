@@ -21,24 +21,25 @@ import {
   emptyPageInteractions,
   editableError,
   isBacked,
-  type Action,
   type PageInteractions,
+  type Store,
 } from '../../../../src/lib/renderer/interactions/ir'
 import {
-  addVariable,
-  addDerived,
-  makeScalarVariable,
-  makeCollectionVariable,
+  addCell,
+  makeCell,
+  makeListCell,
+  makeFormula,
   addStore,
   removeStore,
+  detachStore,
   addStoreField,
-  setVariableStore,
-  setVariableDescription,
-  setVariableScope,
-  setVariableType,
+  setCellStore,
+  setCellDescription,
+  setCellOwner,
+  setCellType,
   isNameTaken,
 } from '../../../../src/lib/renderer/interactions/document/edit-interactions'
-import { emitReactComponent, emitAction, type PNode } from '../../../../src/lib/renderer/interactions/compile/emit-react'
+import { emitReactComponent, type PNode } from '../../../../src/lib/renderer/interactions/compile/emit-react'
 import { normalize } from '../../../../src/lib/renderer/interactions/compile/normalize'
 import { validatePageInteractions } from '../../../../src/lib/renderer/interactions/addressing'
 import {
@@ -48,6 +49,7 @@ import {
   diffRuntime,
   leavesDesign,
 } from '../../../../src/lib/renderer/interactions/preview/runtime'
+import { variantCell } from './todo-ir'
 
 beforeAll(() => initDefaultCatalog())
 
@@ -57,86 +59,92 @@ const card: PNode = {
   children: [{ nodeId: 'title', role: 'text', text: 'Sample product' }],
 }
 
-/** A cell that lives in an `app` store, holding `value` as the sample. */
+/** The document's stores: one, called `app`. */
+const APP: Store[] = addStore([], 'app')
+
+/** A cell that lives in the `app` store, holding `value` as the sample. */
 function backedCell(ir: PageInteractions, id: string, value: string | number, description?: string): PageInteractions {
-  let next = addStore(ir, 'app')
-  next = addVariable(next, makeScalarVariable(id, typeof value === 'number' ? 'number' : 'string', value))
-  next = setVariableStore(next, id, 'app')
-  return description ? setVariableDescription(next, id, description) : next
+  let next = addCell(ir, makeCell(id, typeof value === 'number' ? 'number' : 'string', value), APP)
+  next = setCellStore(next, id, 'app', APP)
+  return description ? setCellDescription(next, id, description) : next
 }
 
 describe('authoring — moving a cell into a store changes nothing else about it', () => {
-  it('keeps the id, type, value and scope; only adds membership', () => {
-    let ir = addStore(emptyPageInteractions(), 'app')
-    ir = addVariable(ir, makeScalarVariable('productTitle', 'string', 'Sample product'))
-    const before = ir.variables[0]
-    const moved = setVariableStore(ir, 'productTitle', 'app')
-    expect(moved.variables[0]).toMatchObject({ id: 'productTitle', type: 'string', scope: 'page', initial: 'Sample product' })
-    expect(moved.variables[0].store).toBe('app')
+  it('keeps the id, type, value and owner; only adds membership', () => {
+    const ir = addCell(emptyPageInteractions(), makeCell('productTitle', 'string', 'Sample product'), APP)
+    const before = ir.cells[0]
+    const moved = setCellStore(ir, 'productTitle', 'app', APP)
+    expect(moved.cells[0]).toMatchObject({ id: 'productTitle', type: 'string', owner: { kind: 'page' }, initial: 'Sample product' })
+    expect(moved.cells[0].store).toBe('app')
     // and moving it back out is a clean round trip — nothing was consumed
-    expect(setVariableStore(moved, 'productTitle', undefined).variables[0]).toEqual(before)
+    expect(setCellStore(moved, 'productTitle', undefined, APP).cells[0]).toEqual(before)
+  })
+
+  it('refuses a store the document does not have', () => {
+    const ir = addCell(emptyPageInteractions(), makeCell('x', 'string', ''))
+    expect(setCellStore(ir, 'x', 'ghost', APP).cells[0]).not.toHaveProperty('store')
   })
 
   it('a cell in a store IS backed; a cell on its own is not', () => {
     const ir = backedCell(emptyPageInteractions(), 'productTitle', 'Sample product')
-    expect(isBacked(ir.variables[0])).toBe(true)
-    const local = addVariable(emptyPageInteractions(), makeScalarVariable('n', 'number', 0))
-    expect(isBacked(local.variables[0])).toBe(false)
+    expect(isBacked(ir.cells[0])).toBe(true)
+    const local = addCell(emptyPageInteractions(), makeCell('n', 'number', 0))
+    expect(isBacked(local.cells[0])).toBe(false)
   })
 
   it('preserves the value as the sample — a design with a placeholder already has one', () => {
-    expect(backedCell(emptyPageInteractions(), 'productTitle', 'Sample product').variables[0].initial).toBe('Sample product')
+    expect(backedCell(emptyPageInteractions(), 'productTitle', 'Sample product').cells[0].initial).toBe('Sample product')
   })
 
   it('carries a description and clears a blank one', () => {
     let ir = backedCell(emptyPageInteractions(), 'n', 1)
-    ir = setVariableDescription(ir, 'n', '  the quantity  ')
-    expect(ir.variables[0].description).toBe('the quantity')
-    ir = setVariableDescription(ir, 'n', '   ')
-    expect(ir.variables[0]).not.toHaveProperty('description')
+    ir = setCellDescription(ir, 'n', '  the quantity  ')
+    expect(ir.cells[0].description).toBe('the quantity')
+    ir = setCellDescription(ir, 'n', '   ')
+    expect(ir.cells[0]).not.toHaveProperty('description')
   })
 
   it('adds a field straight into a store, seeded from its type', () => {
-    let ir = addStore(emptyPageInteractions(), 'products')
-    ir = addStoreField(ir, 'products', 'title', 'string')
-    expect(ir.variables[0]).toMatchObject({ id: 'title', store: 'products', initial: '' })
+    const stores = addStore([], 'products')
+    const ir = addStoreField(emptyPageInteractions(), stores, 'products', 'title', 'string')
+    expect(ir.cells[0]).toMatchObject({ id: 'title', store: 'products', initial: '', owner: { kind: 'document' } })
     // and refuses to add to a store that doesn't exist
-    expect(addStoreField(ir, 'nope', 'x', 'string').variables).toHaveLength(1)
+    expect(addStoreField(ir, stores, 'nope', 'x', 'string').cells).toHaveLength(1)
   })
 
   it('lets the designer put a local cell anywhere, including a component flag document-wide', () => {
-    let ir = addVariable(emptyPageInteractions(), makeScalarVariable('menuOpen', 'boolean', false))
-    ir = setVariableScope(ir, 'menuOpen', 'global')
-    expect(ir.variables[0].scope).toBe('global')
+    let ir = addCell(emptyPageInteractions(), makeCell('menuOpen', 'boolean', false))
+    ir = setCellOwner(ir, 'menuOpen', { kind: 'document' })
+    expect(ir.cells[0].owner).toEqual({ kind: 'document' })
     expect(validatePageInteractions(ir, new Set())).toEqual([])
   })
 
   it('shares one namespace across stores, formulas and cells', () => {
-    let ir = addStore(emptyPageInteractions(), 'cart')
-    ir = addVariable(ir, makeScalarVariable('n', 'number', 0))
-    ir = addDerived(ir, 'double', 'n * 2')
-    for (const taken of ['cart', 'n', 'double']) expect(isNameTaken(ir, taken)).toBe(true)
-    expect(addStore(ir, 'n').stores).toHaveLength(1) // a store can't shadow a cell
-    expect(addVariable(ir, makeScalarVariable('cart', 'string', '')).variables).toHaveLength(1) // nor vice versa
+    const stores = addStore([], 'cart')
+    let ir = addCell(emptyPageInteractions(), makeCell('n', 'number', 0), stores)
+    ir = addCell(ir, makeFormula('double', 'n * 2'), stores)
+    for (const taken of ['cart', 'n', 'double']) expect(isNameTaken(ir, taken, stores)).toBe(true)
+    expect(addCell(ir, makeCell('cart', 'string', ''), stores).cells).toHaveLength(2) // a cell can't shadow a store
+    expect(addStore(stores, 'cart')).toHaveLength(1) // nor a store itself
   })
 
   it('deleting a store keeps its cells, as local — the wiring survives', () => {
     let ir = backedCell(emptyPageInteractions(), 'title', 'x')
-    ir = removeStore(ir, 'app')
-    expect(ir.stores).toEqual([])
-    expect(ir.variables[0]).toMatchObject({ id: 'title' })
-    expect(ir.variables[0]).not.toHaveProperty('store')
+    expect(removeStore(APP, 'app')).toEqual([])
+    ir = detachStore(ir, 'app')
+    expect(ir.cells[0]).toMatchObject({ id: 'title' })
+    expect(ir.cells[0]).not.toHaveProperty('store')
   })
 
   it('retypes a store cell like any other, staying in the store', () => {
     let ir = backedCell(emptyPageInteractions(), 'x', 'hello')
-    ir = setVariableType(ir, 'x', 'number')
-    expect(ir.variables[0]).toMatchObject({ type: 'number', initial: 0, store: 'app' })
+    ir = setCellType(ir, 'x', 'number')
+    expect(ir.cells[0]).toMatchObject({ type: 'number', initial: 0, store: 'app' })
   })
 
   it('refuses only formulas as edit targets — a store cell is editable', () => {
     let ir = backedCell(emptyPageInteractions(), 'query', '')
-    ir = addDerived(ir, 'double', 'query')
+    ir = addCell(ir, makeFormula('double', 'query'))
     expect(editableError(ir, 'query')).toBeNull()
     expect(editableError(ir, 'double')).toMatch(/formula/)
     expect(editableError(ir, 'nope')).toMatch(/not a value/)
@@ -151,11 +159,8 @@ describe('authoring — moving a cell into a store changes nothing else about it
 describe('derivation — one authored write, two lowerings', () => {
   /** "When the card is clicked, add to `items`." Authored once, reused below. */
   function clickAppends(backed: boolean): PageInteractions {
-    let ir = addVariable(emptyPageInteractions(), makeCollectionVariable('items'))
-    if (backed) {
-      ir = addStore(ir, 'app')
-      ir = setVariableStore(ir, 'items', 'app')
-    }
+    let ir = addCell(emptyPageInteractions(), makeListCell('items'), APP)
+    if (backed) ir = setCellStore(ir, 'items', 'app', APP)
     ir.interactions.push({
       on: { node: 'card', trigger: { type: 'press' } },
       do: [{ type: 'collection.append', target: 'items', value: '1' }],
@@ -183,7 +188,7 @@ describe('derivation — one authored write, two lowerings', () => {
 
   it('a store cell the design never writes gets a value prop and NO callback', () => {
     const ir = backedCell(emptyPageInteractions(), 'productTitle', 'Sample product', 'the product shown here')
-    ir.bindings.push({ node: 'title', prop: 'text', from: 'productTitle' })
+    ir.refs.push({ node: 'title', props: { text: 'productTitle' } })
     const src = emitReactComponent(ir, card, { componentName: 'Card' })
     expect(src).toContain('  productTitle: string')
     expect(src).not.toContain('onProductTitleChange')
@@ -200,7 +205,7 @@ describe('derivation — one authored write, two lowerings', () => {
 
   it('reads a cell as a bare identifier either way, so expressions never change', () => {
     const ir = backedCell(emptyPageInteractions(), 'productTitle', 'Sample product')
-    ir.bindings.push({ node: 'title', prop: 'text', from: 'productTitle' })
+    ir.refs.push({ node: 'title', props: { text: 'productTitle' } })
     const src = emitReactComponent(ir, card, { componentName: 'Card' })
     expect(src).toContain('{productTitle}')
     expect(src).not.toContain('props.productTitle')
@@ -208,15 +213,23 @@ describe('derivation — one authored write, two lowerings', () => {
 
   it('routes a two-way field outward too — same derivation, different trigger', () => {
     const ir = backedCell(emptyPageInteractions(), 'query', '')
-    ir.editable.push({ node: 'title', prop: 'value', target: 'query' })
+    ir.refs.push({ node: 'title', props: { value: 'query' } })
     expect(emitReactComponent(ir, card, { componentName: 'Card' })).toContain(
       'onChange={(e) => onQueryChange(e.target.value)}',
     )
   })
 
-  it('leaves variant state alone — a node state is not a cell anyone outside supplies', () => {
-    const a: Action = { type: 'node.setState', target: 'card.state', value: '"open"' }
-    expect(emitAction(a)).toBe('setCardState("open")')
+  it("a node's variant set is a cell it owns — written like any other, through its own hook", () => {
+    const ir = emptyPageInteractions()
+    ir.cells.push(variantCell('card', ['closed', 'open']))
+    ir.interactions.push({
+      on: { node: 'card', trigger: { type: 'press' } },
+      do: [{ type: 'set-variable', target: 'card.state', value: '"open"' }],
+    })
+    const src = emitReactComponent(ir, card, { componentName: 'Card' })
+    expect(src).toContain('const [card_state, setCard_state] = useState')
+    expect(src).toContain('setCard_state("open")')
+    expect(src).not.toContain('interface CardProps') // nobody outside supplies it
   })
 
   it('grows an inbound port for a store cell, and an outbound one when written', () => {
@@ -247,8 +260,7 @@ describe('preview — every cell runs on its own value', () => {
   })
 
   it('leaves a sample-less cell empty rather than inventing a value', () => {
-    let ir = addStore(emptyPageInteractions(), 'app')
-    ir = addVariable(ir, { id: 'productTitle', type: 'string', scope: 'page', initial: null, store: 'app' })
+    const ir = addCell(emptyPageInteractions(), { ...makeCell('productTitle', 'string', null), store: 'app' }, APP)
     expect(initRuntime(ir).store.productTitle).toBeNull()
   })
 
@@ -265,9 +277,19 @@ describe('preview — every cell runs on its own value', () => {
   })
 
   it('does not report a local write as leaving', () => {
-    const ir = addVariable(emptyPageInteractions(), makeScalarVariable('n', 'number', 1))
+    const ir = addCell(emptyPageInteractions(), makeCell('n', 'number', 1))
     const changes = diffRuntime(initRuntime(ir), applyAction({ type: 'increment', target: 'n' }, {}, initRuntime(ir)))
     expect(leavesDesign(ir, changes[0])).toBe(false)
+  })
+
+  it("seeds a node's variant set on its first value and evaluates it as <node>.<cell>", () => {
+    const ir = emptyPageInteractions()
+    ir.cells.push(variantCell('card', ['closed', 'open']))
+    const rt = initRuntime(ir)
+    expect(rt.store['card.state']).toBe('closed')
+    expect(buildEnv(ir, rt)).toMatchObject({ card: { state: 'closed' } })
+    const next = applyAction({ type: 'set-variable', target: 'card.state', value: '"open"' }, buildEnv(ir, rt), rt, ir)
+    expect(next.store['card.state']).toBe('open')
   })
 })
 
@@ -275,9 +297,8 @@ describe('addressing — a cell is a cell, wherever it lives', () => {
   const nodes = new Set(['btn', 'row'])
 
   function backedList(id: string): PageInteractions {
-    let ir = addStore(emptyPageInteractions(), 'app')
-    ir = addVariable(ir, makeCollectionVariable(id))
-    return setVariableStore(ir, id, 'app')
+    const ir = addCell(emptyPageInteractions(), makeListCell(id), APP)
+    return setCellStore(ir, id, 'app', APP)
   }
 
   it('appends to a list a store supplies — the write leaving is plumbing, not a veto', () => {
@@ -291,18 +312,18 @@ describe('addressing — a cell is a cell, wherever it lives', () => {
 
   it('repeats over a list a store supplies', () => {
     const ir = backedList('rows')
-    ir.repeaters.push({ node: 'row', over: 'rows' })
+    ir.refs.push({ node: 'row', props: { repeat: 'rows' } })
     expect(validatePageInteractions(ir, nodes)).toEqual([])
   })
 
   it('still refuses a non-list as a list target', () => {
-    const ir = addVariable(emptyPageInteractions(), makeScalarVariable('n', 'number', 0))
-    ir.repeaters.push({ node: 'row', over: 'n' })
+    const ir = addCell(emptyPageInteractions(), makeCell('n', 'number', 0))
+    ir.refs.push({ node: 'row', props: { repeat: 'n' } })
     expect(validatePageInteractions(ir, nodes)[0].message).toMatch(/not a list/)
   })
 
   it('accepts an increment with no amount — blank means +1 in both the runtime and the emitter', () => {
-    const ir = addVariable(emptyPageInteractions(), makeScalarVariable('n', 'number', 0))
+    const ir = addCell(emptyPageInteractions(), makeCell('n', 'number', 0))
     ir.interactions.push({ on: { node: 'btn', trigger: { type: 'press' } }, do: [{ type: 'increment', target: 'n' }] })
     expect(validatePageInteractions(ir, nodes)).toEqual([])
   })

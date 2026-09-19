@@ -1,28 +1,13 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { emptyPageInteractions, type PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
 import { normalize } from '../../../../src/lib/renderer/interactions/compile/normalize'
 import { emitReactComponent, type PNode } from '../../../../src/lib/renderer/interactions/compile/emit-react'
 import { validatePageInteractions } from '../../../../src/lib/renderer/interactions/addressing'
 import { initDefaultCatalog } from '../../../../src/lib/renderer/interactions/catalog'
+import { todoIR } from './todo-ir'
 
 const NODE_IDS = new Set(['page', 'addBtn', 'list', 'row'])
-
-/** The "todo" page: add to list, disable-when-empty, repeater rows showing labels. */
-function todoIR(): PageInteractions {
-  const ir = emptyPageInteractions()
-  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
-  ir.derived.push({ id: 'isEmpty', expr: 'items.length == 0' })
-  ir.interactions.push({
-    on: { node: 'addBtn', trigger: { type: 'press' } },
-    do: [{ type: 'collection.append', target: 'items', value: '{ label: "" }' }],
-  })
-  ir.bindings.push({ node: 'addBtn', prop: 'disabled', from: 'isEmpty' })
-  ir.bindings.push({ node: 'row', prop: 'text', from: 'item.label' })
-  ir.repeaters.push({ node: 'row', over: 'items', as: 'item' })
-  return ir
-}
 
 const presentation: PNode = {
   nodeId: 'page',
@@ -41,7 +26,7 @@ describe('normalize (sugar -> reactive graph)', () => {
     const kinds = g.nodes.map((n) => n.kind)
     expect(kinds.filter((k) => k === 'derive')).toHaveLength(1) // isEmpty
     expect(kinds.filter((k) => k === 'fold')).toHaveLength(1) // append
-    expect(kinds.filter((k) => k === 'sink')).toHaveLength(2) // two bindings
+    expect(kinds.filter((k) => k === 'sink')).toHaveLength(3) // disabled, repeat, text
     expect(kinds).toContain('source') // items signal + press event
     const fold = g.nodes.find((n) => n.kind === 'fold')
     expect(fold && fold.kind === 'fold' && fold.state).toBe('items')
@@ -55,7 +40,7 @@ describe('emit-react (IR -> React)', () => {
     expect(validatePageInteractions(todoIR(), NODE_IDS)).toEqual([])
   })
 
-  it('emits idiomatic state, derived, and a handler', () => {
+  it('emits idiomatic state, formulas, and a handler', () => {
     expect(source).toMatch(/const \[items, setItems\] = useState<any\[\]>\(\[\]\)/)
     expect(source).toContain('const isEmpty = (items.length === 0)')
     expect(source).toContain('setItems((prev) => [...prev, { label: "" }])')
@@ -67,7 +52,7 @@ describe('emit-react (IR -> React)', () => {
     expect(source).toContain('onClick={handle_addBtn_press}')
   })
 
-  it('emits the repeater with template anchor + instance key + bound text', () => {
+  it('emits the repeat with template anchor + instance key + referenced text', () => {
     expect(source).toContain('items.map((item) => (')
     expect(source).toContain('data-node-id="row"')
     expect(source).toContain('data-instance-key={item.id}')

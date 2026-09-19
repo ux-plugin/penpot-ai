@@ -8,25 +8,25 @@ import {
 } from '../../../../src/lib/renderer/interactions/addressing'
 import { emptyPageInteractions, type PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
 import { initDefaultCatalog } from '../../../../src/lib/renderer/interactions/catalog'
+import { listCell, formulaCell, variantCell } from './todo-ir'
 
 const NODE_IDS = new Set(['addBtn', 'list', 'card'])
 
-/** A valid "todo" page: add to list, disable-when-empty, a repeater, a variant. */
+/** A valid "todo" page: add to list, disable-when-empty, a repeat, a variant set. */
 function todoIR(): PageInteractions {
   const ir = emptyPageInteractions()
-  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
+  ir.cells.push(listCell('items'))
   // A cell the real app supplies is a cell like any other — same kind in the
   // scope, so nothing reading an expression has to know where a value came from.
-  ir.stores.push({ id: 'app' })
-  ir.variables.push({ id: 'initialItems', type: { collection: 'object' }, scope: 'page', initial: [], store: 'app' })
-  ir.derived.push({ id: 'isEmpty', expr: 'items.length == 0' })
+  ir.cells.push(listCell('initialItems', [], { store: 'app' }))
+  ir.cells.push(formulaCell('isEmpty', 'items.length == 0'))
+  ir.cells.push(variantCell('card', ['collapsed', 'expanded'], { initial: 'collapsed' }))
   ir.interactions.push({
     on: { node: 'addBtn', trigger: { type: 'press' } },
     do: [{ type: 'collection.append', target: 'items', value: '{ label: "" }' }],
   })
-  ir.bindings.push({ node: 'addBtn', prop: 'disabled', from: 'isEmpty' })
-  ir.repeaters.push({ node: 'list', over: 'items', as: 'item' })
-  ir.states.push({ node: 'card', states: ['collapsed', 'expanded'], active: { from: 'self', initial: 'collapsed' } })
+  ir.refs.push({ node: 'addBtn', props: { disabled: 'isEmpty' } })
+  ir.refs.push({ node: 'list', props: { repeat: 'items' }, item: { as: 'item' } })
   return ir
 }
 
@@ -35,10 +35,11 @@ beforeAll(() => initDefaultCatalog())
 describe('buildScope / resolveRoot', () => {
   const scope = buildScope(todoIR(), NODE_IDS)
   it('classifies every kind of symbol', () => {
-    expect(resolveRoot(scope, 'items')?.kind).toBe('variable')
-    expect(resolveRoot(scope, 'isEmpty')?.kind).toBe('derived')
-    expect(resolveRoot(scope, 'initialItems')?.kind).toBe('variable')
+    expect(resolveRoot(scope, 'items')?.kind).toBe('cell')
+    expect(resolveRoot(scope, 'isEmpty')?.kind).toBe('cell')
+    expect(resolveRoot(scope, 'initialItems')?.kind).toBe('cell')
     expect(resolveRoot(scope, 'addBtn')?.kind).toBe('node')
+    expect(resolveRoot(scope, 'card')?.cells?.get('state')?.type).toEqual({ enum: ['collapsed', 'expanded'] })
     expect(resolveRoot(scope, 'item')?.kind).toBe('loop-item')
     expect(resolveRoot(scope, 'nope')).toBeUndefined()
   })
@@ -68,17 +69,17 @@ describe('validatePageInteractions', () => {
     expect(issues.some((x) => /unknown reference 'missing'/.test(x.message))).toBe(true)
   })
 
-  it('flags a binding on a node that does not exist', () => {
+  it('flags a reference on a node that does not exist', () => {
     const ir = todoIR()
-    ir.bindings.push({ node: 'ghost', prop: 'disabled', from: 'isEmpty' })
+    ir.refs.push({ node: 'ghost', props: { disabled: 'isEmpty' } })
     const issues = validatePageInteractions(ir, NODE_IDS)
     expect(issues.some((x) => /unknown node 'ghost'/.test(x.message))).toBe(true)
   })
 
   it('flags an action target of the wrong kind', () => {
     const ir = todoIR()
-    // append must target a collection; isEmpty is a derived value
-    ir.interactions[0].do = [{ type: 'collection.append', target: 'isEmpty', value: '1' }]
+    // append must target a list; card.state is a value, but not a list
+    ir.interactions[0].do = [{ type: 'collection.append', target: 'card.state', value: '1' }]
     const issues = validatePageInteractions(ir, NODE_IDS)
     expect(issues.some((x) => /must be a list/.test(x.message))).toBe(true)
   })
@@ -92,10 +93,17 @@ describe('validatePageInteractions', () => {
     expect(issues.some((x) => /unknown action 'frobnicate'/.test(x.message))).toBe(true)
   })
 
-  it('requires node.setState targets to be <node>.state', () => {
+  it("writes a node's cell as <node>.<cell>, and refuses a cell the node does not have", () => {
     const ir = todoIR()
-    ir.interactions[0].do = [{ type: 'node.setState', target: 'items', value: '"expanded"' }]
-    const issues = validatePageInteractions(ir, NODE_IDS)
-    expect(issues.some((x) => /must be <node>\.state/.test(x.message))).toBe(true)
+    ir.interactions[0].do = [{ type: 'set-variable', target: 'card.state', value: '"expanded"' }]
+    expect(validatePageInteractions(ir, NODE_IDS)).toEqual([])
+    ir.interactions[0].do = [{ type: 'set-variable', target: 'card.nope', value: '"expanded"' }]
+    expect(validatePageInteractions(ir, NODE_IDS).some((x) => /not a value/.test(x.message))).toBe(true)
+  })
+
+  it('refuses to write a formula', () => {
+    const ir = todoIR()
+    ir.interactions[0].do = [{ type: 'set-variable', target: 'isEmpty', value: 'true' }]
+    expect(validatePageInteractions(ir, NODE_IDS).some((x) => /formula/.test(x.message))).toBe(true)
   })
 })

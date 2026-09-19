@@ -2,23 +2,25 @@
  * Preview runtime — a small LIVE interpreter for a PageInteractions IR.
  *
  * This is the "preview mode" counterpart to the React emitter: instead of
- * generating source, it runs the IR directly (state + derived + actions) so the
+ * generating source, it runs the IR directly (cells + formulas + actions) so the
  * design tool can show an interactive prototype. It shares semantics with the
  * emitter by reusing the same expression evaluator, and it's a *pure* core
  * (no React) so the behavior is unit-testable in node — the React renderer
  * (InteractionRuntime.tsx) is a thin wrapper over these functions.
  */
 
-import type { PageInteractions, Interaction, Action, NodeId } from '../ir'
-import { actionParam, isBacked } from '../ir'
+import type { PageInteractions, Interaction, Action, NodeId, Cell } from '../ir'
+import { actionParam, isBacked, isFormula, isEnumType, cellRef, nodeRef, refsOf, REPEAT_PROP } from '../ir'
 import { parse, evaluate } from '../expression'
-import { parseRefPath } from '../addressing'
+import { parseRefPath, cellFor } from '../addressing'
 
 export interface RuntimeState {
-  /** cell id -> value, seeded from each cell's `initial` (its sample, if outside) */
+  /**
+   * cell -> value, keyed by `cellRef` (`draft`, `card.state`), seeded from each
+   * cell's `initial` (its sample, if it lives in a store). Formulas are not
+   * stored; `buildEnv` computes them.
+   */
   store: Record<string, unknown>
-  /** node id -> active self-managed variant state */
-  nodeStates: Record<string, string>
   /**
    * slot id -> active view-frame id, set by `show-in-slot`. A runtime *override*:
    * empty until a swap fires, at which point the renderer prefers this over the
@@ -54,53 +56,83 @@ const isObjectLiteral = (src: string): boolean => {
     return false
   }
 }
-// JSON round-trip, not structuredClone: variable initials are always JSON, and
-// the IR may arrive as a valtio tracking proxy (from useSnapshot) that
+// JSON round-trip, not structuredClone: cell initials are always JSON, and the
+// IR may arrive as a valtio tracking proxy (from useSnapshot) that
 // structuredClone rejects with DataCloneError.
 const clone = <T>(x: T): T => (x === undefined ? x : (JSON.parse(JSON.stringify(x)) as T))
 
+/** A cell's starting value: its initial, or an enum's first value when unset. */
+function startValue(c: Cell): unknown {
+  if (isEnumType(c.type) && (c.initial === null || c.initial === undefined)) return c.type.enum[0]
+  return clone(c.initial)
+}
+
 export function initRuntime(ir: PageInteractions): RuntimeState {
-  // One loop for every cell, wherever its value comes from: an outside cell's
+  // One loop for every cell, wherever its value comes from: a store cell's
   // `initial` IS its sample, which is what the preview runs on. A cell with no
   // sample stays undefined and renders as nothing — the honest display of "the
   // design doesn't know this value", not a rendering bug.
   const store: Record<string, unknown> = {}
-  for (const v of ir.variables) store[v.id] = clone(v.initial)
-  const nodeStates: Record<string, string> = {}
-  for (const s of ir.states) if ('from' in s.active) nodeStates[s.node] = s.active.initial ?? s.states[0] ?? ''
-  return { store, nodeStates, slotViews: {} }
+  for (const c of ir.cells) if (!isFormula(c)) store[cellRef(c)] = startValue(c)
+  return { store, slotViews: {} }
 }
 
-/** Build the evaluation environment: variables + derived values + node states. */
+/**
+ * Write a cell's value into an environment: a page or document cell under its
+ * id, a node's cell under `env[node][cell]` so `card.state` evaluates.
+ */
+function place(env: Record<string, unknown>, c: Cell, value: unknown): void {
+  if (c.owner.kind === 'node') {
+    const root = nodeRef(c.owner.node)
+    env[root] = { ...(isRecord(env[root]) ? env[root] : {}), [c.id]: value }
+  } else env[c.id] = value
+}
+
+/** Build the evaluation environment: stored cells, then formulas in declaration order. */
 export function buildEnv(ir: PageInteractions, rt: RuntimeState, extra: Record<string, unknown> = {}): Record<string, unknown> {
-  const env: Record<string, unknown> = { ...rt.store, ...extra }
-  for (const d of ir.derived) env[d.id] = safeEval(d.expr, env)
-  for (const s of ir.states) {
-    env[s.node] = { ...(isRecord(env[s.node]) ? env[s.node] : {}), state: rt.nodeStates[s.node] }
-  }
+  const env: Record<string, unknown> = { ...extra }
+  for (const c of ir.cells) if (!isFormula(c)) place(env, c, rt.store[cellRef(c)])
+  for (const c of ir.cells) if (isFormula(c)) place(env, c, safeEval(c.formula!, env))
   return env
 }
 
-export function applyAction(a: Action, env: Record<string, unknown>, rt: RuntimeState): RuntimeState {
-  const root = a.target ? parseRefPath(a.target).root : ''
+/** The store key an action target writes: the cell it addresses, else its root. */
+function targetKey(ir: PageInteractions | undefined, target: string | undefined): string {
+  if (!target) return ''
+  const c = ir ? cellFor(ir, target) : undefined
+  if (c) return cellRef(c)
+  try {
+    return parseRefPath(target).root
+  } catch {
+    return target
+  }
+}
+
+/**
+ * Apply one action. `ir` resolves the target to its cell (a node's cell is
+ * stored as `card.state`); without it the target's root is the key, which is
+ * what the catalog-parity tests exercise on page cells.
+ */
+export function applyAction(a: Action, env: Record<string, unknown>, rt: RuntimeState, ir?: PageInteractions): RuntimeState {
+  const key = targetKey(ir, a.target)
   const value = a.value != null ? safeEval(a.value, env) : undefined
-  const setVar = (v: unknown): RuntimeState => ({ ...rt, store: { ...rt.store, [root]: v } })
+  const setVar = (v: unknown): RuntimeState => ({ ...rt, store: { ...rt.store, [key]: v } })
   switch (a.type) {
     case 'collection.append':
-      return setVar([...asArray(rt.store[root]), value])
+      return setVar([...asArray(rt.store[key]), value])
     case 'collection.insert': {
       // `at` clamps into range; absent means 0, so the plain form is a prepend.
-      const prev = asArray(rt.store[root])
+      const prev = asArray(rt.store[key])
       const at = Math.max(0, Math.min(prev.length, Math.trunc(asNumber(safeEval(actionParam(a, 'at') ?? '0', env)))))
       return setVar([...prev.slice(0, at), value, ...prev.slice(at)])
     }
     case 'collection.remove':
-      return setVar(asArray(rt.store[root]).filter((item) => !safeEval(a.value ?? 'false', { ...env, item })))
+      return setVar(asArray(rt.store[key]).filter((item) => !safeEval(a.value ?? 'false', { ...env, item })))
     case 'collection.update': {
       const where = actionParam(a, 'where')
       const patch = a.value ? isObjectLiteral(a.value) : false
       return setVar(
-        asArray(rt.store[root]).map((item) => {
+        asArray(rt.store[key]).map((item) => {
           const itemEnv = { ...env, item }
           // No `where` means every item — stated in the panel, never silent.
           if (where && !safeEval(where, itemEnv)) return item
@@ -115,18 +147,16 @@ export function applyAction(a: Action, env: Record<string, unknown>, rt: Runtime
     case 'set-variable':
       return setVar(value)
     case 'toggle-variable':
-      return setVar(!rt.store[root])
+      return setVar(!rt.store[key])
     case 'increment':
       // Absent (or blank) value means +1, so the common stepper case needs no
       // expression. The emitter branches on the same truthiness.
-      return setVar(asNumber(rt.store[root]) + (a.value ? asNumber(value) : 1))
-    case 'node.setState':
-      return { ...rt, nodeStates: { ...rt.nodeStates, [root]: String(value) } }
+      return setVar(asNumber(rt.store[key]) + (a.value ? asNumber(value) : 1))
     case 'show-in-slot':
       // target = slot id (root); value = a *literal* view-frame id, not an
       // expression (a raw UUID wouldn't evaluate). Default in-place swap, no
       // history — back-button/routing is a lowering concern, not a runtime one.
-      return { ...rt, slotViews: { ...rt.slotViews, [root]: a.value ?? '' } }
+      return { ...rt, slotViews: { ...rt.slotViews, [key]: a.value ?? '' } }
     case 'open-url':
       if (typeof value === 'string' && typeof window !== 'undefined') window.open(value)
       return rt
@@ -153,21 +183,22 @@ export function activeSlotView(
 export function runInteraction(ir: PageInteractions, rt: RuntimeState, it: Interaction, env: Record<string, unknown>): RuntimeState {
   if (it.if && !safeEval(it.if, env)) return rt
   let next = rt
-  for (const a of it.do) next = applyAction(a, env, next)
+  for (const a of it.do) next = applyAction(a, env, next, ir)
   return next
 }
 
 // ---- observability -------------------------------------------------------
 //
-// An action's effect often lands somewhere you can't see — a variable read by a
-// binding on another node, a state swap on a node outside the current scope.
+// An action's effect often lands somewhere you can't see — a cell read by a
+// reference on another node, a variant swap on a node outside the current scope.
 // Because `applyAction` is pure, the before/after states are fully diffable, so
 // what changed can be COMPUTED rather than guessed. These functions back the
 // Build stage's state panel and its "changes outside this view" chip.
 
 /** One cell of runtime state that moved. */
 export interface StateChange {
-  kind: 'variable' | 'node-state' | 'slot'
+  kind: 'cell' | 'slot'
+  /** The cell (`draft`, `card.state`) or slot id. */
   id: string
   before: unknown
   after: unknown
@@ -176,7 +207,7 @@ export interface StateChange {
 /** A node whose rendering is invalidated by a state change, and why. */
 export interface AffectedNode {
   node: NodeId
-  /** Bound props that changed (`text`, `background`, …) plus synthetic markers. */
+  /** Referenced props that changed (`text`, `background`, …) plus synthetic markers. */
   props: string[]
 }
 
@@ -194,13 +225,9 @@ function diffRecord(
   return out
 }
 
-/** Every state cell that differs between two runtime states. */
+/** Every cell that differs between two runtime states. */
 export function diffRuntime(before: RuntimeState, after: RuntimeState): StateChange[] {
-  return [
-    ...diffRecord('variable', before.store, after.store),
-    ...diffRecord('node-state', before.nodeStates, after.nodeStates),
-    ...diffRecord('slot', before.slotViews, after.slotViews),
-  ]
+  return [...diffRecord('cell', before.store, after.store), ...diffRecord('slot', before.slotViews, after.slotViews)]
 }
 
 /**
@@ -208,22 +235,22 @@ export function diffRuntime(before: RuntimeState, after: RuntimeState): StateCha
  * outside, so the real app has to hear about it.
  *
  * Derived, not recorded. There is no log of outward calls because there is no
- * authored outward call: the write is the event, and `outside` on the cell is
- * what makes it one. Same question `normalize` answers by growing an out port
- * and `emitReactComponent` answers by emitting a callback.
+ * authored outward call: the write is the event, and living in a store is what
+ * makes it one. Same question `normalize` answers by growing an out port and
+ * `emitReactComponent` answers by emitting a callback.
  */
 export function leavesDesign(ir: PageInteractions, change: StateChange): boolean {
-  return change.kind === 'variable' && ir.variables.some((v) => v.id === change.id && isBacked(v))
+  return change.kind === 'cell' && ir.cells.some((c) => cellRef(c) === change.id && isBacked(c))
 }
 
 /**
- * Which nodes render differently across a state change. Bindings are the main
- * signal — each one is re-evaluated in both environments — plus repeaters whose
- * collection changed, nodes whose variant state changed, and slots that swapped.
+ * Which nodes render differently across a state change. Property references
+ * are the main signal — each one is re-evaluated in both environments — plus
+ * nodes whose own cell changed, and slots that swapped.
  *
- * Known gap: a binding scoped to a repeater item (referencing `item`) evaluates
- * to undefined in both environments, so it never reports on its own. The
- * repeater check below covers that case at the template level instead.
+ * Known gap: a reference scoped to a repeated item (referencing `item`)
+ * evaluates to undefined in both environments, so it never reports on its own.
+ * The `repeat` reference covers that case at the template level instead.
  */
 export function affectedNodes(ir: PageInteractions, before: RuntimeState, after: RuntimeState): AffectedNode[] {
   const envBefore = buildEnv(ir, before)
@@ -235,13 +262,15 @@ export function affectedNodes(ir: PageInteractions, before: RuntimeState, after:
     byNode.set(node, set)
   }
 
-  for (const b of ir.bindings) {
-    if (!same(safeEval(b.from, envBefore), safeEval(b.from, envAfter))) mark(b.node, b.prop)
+  for (const r of ir.refs) {
+    for (const [prop, expr] of Object.entries(r.props)) {
+      if (!same(safeEval(expr, envBefore), safeEval(expr, envAfter))) mark(r.node, prop === REPEAT_PROP ? 'list' : prop)
+    }
   }
-  for (const r of ir.repeaters) {
-    if (!same(safeEval(r.over, envBefore), safeEval(r.over, envAfter))) mark(r.node, 'list')
+  for (const c of diffRecord('cell', before.store, after.store)) {
+    const cell = ir.cells.find((x) => cellRef(x) === c.id)
+    if (cell?.owner.kind === 'node') mark(cell.owner.node, cell.id)
   }
-  for (const c of diffRecord('node-state', before.nodeStates, after.nodeStates)) mark(c.id, 'state')
   for (const c of diffRecord('slot', before.slotViews, after.slotViews)) mark(c.id, 'view')
 
   return [...byNode].map(([node, props]) => ({ node, props: [...props] }))
@@ -272,4 +301,12 @@ export function pushActivity(log: LoggedActivity[], entry: ActivityEntry, cap = 
     return [{ ...head, count: head.count + 1 }, ...log.slice(1)]
   }
   return [{ ...entry, count: 1 }, ...log].slice(0, cap)
+}
+
+/** The list a repeated node maps over, if the node is repeated. */
+export function repeatOf(ir: PageInteractions, node: NodeId): { over: string; as: string; key?: string } | undefined {
+  const refs = refsOf(ir, node)
+  const over = refs?.props[REPEAT_PROP]
+  if (!over) return undefined
+  return { over, as: refs?.item?.as ?? 'item', key: refs?.item?.key }
 }

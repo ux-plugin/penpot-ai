@@ -16,6 +16,7 @@
 
 import type { IndexedPage, IndexedShape } from '../../../worker/types'
 import type { PageInteractions } from '../ir'
+import { editedCell, propRef, REPEAT_PROP } from '../ir'
 import type { ComponentPresentation, PNode, SlotPresentation, NodeRole } from '../compile/emit-react'
 import { isComponentCopyRoot, isComponentMain, isSlotShape } from '../../../worker/geometry/shapes'
 import type { LocalComponent } from '../../../common/component'
@@ -33,12 +34,13 @@ function deriveRole(shape: IndexedShape, ir: PageInteractions | undefined, child
   const id = shape.id
   const onNode = (it: { on: { node: string } }) => it.on.node === id
 
-  if (ir?.editable.some((e) => e.node === id)) return 'field'
+  if (ir && editedCell(ir, id)) return 'field'
   const interactions = ir?.interactions.filter(onNode) ?? []
   if (interactions.some((it) => it.do.some((a) => a.type === 'open-url'))) return 'link'
   if (interactions.some((it) => it.on.trigger.type === 'press')) return 'button'
-  if (ir?.repeaters.some((r) => r.node === id)) return 'item'
-  if (childIds.some((cid) => ir?.repeaters.some((r) => r.node === cid))) return 'list'
+  const repeats = (n: string) => Boolean(ir && propRef(ir, n, REPEAT_PROP))
+  if (repeats(id)) return 'item'
+  if (childIds.some(repeats)) return 'list'
 
   switch (shape.type) {
     case 'text':

@@ -26,7 +26,7 @@ import type { IndexedPage } from '../../worker/types'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
 import { setSelectedIds } from '../../renderer/store/document-selection'
 import { nodesToPresentation, findPNode } from '../../renderer/interactions/document/nodes-to-presentation'
-import { emptyPageInteractions, type PageInteractions } from '../../renderer/interactions/ir'
+import { emptyPageInteractions, cellRef, type PageInteractions } from '../../renderer/interactions/ir'
 import { emitReactComponent } from '../../renderer/interactions/compile/emit-react'
 import { InteractionRuntime } from '../../renderer/interactions/preview/InteractionRuntime'
 import {
@@ -115,7 +115,7 @@ export function PreviewStage() {
   // authored state shows up live. Trigger/action/binding edits are picked up
   // without a reset, so they don't appear here. Scope changes re-seed too —
   // carrying a half-mutated store into a different subtree reads as a glitch.
-  const runtimeKey = `${root?.nodeId ?? ''}::${ir.variables.map((v) => v.id).join('|')}`
+  const runtimeKey = `${root?.nodeId ?? ''}::${ir.cells.map(cellRef).join('|')}`
 
   // Live runtime observation for the state panel. `onRuntime` fires from an
   // effect inside the runtime, so these setStates are safe.

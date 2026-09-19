@@ -1,11 +1,10 @@
 /**
- * Addressing — the one namespace every condition, binding, and action references.
+ * Addressing — the one namespace every expression, property reference and
+ * action target uses.
  *
- *   ref ::= variable            // items, cart.total          (a named cell)
- *         | derived             // isEmpty                    (computed value)
- *         | node '.' prop       // addBtn.disabled, row.x     (bindable prop)
- *         | node '.' state      // card.state                 (variant signal)
- *         | loopItem '.' field  // item.label                 (inside a repeater)
+ *   ref ::= cell                // items, draft            (a page or document cell)
+ *         | node '.' cell       // card.state              (a node's own cell)
+ *         | loopItem '.' field  // item.label              (inside a repeated node)
  *
  * Two jobs:
  *   1. `buildScope` — a symbol table from the page IR + the node ids present on
@@ -20,37 +19,52 @@
  * drift apart.
  */
 
-import type { PageInteractions, NodeId, ValueType, Action } from './ir'
+import type { PageInteractions, NodeId, ValueType, Action, Cell } from './ir'
+import { cellRef, nodeRef, isCollectionType, isEnumType, isFormula, REPEAT_PROP } from './ir'
 import { parse, freeRefs, type ExprNode } from './expression'
 import { getTrigger, getAction } from './catalog'
 
 /**
- * There is no `port` kind: a value from outside is a `variable` like any other
- * (it just carries `outside`), so nothing addressing an expression has to know
- * where the value came from.
+ * There is no `port` kind: a value from outside is a cell like any other (it
+ * just lives in a store), so nothing addressing an expression has to know where
+ * the value came from.
  */
-export type SymbolKind = 'variable' | 'derived' | 'node' | 'loop-item'
+export type SymbolKind = 'cell' | 'node' | 'loop-item'
 
 export interface Sym {
   name: string
   kind: SymbolKind
-  valueType?: ValueType
+  /** The cell, for a `cell` symbol. */
+  cell?: Cell
+  /** A node's own cells by id, for a `node` symbol. */
+  cells?: Map<string, Cell>
 }
 
-/** A flat symbol table. Precedence on collision: data/loop-item shadow nodes. */
+/** A flat symbol table. Precedence on collision: cells and loop items shadow nodes. */
 export type Scope = Map<string, Sym>
 
 export function buildScope(ir: PageInteractions, nodeIds: Set<NodeId>): Scope {
   const scope: Scope = new Map()
-  // nodes first (lowest precedence)
-  for (const id of nodeIds) scope.set(id, { name: id, kind: 'node' })
-  // data values shadow nodes
-  for (const v of ir.variables) scope.set(v.id, { name: v.id, kind: 'variable', valueType: v.type })
-  for (const d of ir.derived) scope.set(d.id, { name: d.id, kind: 'derived' })
-  // loop items (highest precedence). TODO Phase 1: scope these to the repeater
-  // subtree via the node hierarchy instead of registering them page-wide.
-  for (const r of ir.repeaters) {
-    const name = r.as ?? 'item'
+  // nodes first (lowest precedence), under their id and, when that is not an
+  // identifier, the mangled spelling expressions use
+  for (const id of nodeIds) {
+    const sym: Sym = { name: id, kind: 'node', cells: new Map() }
+    scope.set(id, sym)
+    scope.set(nodeRef(id), sym)
+  }
+  for (const c of ir.cells) {
+    if (c.owner.kind === 'node') {
+      const sym = scope.get(nodeRef(c.owner.node))
+      if (sym?.kind === 'node') sym.cells?.set(c.id, c)
+      continue
+    }
+    scope.set(c.id, { name: c.id, kind: 'cell', cell: c })
+  }
+  // loop items (highest precedence). TODO: scope these to the repeated subtree
+  // via the node hierarchy instead of registering them page-wide.
+  for (const r of ir.refs) {
+    if (!r.props[REPEAT_PROP]) continue
+    const name = r.item?.as ?? 'item'
     scope.set(name, { name, kind: 'loop-item' })
   }
   return scope
@@ -74,7 +88,7 @@ export interface RefPath {
   segments: RefSegment[]
 }
 
-/** Parse a reference string (`card.state`, `items`, `row.x`) into root + path. */
+/** Parse a reference string (`card.state`, `items`, `cart.items`) into root + path. */
 export function parseRefPath(src: string): RefPath {
   let node: ExprNode
   try {
@@ -98,8 +112,41 @@ export function parseRefPath(src: string): RefPath {
   return { root: cur.name, segments }
 }
 
-const isCollection = (vt: ValueType | undefined): boolean =>
-  typeof vt === 'object' && vt !== null && 'collection' in vt
+/**
+ * The cell a reference addresses, or undefined: a page/document cell by its
+ * root (`cart.items` addresses `cart` — a write lands on the cell), a node's
+ * cell as `<node>.<cell>`.
+ */
+export function resolveCell(scope: Scope, ref: string): Cell | undefined {
+  let path: RefPath
+  try {
+    path = parseRefPath(ref)
+  } catch {
+    return undefined
+  }
+  const sym = scope.get(path.root)
+  if (!sym) return undefined
+  if (sym.kind === 'cell') return sym.cell
+  if (sym.kind === 'node') {
+    const first = path.segments[0]
+    if (first?.kind === 'member') return sym.cells?.get(first.name)
+  }
+  return undefined
+}
+
+/** The cell `ref` names in `ir`, resolved against the IR alone (no node table). */
+export function cellFor(ir: PageInteractions, ref: string): Cell | undefined {
+  const trimmed = ref.trim()
+  const direct = ir.cells.find((c) => cellRef(c) === trimmed)
+  if (direct) return direct
+  // `cart.items` — a member of a page cell
+  try {
+    const { root } = parseRefPath(trimmed)
+    return ir.cells.find((c) => c.owner.kind !== 'node' && c.id === root)
+  } catch {
+    return undefined
+  }
+}
 
 // ---- validation ----
 
@@ -136,7 +183,7 @@ export function validatePageInteractions(ir: PageInteractions, nodeIds: Set<Node
 
     const want = entry.expects.target
     if (!want || want === 'none') return
-    // screen/overlay ids are opaque strings for Phase 0 (no screen registry yet).
+    // screen/overlay ids are opaque strings for now (no screen registry yet).
     if (want === 'screen' || want === 'overlay') return
 
     if (a.target == null) {
@@ -155,29 +202,40 @@ export function validatePageInteractions(ir: PageInteractions, nodeIds: Set<Node
       add(where, `target references unknown '${path.root}'`)
       return
     }
-    if (want === 'node.state') {
-      const ok =
-        sym.kind === 'node' &&
-        path.segments.length === 1 &&
-        path.segments[0].kind === 'member' &&
-        path.segments[0].name === 'state'
-      if (!ok) add(where, `target '${a.target}' must be <node>.state`)
-    } else if (want === 'collection') {
-      // Any list, wherever its value comes from. A list supplied from outside is
-      // still appendable — what the write has to DO to reach the real source is
-      // derived at lowering, not a reason to refuse the wiring.
-      if (sym.kind !== 'variable' || !isCollection(sym.valueType)) add(where, `target '${a.target}' must be a list`)
-    } else if (want === 'variable') {
-      if (sym.kind !== 'variable') add(where, `target '${a.target}' must be a value`)
+    if (want === 'slot') {
+      if (sym.kind !== 'node') add(where, `target '${a.target}' must be a slot node`)
+      return
     }
+    const cell = resolveCell(scope, a.target)
+    if (!cell) {
+      add(where, `target '${a.target}' is not a value`)
+      return
+    }
+    if (isFormula(cell)) add(where, `target '${a.target}' is a formula — computed, not writable`)
+    else if (want === 'collection' && !isCollectionType(cell.type)) add(where, `target '${a.target}' must be a list`)
   }
 
-  ir.derived.forEach((d, i) => checkExpr(d.expr, `derived[${i}](${d.id})`))
+  ir.cells.forEach((c, i) => {
+    const where = `cell[${i}](${cellRef(c)})`
+    if (c.owner.kind === 'node' && !nodeIds.has(c.owner.node)) add(where, `cell on unknown node '${c.owner.node}'`)
+    checkExpr(c.formula, `${where}.formula`)
+    if (isEnumType(c.type) && !c.formula && typeof c.initial === 'string' && !c.type.enum.includes(c.initial)) {
+      add(where, `initial '${c.initial}' is not one of [${c.type.enum.join(', ')}]`)
+    }
+  })
 
-  ir.bindings.forEach((b, i) => {
-    const where = `binding[${i}](${b.node}.${b.prop})`
-    if (!nodeIds.has(b.node)) add(where, `binding on unknown node '${b.node}'`)
-    checkExpr(b.from, where)
+  ir.refs.forEach((r, i) => {
+    if (!nodeIds.has(r.node)) add(`refs[${i}](${r.node})`, `references on unknown node '${r.node}'`)
+    for (const [prop, expr] of Object.entries(r.props)) {
+      const where = `refs[${i}](${r.node}.${prop})`
+      checkExpr(expr, where)
+      if (prop === REPEAT_PROP) {
+        const cell = resolveCell(scope, expr)
+        if (!cell) add(where, `repeats over unknown reference '${expr}'`)
+        else if (!isCollectionType(cell.type)) add(where, `repeats over '${expr}' which is not a list`)
+      }
+    }
+    if (r.item?.key) checkExpr(r.item.key, `refs[${i}](${r.node}).item.key`)
   })
 
   ir.interactions.forEach((it, i) => {
@@ -197,22 +255,8 @@ export function validatePageInteractions(ir: PageInteractions, nodeIds: Set<Node
     ar.do.forEach((a, j) => validateAction(a, `${where}.do[${j}]`))
   })
 
-  ir.repeaters.forEach((r, i) => {
-    const where = `repeater[${i}](${r.node})`
-    if (!nodeIds.has(r.node)) add(where, `repeater on unknown node '${r.node}'`)
-    const sym = scope.get(r.over)
-    if (!sym) add(where, `repeats over unknown reference '${r.over}'`)
-    else if (sym.kind !== 'variable' || !isCollection(sym.valueType))
-      add(where, `repeats over '${r.over}' which is not a list`)
-    if (r.key) checkExpr(r.key, `${where}.key`)
-  })
-
-  ir.states.forEach((s, i) => {
-    const where = `state[${i}](${s.node})`
-    if (!nodeIds.has(s.node)) add(where, `states on unknown node '${s.node}'`)
-    if ('bind' in s.active) checkExpr(s.active.bind, `${where}.active`)
-    else if (s.active.initial && !s.states.includes(s.active.initial)) add(where, `initial state '${s.active.initial}' is not one of [${s.states.join(', ')}]`)
-  })
-
   return issues
 }
+
+/** Re-exported for callers that only need the type predicate. */
+export type { ValueType }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { emptyPageInteractions } from '../../../../src/lib/renderer/interactions/ir'
+import { emptyPageInteractions, refsOf, REPEAT_PROP } from '../../../../src/lib/renderer/interactions/ir'
 import {
   addInteraction,
   removeInteraction,
@@ -11,34 +11,32 @@ import {
   setActionTarget,
   setActionValue,
   setActionParam,
-  addVariable,
-  removeVariable,
-  makeCollectionVariable,
-  makeScalarVariable,
+  addCell,
+  removeCell,
+  makeListCell,
+  makeCell,
+  makeFormula,
+  makeVariantCell,
   defaultInitial,
-  setVariableValue,
-  setVariableType,
-  toVariableId,
-  setRepeater,
-  clearRepeater,
-  moveRepeater,
-  addBinding,
-  setBindingProp,
-  setBindingFrom,
-  removeBinding,
-  getBinding,
-  setBindingExpr,
-  removeBindingProp,
-  addDerived,
-  setDerivedExpr,
-  removeDerived,
+  setCellValue,
+  setCellType,
+  setCellFormula,
+  setVariantValues,
+  toCellId,
+  setRepeat,
+  clearRepeat,
+  moveRepeat,
+  setRef,
+  getRef,
+  clearRef,
+  moveRef,
 } from '../../../../src/lib/renderer/interactions/document/edit-interactions'
-import { initRuntime, buildEnv, runInteraction } from '../../../../src/lib/renderer/interactions/preview/runtime'
+import { initRuntime, buildEnv, runInteraction, repeatOf } from '../../../../src/lib/renderer/interactions/preview/runtime'
 import { parse, evaluate } from '../../../../src/lib/renderer/interactions/expression'
 
 /** Author the canonical "Add → append a numbered row" interaction via reducers. */
 function authorAppend() {
-  let ir = addVariable(emptyPageInteractions(), makeCollectionVariable('items'))
+  let ir = addCell(emptyPageInteractions(), makeListCell('items'))
   ir = addInteraction(ir, 'addBtn', 'i1')
   ir = addAction(ir, 'i1', 'collection.append')
   ir = setActionTarget(ir, 'i1', 0, 'items')
@@ -88,19 +86,27 @@ describe('edit-interactions reducers', () => {
     expect(ir.interactions).toHaveLength(0)
   })
 
-  it('addVariable is id-idempotent; removeVariable drops it', () => {
-    let ir = addVariable(emptyPageInteractions(), makeCollectionVariable('items'))
-    ir = addVariable(ir, makeScalarVariable('items')) // same id ignored
-    expect(ir.variables).toHaveLength(1)
-    expect(ir.variables[0].type).toEqual({ collection: 'object' })
-    ir = removeVariable(ir, 'items')
-    expect(ir.variables).toHaveLength(0)
+  it('addCell is reference-idempotent; removeCell drops it', () => {
+    let ir = addCell(emptyPageInteractions(), makeListCell('items'))
+    ir = addCell(ir, makeCell('items')) // same reference ignored
+    expect(ir.cells).toHaveLength(1)
+    expect(ir.cells[0].type).toEqual({ collection: 'object' })
+    ir = removeCell(ir, 'items')
+    expect(ir.cells).toHaveLength(0)
   })
 
-  it('toVariableId sanitizes user text', () => {
-    expect(toVariableId('  my list ')).toBe('my_list')
-    expect(toVariableId('1st')).toBe('_1st')
-    expect(toVariableId('!!!')).toBe('___')
+  it("a node's cell shares an id with a page cell without colliding — its reference is <node>.<id>", () => {
+    let ir = addCell(emptyPageInteractions(), makeCell('state', 'string', 'idle'))
+    ir = addCell(ir, makeVariantCell('card', 'state', ['closed', 'open']))
+    expect(ir.cells).toHaveLength(2)
+    ir = removeCell(ir, 'card.state')
+    expect(ir.cells.map((c) => c.id)).toEqual(['state'])
+  })
+
+  it('toCellId sanitizes user text', () => {
+    expect(toCellId('  my list ')).toBe('my_list')
+    expect(toCellId('1st')).toBe('_1st')
+    expect(toCellId('!!!')).toBe('___')
   })
 })
 
@@ -127,21 +133,21 @@ describe('authored IR actually runs in the runtime', () => {
   })
 })
 
-describe('editable state — value + type reducers', () => {
-  it('setVariableValue sets the initial seed', () => {
-    let ir = addVariable(emptyPageInteractions(), makeScalarVariable('name', 'string', ''))
-    ir = setVariableValue(ir, 'name', 'Ada')
-    expect(ir.variables[0].initial).toBe('Ada')
+describe('cell value + type reducers', () => {
+  it('setCellValue sets the initial seed', () => {
+    let ir = addCell(emptyPageInteractions(), makeCell('name', 'string', ''))
+    ir = setCellValue(ir, 'name', 'Ada')
+    expect(ir.cells[0].initial).toBe('Ada')
   })
 
-  it('setVariableType coerces the initial to that type’s default', () => {
-    let ir = addVariable(emptyPageInteractions(), makeScalarVariable('x', 'string', 'hi'))
-    ir = setVariableType(ir, 'x', 'number')
-    expect(ir.variables[0]).toMatchObject({ type: 'number', initial: 0 })
-    ir = setVariableType(ir, 'x', 'boolean')
-    expect(ir.variables[0]).toMatchObject({ type: 'boolean', initial: false })
-    ir = setVariableType(ir, 'x', { collection: 'object' })
-    expect(ir.variables[0]).toMatchObject({ type: { collection: 'object' }, initial: [] })
+  it('setCellType coerces the initial to that type’s default', () => {
+    let ir = addCell(emptyPageInteractions(), makeCell('x', 'string', 'hi'))
+    ir = setCellType(ir, 'x', 'number')
+    expect(ir.cells[0]).toMatchObject({ type: 'number', initial: 0 })
+    ir = setCellType(ir, 'x', 'boolean')
+    expect(ir.cells[0]).toMatchObject({ type: 'boolean', initial: false })
+    ir = setCellType(ir, 'x', { collection: 'object' })
+    expect(ir.cells[0]).toMatchObject({ type: { collection: 'object' }, initial: [] })
   })
 
   it('defaultInitial gives a sensible empty per type', () => {
@@ -149,32 +155,44 @@ describe('editable state — value + type reducers', () => {
     expect(defaultInitial('boolean')).toBe(false)
     expect(defaultInitial('string')).toBe('')
     expect(defaultInitial({ collection: 'object' })).toEqual([])
+    expect(defaultInitial({ enum: ['a', 'b'] })).toBe('a')
+  })
+
+  it('setVariantValues keeps a still-valid initial and resets one that vanished', () => {
+    let ir = addCell(emptyPageInteractions(), makeVariantCell('card', 'state', ['closed', 'open']))
+    ir = setCellValue(ir, 'card.state', 'open')
+    ir = setVariantValues(ir, 'card.state', ['open', 'closed', 'pinned'])
+    expect(ir.cells[0]).toMatchObject({ type: { enum: ['open', 'closed', 'pinned'] }, initial: 'open' })
+    ir = setVariantValues(ir, 'card.state', ['a', 'b'])
+    expect(ir.cells[0].initial).toBe('a')
   })
 })
 
-describe('derived reducers', () => {
-  it('add / setExpr / remove a formula; ids stay unique vs vars and other derived', () => {
-    let ir = addVariable(emptyPageInteractions(), makeCollectionVariable('items'))
-    ir = addDerived(ir, 'count', 'items.length')
-    expect(ir.derived).toEqual([{ id: 'count', expr: 'items.length' }])
-    ir = addDerived(ir, 'count', 'x') // duplicate derived id ignored
-    ir = addDerived(ir, 'items', 'x') // collides with a variable id, ignored
-    expect(ir.derived).toHaveLength(1)
-    ir = setDerivedExpr(ir, 'count', 'items.length + 1')
-    expect(ir.derived[0].expr).toBe('items.length + 1')
-    ir = removeDerived(ir, 'count')
-    expect(ir.derived).toHaveLength(0)
+describe('formula reducers', () => {
+  it('add / setFormula / remove a formula; references stay unique across every cell', () => {
+    let ir = addCell(emptyPageInteractions(), makeListCell('items'))
+    ir = addCell(ir, makeFormula('count', 'items.length'))
+    expect(ir.cells[1]).toMatchObject({ id: 'count', formula: 'items.length' })
+    ir = addCell(ir, makeFormula('count', 'x')) // duplicate ignored
+    ir = addCell(ir, makeFormula('items', 'x')) // collides with a value, ignored
+    expect(ir.cells).toHaveLength(2)
+    ir = setCellFormula(ir, 'count', 'items.length + 1')
+    expect(ir.cells[1].formula).toBe('items.length + 1')
+    ir = setCellFormula(ir, 'count', '  ') // blank makes it a plain value again
+    expect(ir.cells[1]).not.toHaveProperty('formula')
+    ir = removeCell(ir, 'count')
+    expect(ir.cells).toHaveLength(1)
   })
 })
 
-describe('editable state + derived run in the runtime', () => {
-  it('seeds the store from edited initials and computes derived formulas', () => {
-    let ir = addVariable(emptyPageInteractions(), makeScalarVariable('greeting', 'string', ''))
-    ir = setVariableValue(ir, 'greeting', 'hi')
-    ir = addVariable(ir, makeCollectionVariable('items'))
-    ir = setVariableValue(ir, 'items', [{ label: 'a' }, { label: 'b' }])
-    ir = addDerived(ir, 'count', 'items.length')
-    ir = addDerived(ir, 'isEmpty', 'items.length == 0')
+describe('cells and formulas run in the runtime', () => {
+  it('seeds the store from edited initials and computes formulas', () => {
+    let ir = addCell(emptyPageInteractions(), makeCell('greeting', 'string', ''))
+    ir = setCellValue(ir, 'greeting', 'hi')
+    ir = addCell(ir, makeListCell('items'))
+    ir = setCellValue(ir, 'items', [{ label: 'a' }, { label: 'b' }])
+    ir = addCell(ir, makeFormula('count', 'items.length'))
+    ir = addCell(ir, makeFormula('isEmpty', 'items.length == 0'))
     const rt = initRuntime(ir)
     expect(rt.store.greeting).toBe('hi')
     const env = buildEnv(ir, rt)
@@ -183,90 +201,89 @@ describe('editable state + derived run in the runtime', () => {
   })
 })
 
-describe('repeater reducers', () => {
-  it('setRepeater upserts one repeater per node, merging patches', () => {
-    let ir = setRepeater(emptyPageInteractions(), 'row', { over: 'items' })
-    expect(ir.repeaters).toEqual([{ node: 'row', over: 'items' }])
-    ir = setRepeater(ir, 'row', { as: 'todo' }) // merge keeps `over`
-    expect(ir.repeaters).toEqual([{ node: 'row', over: 'items', as: 'todo' }])
-    ir = setRepeater(ir, 'row', { over: 'tasks' }) // still one, replaces `over`
-    expect(ir.repeaters).toHaveLength(1)
-    expect(ir.repeaters[0]).toMatchObject({ node: 'row', over: 'tasks', as: 'todo' })
+describe('repeat reducers', () => {
+  it('setRepeat upserts one repeat reference per node, merging patches', () => {
+    let ir = setRepeat(emptyPageInteractions(), 'row', { over: 'items' })
+    expect(ir.refs).toEqual([{ node: 'row', props: { repeat: 'items' } }])
+    ir = setRepeat(ir, 'row', { as: 'todo' }) // merge keeps `over`
+    expect(ir.refs).toEqual([{ node: 'row', props: { repeat: 'items' }, item: { as: 'todo' } }])
+    ir = setRepeat(ir, 'row', { over: 'tasks' }) // still one, replaces `over`
+    expect(ir.refs).toHaveLength(1)
+    expect(ir.refs[0]).toMatchObject({ node: 'row', props: { repeat: 'tasks' }, item: { as: 'todo' } })
   })
 
-  it('setRepeater clears an optional field with an empty string', () => {
-    let ir = setRepeater(emptyPageInteractions(), 'row', { over: 'items', as: 'item', key: 'item.id' })
-    expect(ir.repeaters[0]).toEqual({ node: 'row', over: 'items', as: 'item', key: 'item.id' })
-    ir = setRepeater(ir, 'row', { key: '' })
-    expect(ir.repeaters[0]).toEqual({ node: 'row', over: 'items', as: 'item' })
+  it('setRepeat clears an optional field with an empty string', () => {
+    let ir = setRepeat(emptyPageInteractions(), 'row', { over: 'items', as: 'item', key: 'item.id' })
+    expect(ir.refs[0]).toEqual({ node: 'row', props: { repeat: 'items' }, item: { as: 'item', key: 'item.id' } })
+    ir = setRepeat(ir, 'row', { key: '' })
+    expect(ir.refs[0]).toEqual({ node: 'row', props: { repeat: 'items' }, item: { as: 'item' } })
   })
 
-  it('clearRepeater removes only the targeted node’s repeater', () => {
-    let ir = setRepeater(emptyPageInteractions(), 'row', { over: 'items' })
-    ir = setRepeater(ir, 'card', { over: 'cards' })
-    ir = clearRepeater(ir, 'row')
-    expect(ir.repeaters).toEqual([{ node: 'card', over: 'cards' }])
+  it('clearRepeat removes only the targeted node’s repeat, and its loop settings with it', () => {
+    let ir = setRepeat(emptyPageInteractions(), 'row', { over: 'items', as: 'todo' })
+    ir = setRef(ir, 'row', 'text', 'todo.label')
+    ir = setRepeat(ir, 'card', { over: 'cards' })
+    ir = clearRepeat(ir, 'row')
+    expect(refsOf(ir, 'row')).toEqual({ node: 'row', props: { text: 'todo.label' } })
+    expect(refsOf(ir, 'card')).toEqual({ node: 'card', props: { repeat: 'cards' } })
   })
 
-  it('moveRepeater retargets the template node, preserving over/as/key', () => {
-    let ir = setRepeater(emptyPageInteractions(), 'rowA', { over: 'items', as: 'todo', key: 'todo.id' })
-    ir = moveRepeater(ir, 'rowA', 'rowB') // container picks a different template child
-    expect(ir.repeaters).toEqual([{ node: 'rowB', over: 'items', as: 'todo', key: 'todo.id' }])
-    expect(moveRepeater(ir, 'rowB', 'rowB')).toBe(ir) // no-op when same
-    expect(moveRepeater(ir, 'ghost', 'rowC')).toBe(ir) // no-op when source has no repeater
+  it('moveRepeat retargets the template node, preserving over/as/key', () => {
+    let ir = setRepeat(emptyPageInteractions(), 'rowA', { over: 'items', as: 'todo', key: 'todo.id' })
+    ir = moveRepeat(ir, 'rowA', 'rowB') // container picks a different template child
+    expect(ir.refs).toEqual([{ node: 'rowB', props: { repeat: 'items' }, item: { as: 'todo', key: 'todo.id' } }])
+    expect(moveRepeat(ir, 'rowB', 'rowB')).toBe(ir) // no-op when same
+    expect(moveRepeat(ir, 'ghost', 'rowC')).toBe(ir) // no-op when source has no repeat
   })
 })
 
-describe('binding reducers', () => {
-  it('add / edit / remove bindings addressed by (node, occurrence)', () => {
-    let ir = addBinding(emptyPageInteractions(), 'row', 'text', 'item.label')
-    ir = addBinding(ir, 'row', 'visible', 'item.done')
-    expect(ir.bindings).toHaveLength(2)
-    ir = setBindingProp(ir, 'row', 1, 'disabled')
-    ir = setBindingFrom(ir, 'row', 0, 'item.title')
-    expect(ir.bindings).toEqual([
-      { node: 'row', prop: 'text', from: 'item.title' },
-      { node: 'row', prop: 'disabled', from: 'item.done' },
-    ])
-    ir = removeBinding(ir, 'row', 0)
-    expect(ir.bindings).toEqual([{ node: 'row', prop: 'disabled', from: 'item.done' }])
+describe('property reference reducers', () => {
+  it('set / read / move / clear the reference on (node, prop)', () => {
+    let ir = setRef(emptyPageInteractions(), 'row', 'text', 'item.label')
+    ir = setRef(ir, 'row', 'visible', 'item.done')
+    expect(refsOf(ir, 'row')?.props).toEqual({ text: 'item.label', visible: 'item.done' })
+    ir = moveRef(ir, 'row', 'visible', 'disabled')
+    ir = setRef(ir, 'row', 'text', 'item.title')
+    expect(refsOf(ir, 'row')?.props).toEqual({ text: 'item.title', disabled: 'item.done' })
+    ir = clearRef(ir, 'row', 'text')
+    expect(getRef(ir, 'row', 'text')).toBeUndefined()
+    expect(refsOf(ir, 'row')?.props).toEqual({ disabled: 'item.done' })
   })
 
-  it('occurrence is per-node, not the global binding index', () => {
-    let ir = addBinding(emptyPageInteractions(), 'a', 'text', 'x')
-    ir = addBinding(ir, 'b', 'text', 'y') // interleaved node
-    ir = addBinding(ir, 'a', 'visible', 'z')
-    ir = setBindingFrom(ir, 'a', 1, 'zz') // occurrence 1 of node 'a' = the visible binding
-    expect(ir.bindings.find((b) => b.node === 'a' && b.prop === 'visible')!.from).toBe('zz')
-    expect(ir.bindings.find((b) => b.node === 'b')!.from).toBe('y') // untouched
+  it('keeps one block per node, and drops a block that empties out', () => {
+    let ir = setRef(emptyPageInteractions(), 'a', 'text', 'x')
+    ir = setRef(ir, 'b', 'text', 'y') // interleaved node
+    ir = setRef(ir, 'a', 'visible', 'z')
+    expect(ir.refs).toHaveLength(2)
+    ir = clearRef(ir, 'a', 'text')
+    ir = clearRef(ir, 'a', 'visible')
+    expect(ir.refs.map((r) => r.node)).toEqual(['b'])
+    expect(getRef(ir, 'b', 'text')).toBe('y') // untouched
   })
 
-  it('prop-keyed helpers upsert / read / drop the single (node, prop) binding', () => {
-    let ir = setBindingExpr(emptyPageInteractions(), 'btn', 'background', 'accent')
-    expect(getBinding(ir, 'btn', 'background')).toEqual({ node: 'btn', prop: 'background', from: 'accent' })
-    ir = setBindingExpr(ir, 'btn', 'background', 'theme.bg') // updates, no duplicate
-    expect(ir.bindings).toHaveLength(1)
-    expect(getBinding(ir, 'btn', 'background')!.from).toBe('theme.bg')
-    ir = setBindingExpr(ir, 'btn', 'color', 'fg') // different prop coexists
-    expect(ir.bindings).toHaveLength(2)
-    ir = removeBindingProp(ir, 'btn', 'background')
-    expect(getBinding(ir, 'btn', 'background')).toBeUndefined()
-    expect(ir.bindings).toHaveLength(1)
+  it('a reference on a repeated node coexists with its repeat', () => {
+    let ir = setRepeat(emptyPageInteractions(), 'row', { over: 'items' })
+    ir = setRef(ir, 'row', 'background', 'accent')
+    expect(getRef(ir, 'row', REPEAT_PROP)).toBe('items')
+    expect(getRef(ir, 'row', 'background')).toBe('accent')
+    ir = setRef(ir, 'row', 'background', 'theme.bg') // updates, no duplicate
+    expect(ir.refs).toHaveLength(1)
+    expect(getRef(ir, 'row', 'background')).toBe('theme.bg')
   })
 })
 
 /**
  * Scaffold parity — author the exact IR the devtools console block builds (a list
- * variable + a repeater + a text binding + an append interaction) using only the
- * inspector reducers, then drive the repeater/binding the same way the runtime
+ * cell + a repeat + a text reference + an append interaction) using only the
+ * inspector reducers, then drive the repeat/reference the same way the runtime
  * does and assert the rendered rows. This is the proof the console scaffold is
  * no longer needed.
  */
-describe('scaffold parity — repeater + binding authored via reducers', () => {
+describe('scaffold parity — repeat + reference authored via reducers', () => {
   function authorTodoList() {
-    let ir = addVariable(emptyPageInteractions(), makeCollectionVariable('items'))
-    ir = setRepeater(ir, 'row', { over: 'items', as: 'item' })
-    ir = addBinding(ir, 'row', 'text', 'item.label')
+    let ir = addCell(emptyPageInteractions(), makeListCell('items'))
+    ir = setRepeat(ir, 'row', { over: 'items', as: 'item' })
+    ir = setRef(ir, 'row', 'text', 'item.label')
     ir = addInteraction(ir, 'addBtn', 'i1')
     ir = addAction(ir, 'i1', 'collection.append')
     ir = setActionTarget(ir, 'i1', 0, 'items')
@@ -276,25 +293,24 @@ describe('scaffold parity — repeater + binding authored via reducers', () => {
 
   it('produces the same IR shape as the hand-written scaffold', () => {
     const ir = authorTodoList()
-    expect(ir.repeaters).toEqual([{ node: 'row', over: 'items', as: 'item' }])
-    expect(ir.bindings).toEqual([{ node: 'row', prop: 'text', from: 'item.label' }])
-    expect(ir.variables[0]).toMatchObject({ id: 'items', type: { collection: 'object' } })
+    expect(ir.refs).toEqual([{ node: 'row', props: { repeat: 'items', text: 'item.label' }, item: { as: 'item' } }])
+    expect(ir.cells[0]).toMatchObject({ id: 'items', type: { collection: 'object' } })
   })
 
-  it('renders one bound row per appended item (runtime data path)', () => {
+  it('renders one referenced row per appended item (runtime data path)', () => {
     const ir = authorTodoList()
     const append = ir.interactions.find((x) => x.id === 'i1')!
     let rt = initRuntime(ir)
     rt = runInteraction(ir, rt, append, buildEnv(ir, rt))
     rt = runInteraction(ir, rt, append, buildEnv(ir, rt))
 
-    // Mirror InteractionRuntime.renderNode: evaluate the repeater's collection,
-    // then the binding expression in each item's scope.
+    // Mirror InteractionRuntime.renderNode: evaluate the repeated list, then the
+    // referenced expression in each item's scope.
     const env = buildEnv(ir, rt)
-    const rep = ir.repeaters[0]
-    const binding = ir.bindings.find((b) => b.node === rep.node && b.prop === 'text')!
+    const rep = repeatOf(ir, 'row')!
+    const text = getRef(ir, 'row', 'text')!
     const coll = evaluate(parse(rep.over), env) as unknown[]
-    const rows = coll.map((item) => evaluate(parse(binding.from), { ...env, [rep.as ?? 'item']: item }))
+    const rows = coll.map((item) => evaluate(parse(text), { ...env, [rep.as]: item }))
 
     expect(rows).toEqual(['Item 1', 'Item 2'])
   })
@@ -303,7 +319,7 @@ describe('scaffold parity — repeater + binding authored via reducers', () => {
 describe('setActionParam — extra expression params (where / at)', () => {
   /** An interaction with one `collection.update` action to hang params on. */
   function authorUpdate() {
-    let ir = addVariable(emptyPageInteractions(), makeCollectionVariable('items'))
+    let ir = addCell(emptyPageInteractions(), makeListCell('items'))
     ir = addInteraction(ir, 'saveBtn', 'i1')
     ir = addAction(ir, 'i1', 'collection.update')
     ir = setActionTarget(ir, 'i1', 0, 'items')

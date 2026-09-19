@@ -61,7 +61,6 @@ export const PHASE0_ACTIONS: ActionCatalogEntry[] = [
   // the emitter implement. Declaring it required would fail validation on the
   // commonest stepper.
   { key: 'increment', label: 'Add to number', platforms: ['web', 'native'], lowers: 'fold', expects: { target: 'variable' } },
-
-  // variant state -> setState
-  { key: 'node.setState', label: 'Set state', platforms: ['web', 'native'], lowers: 'setState', expects: { target: 'node.state', value: true } },
+  // A node's variant is a cell of enum type, so `set-variable` on `card.state`
+  // switches it; there is no separate state action.
 ]

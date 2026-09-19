@@ -40,7 +40,7 @@ export interface TriggerCatalogEntry {
 }
 
 /** Which normalized graph node-kind an action lowers to. */
-export type ActionLowering = 'fold' | 'effect' | 'switch' | 'setState'
+export type ActionLowering = 'fold' | 'effect' | 'switch'
 
 export interface ActionCatalogEntry {
   key: ActionType
@@ -50,7 +50,7 @@ export interface ActionCatalogEntry {
   lowers: ActionLowering
   /** What `Action.target` must address, and whether `Action.value` is required. */
   expects: {
-    target?: 'variable' | 'collection' | 'node.state' | 'screen' | 'overlay' | 'slot' | 'none'
+    target?: 'variable' | 'collection' | 'screen' | 'overlay' | 'slot' | 'none'
     value?: boolean
     /**
      * Extra expression params the action reads from `Action.params` (via

@@ -15,7 +15,8 @@
 import { streamText } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { listTriggers, listActions } from '../catalog'
-import type { PageInteractions } from '../ir'
+import type { PageInteractions, AnyPageInteractions } from '../ir'
+import { upgradePageInteractions } from '../ir'
 import { getDesktopChat, getKeyStore } from '../../desktop-bridge'
 
 export interface AiChatContext {
@@ -54,11 +55,14 @@ function buildPrompt(ctx: AiChatContext): string {
     'You author UI interactions for a design tool, stored as a JSON "PageInteractions" IR.',
     '',
     'PageInteractions shape:',
-    '{ version:1, variables:[{id,type,scope:"page",initial,source:"local"}], derived:[{id,expr}], ports:[],',
-    '  interactions:[{id, on:{node:<nodeId>, trigger:{type}}, if?:<expr>, do:[{type, target?, value?}]}],',
-    '  appRules:[], bindings:[{node:<nodeId>, prop, from:<expr>}], states:[], repeaters:[{node:<nodeId>, over, as?, key?}] }',
+    '{ version:2, cells:[{id, owner:{kind:"page"}|{kind:"document"}|{kind:"node",node:<nodeId>}, type, initial, formula?:<expr>}],',
+    '  refs:[{node:<nodeId>, props:{<prop>:<expr>}, item?:{as?, key?}}],',
+    '  interactions:[{id, on:{node:<nodeId>, trigger:{type}}, if?:<expr>, do:[{type, target?, value?}]}], appRules:[] }',
+    'A cell is the one kind of state: a value, or a read-only formula when `formula` is set. A node\'s variant set is a cell',
+    'it owns with type {enum:[...]}, addressed as <nodeId>.<cellId>. A property references cells through refs.props;',
+    'the reserved prop "repeat" repeats the node over a list (item names the loop variable) and a bare cell in "value" makes the node edit it.',
     'Expressions are a small JS subset (member access; + - * / %; == != < > <= >=; && ||; ternary; literals; object/array literals). Use == not ===.',
-    'A list variable has type {collection:"object"} and initial []. collection.append target is the list id.',
+    'A list cell has type {collection:"object"} and initial []. collection.append target is the list id.',
     '',
     `Trigger types: ${triggers}`,
     `Action types: ${actions}`,
@@ -81,11 +85,16 @@ function buildPrompt(ctx: AiChatContext): string {
     .join('\n')
 }
 
-/** Minimal structural guard before we commit a model-produced IR. */
-function looksLikeIR(x: unknown): x is PageInteractions {
+/**
+ * Minimal structural guard before we commit a model-produced IR. A version-1
+ * block (the shape older prompts taught) is accepted and upgraded.
+ */
+function looksLikeIR(x: unknown): x is AnyPageInteractions {
   if (!x || typeof x !== 'object') return false
   const o = x as Record<string, unknown>
-  return o.version === 1 && Array.isArray(o.interactions) && Array.isArray(o.variables) && Array.isArray(o.bindings)
+  if (!Array.isArray(o.interactions)) return false
+  if (o.version === 2) return Array.isArray(o.cells) && Array.isArray(o.refs)
+  return o.version === 1 && Array.isArray(o.variables) && Array.isArray(o.bindings)
 }
 
 function parseResult(text: string): AiChatResult {
@@ -96,7 +105,7 @@ function parseResult(text: string): AiChatResult {
     .trim()
   try {
     const o = JSON.parse(stripped) as { reply?: unknown; ir?: unknown }
-    const ir = looksLikeIR(o.ir) ? o.ir : undefined
+    const ir = looksLikeIR(o.ir) ? upgradePageInteractions(o.ir).ir : undefined
     const reply = typeof o.reply === 'string' && o.reply.trim() ? o.reply : ir ? 'Done.' : stripped
     return { reply, ir }
   } catch {

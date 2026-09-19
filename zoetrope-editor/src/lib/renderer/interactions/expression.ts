@@ -415,7 +415,18 @@ function applyBinary(op: BinaryOp, l: unknown, r: unknown): unknown {
 
 // ---- JS lowering (what the emitter transliterates) ----
 
-export function toJs(node: ExprNode): string {
+/**
+ * Options for `toJs`. `member(root, prop)` may rewrite a one-level member access
+ * on a root identifier (`card.state`) to a different JS identifier — how the
+ * emitter maps a node's cell onto the hook it declared for it. Returning
+ * undefined keeps the plain `root.prop`.
+ */
+export interface ToJsOptions {
+  member?: (root: string, prop: string) => string | undefined
+}
+
+export function toJs(node: ExprNode, opts: ToJsOptions = {}): string {
+  const js = (n: ExprNode) => toJs(n, opts)
   switch (node.type) {
     case 'lit':
       return node.value === null
@@ -424,29 +435,34 @@ export function toJs(node: ExprNode): string {
           ? JSON.stringify(node.value)
           : String(node.value)
     case 'array':
-      return '[' + node.items.map(toJs).join(', ') + ']'
+      return '[' + node.items.map(js).join(', ') + ']'
     case 'object':
       return node.props.length
-        ? '{ ' + node.props.map((p) => `${jsKey(p.key)}: ${toJs(p.value)}`).join(', ') + ' }'
+        ? '{ ' + node.props.map((p) => `${jsKey(p.key)}: ${js(p.value)}`).join(', ') + ' }'
         : '{}'
     case 'ref':
       return node.name
-    case 'member':
-      return `${toJs(node.object)}.${node.property}`
+    case 'member': {
+      if (node.object.type === 'ref') {
+        const rewritten = opts.member?.(node.object.name, node.property)
+        if (rewritten !== undefined) return rewritten
+      }
+      return `${js(node.object)}.${node.property}`
+    }
     case 'index':
-      return `${toJs(node.object)}[${toJs(node.index)}]`
+      return `${js(node.object)}[${js(node.index)}]`
     case 'unary':
-      return `${node.op}${wrap(node.operand)}`
+      return `${node.op}${wrap(node.operand, opts)}`
     case 'binary':
-      return `(${toJs(node.left)} ${jsBinOp(node.op)} ${toJs(node.right)})`
+      return `(${js(node.left)} ${jsBinOp(node.op)} ${js(node.right)})`
     case 'logical':
-      return `(${toJs(node.left)} ${node.op} ${toJs(node.right)})`
+      return `(${js(node.left)} ${node.op} ${js(node.right)})`
     case 'conditional':
-      return `(${toJs(node.test)} ? ${toJs(node.consequent)} : ${toJs(node.alternate)})`
+      return `(${js(node.test)} ? ${js(node.consequent)} : ${js(node.alternate)})`
     case 'call':
-      return `${toJs(node.callee)}(${node.args.map(toJs).join(', ')})`
+      return `${js(node.callee)}(${node.args.map(js).join(', ')})`
     case 'lambda':
-      return `(${node.params.join(', ')}) => ${toJs(node.body)}`
+      return `(${node.params.join(', ')}) => ${js(node.body)}`
   }
 }
 
@@ -459,13 +475,13 @@ const jsKey = (k: string) => (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k) ? k : JSON.st
  * rather than the correct-but-ugly `{ ...item, ...{ done: true } }`.
  * Returns undefined for any node that isn't an object literal.
  */
-export function objectBodyJs(node: ExprNode): string | undefined {
+export function objectBodyJs(node: ExprNode, opts: ToJsOptions = {}): string | undefined {
   if (node.type !== 'object') return undefined
-  return node.props.map((p) => `${jsKey(p.key)}: ${toJs(p.value)}`).join(', ')
+  return node.props.map((p) => `${jsKey(p.key)}: ${toJs(p.value, opts)}`).join(', ')
 }
 
-function wrap(node: ExprNode): string {
-  const s = toJs(node)
+function wrap(node: ExprNode, opts: ToJsOptions): string {
+  const s = toJs(node, opts)
   return node.type === 'binary' || node.type === 'logical' || node.type === 'conditional' || node.type === 'lambda'
     ? `(${s})`
     : s

@@ -13,16 +13,17 @@
  * and everything downstream unchanged.
  */
 
-import type { PageInteractions, Variable } from '../ir'
+import type { PageInteractions, Cell } from '../ir'
+import { isCollectionType } from '../ir'
 import {
   addInteraction,
   addAction,
   setActionTarget,
   setActionValue,
-  addVariable,
-  makeCollectionVariable,
-  makeScalarVariable,
-  toVariableId,
+  addCell,
+  makeListCell,
+  makeCell,
+  toCellId,
 } from '../document/edit-interactions'
 
 export interface InterpretNode {
@@ -48,9 +49,8 @@ export type InterpretResult =
 const HELP =
   'I can set up click interactions — try "when Add button is clicked, add an item to the todo list", or "when Add button is clicked, clear the list".'
 
-function isCollectionVar(v: Variable): boolean {
-  return typeof v.type === 'object' && v.type !== null && 'collection' in v.type
-}
+const isPageCell = (c: Cell): boolean => c.owner.kind !== 'node'
+const isListCell = (c: Cell): boolean => isPageCell(c) && isCollectionType(c.type)
 
 /** Resolve a component phrase to a real node, or null. */
 function resolveNode(phrase: string, ctx: InterpretContext): InterpretNode | null {
@@ -72,16 +72,16 @@ function resolveNode(phrase: string, ctx: InterpretContext): InterpretNode | nul
 }
 
 /** Resolve a collection phrase to an existing variable, or describe one to create. */
-function resolveCollection(phrase: string, ctx: InterpretContext): { id: string; create?: Variable } {
+function resolveCollection(phrase: string, ctx: InterpretContext): { id: string; create?: Cell } {
   const p = phrase.toLowerCase()
-  for (const v of ctx.ir.variables) {
-    if (p.includes(v.id.toLowerCase())) return { id: v.id }
+  for (const c of ctx.ir.cells.filter(isPageCell)) {
+    if (p.includes(c.id.toLowerCase())) return { id: c.id }
   }
-  const cols = ctx.ir.variables.filter(isCollectionVar)
+  const cols = ctx.ir.cells.filter(isListCell)
   if (cols.length === 1) return { id: cols[0].id }
   const cleaned = phrase.replace(/\b(the|a|an|to|into|list)\b/gi, ' ').trim()
-  const id = toVariableId(cleaned) || 'items'
-  return { id, create: makeCollectionVariable(id) }
+  const id = toCellId(cleaned) || 'items'
+  return { id, create: makeListCell(id) }
 }
 
 function valueExprFor(rawValue: string): string {
@@ -118,7 +118,7 @@ export function interpret(text: string, ctx: InterpretContext): InterpretResult 
       ok: true,
       reply: `Added — on ${label} click, append an item to ${col.id}.`,
       apply: (ir) => {
-        let next = col.create ? addVariable(ir, col.create) : ir
+        let next = col.create ? addCell(ir, col.create) : ir
         next = addInteraction(next, node.id, id)
         next = addAction(next, id, 'collection.append')
         next = setActionTarget(next, id, 0, col.id)
@@ -134,7 +134,7 @@ export function interpret(text: string, ctx: InterpretContext): InterpretResult 
       ok: true,
       reply: `Added — on ${label} click, clear ${col.id}.`,
       apply: (ir) => {
-        let next = col.create ? addVariable(ir, col.create) : ir
+        let next = col.create ? addCell(ir, col.create) : ir
         next = addInteraction(next, node.id, id)
         next = addAction(next, id, 'set-variable')
         next = setActionTarget(next, id, 0, col.id)
@@ -145,14 +145,14 @@ export function interpret(text: string, ctx: InterpretContext): InterpretResult 
   }
 
   if ((m = actionPhrase.match(/set\s+(.+?)\s+to\s+(.+)/))) {
-    const varName = toVariableId(m[1]) || 'value'
-    const exists = ctx.ir.variables.some((v) => v.id === varName)
+    const varName = toCellId(m[1]) || 'value'
+    const exists = ctx.ir.cells.some((c) => isPageCell(c) && c.id === varName)
     const expr = valueExprFor(m[2])
     return {
       ok: true,
       reply: `Added — on ${label} click, set ${varName} to ${expr}.`,
       apply: (ir) => {
-        let next = exists ? ir : addVariable(ir, makeScalarVariable(varName))
+        let next = exists ? ir : addCell(ir, makeCell(varName))
         next = addInteraction(next, node.id, id)
         next = addAction(next, id, 'set-variable')
         next = setActionTarget(next, id, 0, varName)

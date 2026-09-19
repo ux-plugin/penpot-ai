@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { emptyPageInteractions, type PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
-import { makeCollectionVariable } from '../../../../src/lib/renderer/interactions/document/edit-interactions'
+import { makeListCell } from '../../../../src/lib/renderer/interactions/document/edit-interactions'
 import { interpret, type InterpretContext } from '../../../../src/lib/renderer/interactions/nl/interpret'
 import { initRuntime, buildEnv, runInteraction } from '../../../../src/lib/renderer/interactions/preview/runtime'
 
@@ -16,7 +16,7 @@ function ctxWith(ir: PageInteractions, extra: Partial<InterpretContext> = {}): I
 /** IR seeded with a single `items` collection (the demo's view layer). */
 function withItems(): PageInteractions {
   const ir = emptyPageInteractions()
-  ir.variables.push(makeCollectionVariable('items'))
+  ir.cells.push(makeListCell('items'))
   return ir
 }
 
@@ -45,9 +45,9 @@ describe('interpret — stub NL → IR', () => {
     expect(r.ok).toBe(true)
     if (!r.ok) return
     const ir = r.apply(emptyPageInteractions())
-    expect(ir.variables).toHaveLength(1) // a collection got created
-    expect(ir.variables[0].type).toEqual({ collection: 'object' })
-    expect(ir.interactions[0].do[0].target).toBe(ir.variables[0].id)
+    expect(ir.cells).toHaveLength(1) // a list got created
+    expect(ir.cells[0].type).toEqual({ collection: 'object' })
+    expect(ir.interactions[0].do[0].target).toBe(ir.cells[0].id)
   })
 
   it('"this" resolves to the selected node', () => {

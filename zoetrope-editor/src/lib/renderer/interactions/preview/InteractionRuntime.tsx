@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useState, createElement, type ReactNode } from 'react'
 import type { PageInteractions, Interaction } from '../ir'
+import { cellRef, editedCell, refsOf, REPEAT_PROP, VALUE_PROP } from '../ir'
 import {
   STYLE_PROPS,
   VOID_TAGS,
@@ -24,13 +25,14 @@ import {
   activeSlotView,
   diffRuntime,
   affectedNodes,
+  repeatOf,
   type RuntimeState,
   type ActivityEntry,
 } from './runtime'
 
 type Env = Record<string, unknown>
 
-/** Write half of a two-way binding: node id, target cell, new value. */
+/** Write half of an edited cell: node id, the cell's key, new value. */
 type Edit = (node: string, target: string, value: unknown) => void
 
 /**
@@ -90,7 +92,7 @@ export function InteractionRuntime({
       cause: { node: it.on.node, trigger: it.on.trigger.type, before: cur.rt },
     }))
 
-  /** The write half of a two-way binding: a discrete event folding into a cell. */
+  /** The write half of an edited cell: a discrete event folding into it. */
   const edit = (node: string, target: string, value: unknown) =>
     setSnap((cur) => ({
       rt: { ...cur.rt, store: { ...cur.rt.store, [target]: value } },
@@ -126,14 +128,14 @@ function renderNode(
   slots: Record<string, string>,
   key?: number | string,
 ): ReactNode {
-  const rep = ir.repeaters.find((r) => r.node === node.nodeId)
+  const rep = repeatOf(ir, node.nodeId)
   if (rep) {
-    const as = rep.as ?? 'item'
     const coll = asArray(safeEval(rep.over, env))
     return coll.map((item, i) => {
-      const itemEnv: Env = { ...env, [as]: item }
-      const k = rep.key ? safeEval(rep.key, itemEnv) : isRecord(item) && 'id' in item ? (item.id as string) : i
-      return renderElement(node, itemEnv, ir, fire, edit, slots, true, k ?? i)
+      const itemEnv: Env = { ...env, [rep.as]: item }
+      const k = rep.key ? safeEval(rep.key, itemEnv) : isRecord(item) && 'id' in item ? item.id : i
+      const key = typeof k === 'string' || typeof k === 'number' ? k : i
+      return renderElement(node, itemEnv, ir, fire, edit, slots, true, key)
     })
   }
   return renderElement(node, env, ir, fire, edit, slots, false, key)
@@ -160,23 +162,26 @@ function renderElement(
     if (instance) props['data-instance-key'] = key
   }
 
+  const refs = refsOf(ir, node.nodeId)
+  const edited = editedCell(ir, node.nodeId)
   let textChild: unknown
-  for (const b of ir.bindings) {
-    if (b.node !== node.nodeId) continue
-    const val = safeEval(b.from, env)
-    if (b.prop === 'text' || b.prop === 'children') textChild = val
-    else if (STYLE_PROPS.has(b.prop)) style[b.prop] = val
-    else props[b.prop] = val
+  for (const [prop, from] of Object.entries(refs?.props ?? {})) {
+    if (prop === REPEAT_PROP) continue
+    if (prop === VALUE_PROP && edited) continue
+    const val = safeEval(from, env)
+    if (prop === 'text' || prop === 'children') textChild = val
+    else if (STYLE_PROPS.has(prop)) style[prop] = val
+    else props[prop] = val
   }
   if (Object.keys(style).length) props.style = style
 
-  // Two-way: read the cell into the value prop, write the change back into it.
-  for (const e of ir.editable) {
-    if (e.node !== node.nodeId) continue
+  // Edited cell: read it into the value prop, write the change back into it.
+  if (edited) {
+    const key = cellRef(edited)
     const inputType = inputTypeFor(ir, node.nodeId)
     if (inputType) props.type = inputType
-    props[e.prop] = env[e.target] ?? ''
-    props.onChange = (ev: { target: { value: unknown } }) => edit(e.node, e.target, ev.target.value)
+    props[VALUE_PROP] = safeEval(key, env) ?? ''
+    props.onChange = (ev: { target: { value: unknown } }) => edit(node.nodeId, key, ev.target.value)
   }
 
   // Only the events the design authored — matching the emitted code, which adds

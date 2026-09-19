@@ -20,7 +20,7 @@ import type { Action } from '../../../../src/lib/renderer/interactions/ir'
 
 beforeAll(() => initDefaultCatalog())
 
-const emptyRt = (store: Record<string, unknown>): RuntimeState => ({ store, nodeStates: {}, slotViews: {}, emitted: [] })
+const emptyRt = (store: Record<string, unknown>): RuntimeState => ({ store, slotViews: {} })
 
 /** Run an action through the preview interpreter, returning the target's value. */
 function viaRuntime(a: Action, prev: unknown, target = 'v'): unknown {
@@ -148,10 +148,9 @@ describe('catalog honesty', () => {
     'set-variable': { action: { type: 'set-variable', target: 'v', value: '1' }, prev: 0 },
     'toggle-variable': { action: { type: 'toggle-variable', target: 'v' }, prev: false },
     increment: { action: { type: 'increment', target: 'v' }, prev: 0 },
-    'node.setState': { action: { type: 'node.setState', target: 'v', value: '"open"' }, prev: '' },
   }
 
-  const stateful = listActions().filter((e) => !isPlanned(e) && (e.lowers === 'fold' || e.lowers === 'setState'))
+  const stateful = listActions().filter((e) => !isPlanned(e) && e.lowers === 'fold')
 
   it('every stable state-mutating action has a fixture', () => {
     expect(stateful.map((e) => e.key).sort()).toEqual(Object.keys(FIXTURES).sort())
@@ -162,10 +161,7 @@ describe('catalog honesty', () => {
     const before = emptyRt({ v: prev })
     const after = applyAction(action, {}, before)
     expect(after).not.toBe(before)
-    expect({ store: after.store, nodeStates: after.nodeStates }).not.toEqual({
-      store: before.store,
-      nodeStates: before.nodeStates,
-    })
+    expect(after.store).not.toEqual(before.store)
   })
 
   it.each(stateful.map((e) => e.key))('%s lowers to real code, not a TODO comment', (key) => {

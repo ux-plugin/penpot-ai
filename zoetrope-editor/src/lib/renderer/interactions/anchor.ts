@@ -22,6 +22,7 @@
  */
 
 import type { PageInteractions, NodeId } from './ir'
+import { referencedNodeIds } from './ir'
 import type { PNode } from './compile/emit-react'
 
 export const ANCHOR_ATTR = 'data-node-id'
@@ -30,15 +31,11 @@ export const INSTANCE_KEY_ATTR = 'data-instance-key'
 export const anchorAttr = (nodeId: NodeId): string => `${ANCHOR_ATTR}="${nodeId}"`
 export const instanceKeyAttr = (keyExpr: string): string => `${INSTANCE_KEY_ATTR}={${keyExpr}}`
 
-/** Node ids that MUST be anchored because they carry behavior. */
-export function requiredAnchors(ir: PageInteractions): Set<NodeId> {
-  const req = new Set<NodeId>()
-  for (const it of ir.interactions) req.add(it.on.node)
-  for (const b of ir.bindings) req.add(b.node)
-  for (const s of ir.states) req.add(s.node)
-  for (const r of ir.repeaters) req.add(r.node)
-  return req
-}
+/**
+ * Node ids that MUST be anchored because they carry behavior: an interaction,
+ * a property reference, or a cell of their own.
+ */
+export const requiredAnchors = (ir: PageInteractions): Set<NodeId> => referencedNodeIds(ir)
 
 /**
  * Count `data-node-id` occurrences in a JSX source string. Supports the two
