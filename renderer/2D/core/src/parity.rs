@@ -1794,6 +1794,67 @@ pub fn build_mixed_grid_scene(n: usize) -> (Scene, Vec<(usize, &'static str)>) {
     b.finish()
 }
 
+/// The **backdrop-order** fixture: one glass lens over a checkerboard and, when `neighbour` is
+/// set, shapes ABOVE the lens in z sitting `gap` px outside its edge — inside its read reach,
+/// outside its footprint. Content above an effect must never reach the effect's pixels, so the
+/// lens renders identically with and without its neighbours; a difference inside the lens is a
+/// backdrop read that saw rows written later in z. `neighbour`: 0 none, 1 solid magenta frames
+/// on all four sides, 2 a background-blur panel on the right. `frost` picks the frosted lens.
+#[must_use]
+pub fn build_backdrop_order_scene(neighbour: u32, gap: f64, frost: bool) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    b.advance("backdrop order");
+    let (cw, ch) = (1200.0_f64, 800.0_f64);
+    let cell = 24.0_f64;
+    for gy in 0..(ch / cell).ceil() as i64 {
+        for gx in 0..(cw / cell).ceil() as i64 {
+            let mut node = Node::new(b.id(), ShapeKind::Rect);
+            let (x, y) = (gx as f64 * cell, gy as f64 * cell);
+            node.bounds = Rect::new(x, y, x + cell, y + cell);
+            let dark = (gx + gy) % 2 == 0;
+            node.fills = vec![Paint::plain(Brush::Solid(if dark { col(30, 120, 90) } else { col(230, 210, 80) }))];
+            b.root(node);
+        }
+    }
+    let lens = Rect::new(400.0, 250.0, 800.0, 550.0);
+    let mut node = Node::new(b.id(), ShapeKind::Rect);
+    node.bounds = lens;
+    node.corners = Some(RoundedRectRadii::from_single_radius(12.0));
+    let mut g = glass_lens(TileMode::Decal);
+    if !frost {
+        g.blur = 0.0;
+        g.frost = 0.0;
+    }
+    node.glass = Some(g);
+    b.root(node);
+    let side = 60.0;
+    match neighbour {
+        1 => {
+            let (l, t, r, bt) = (lens.x0 - gap, lens.y0 - gap, lens.x1 + gap, lens.y1 + gap);
+            for rect in [
+                Rect::new(l - side, t - side, r + side, t),
+                Rect::new(l - side, bt, r + side, bt + side),
+                Rect::new(l - side, t, l, bt),
+                Rect::new(r, t, r + side, bt),
+            ] {
+                let mut node = Node::new(b.id(), ShapeKind::Rect);
+                node.bounds = rect;
+                node.fills = vec![Paint::plain(Brush::Solid(col(255, 0, 255)))];
+                b.root(node);
+            }
+        }
+        2 => {
+            let mut node = Node::new(b.id(), ShapeKind::Rect);
+            node.bounds = Rect::new(lens.x1 + gap, lens.y0 - 40.0, lens.x1 + gap + 220.0, lens.y1 + 40.0);
+            node.corners = Some(RoundedRectRadii::from_single_radius(12.0));
+            node.background_blur = Some(24.0);
+            b.root(node);
+        }
+        _ => {}
+    }
+    b.finish()
+}
+
 pub fn build_blur_grid_scene(n: usize, radius: f32) -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
     let cols = (n as f64).sqrt().ceil() as usize;

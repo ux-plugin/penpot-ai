@@ -2216,6 +2216,13 @@ pub extern "C" fn load_glass_grid_scene(n: u32, frost: u32) -> u32 {
     install_fixture(crate::parity::build_glass_grid_scene(n as usize, frost != 0, 1.0))
 }
 
+/// Install the **backdrop-order** fixture ([`crate::parity::build_backdrop_order_scene`]) — a lens
+/// with shapes above it in z just outside its edge, the write-after-read gate for backdrop reads.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_backdrop_order_scene(neighbour: u32, gap: f32, frost: u32) -> u32 {
+    install_fixture(crate::parity::build_backdrop_order_scene(neighbour, f64::from(gap), frost != 0))
+}
+
 /// Install the **blur grid** ([`crate::parity::build_blur_grid_scene`]) — `n` disjoint background-blur
 /// gathers, the non-self-clipping counterpart of the glass grid, for the batched masked composite.
 #[unsafe(no_mangle)]
