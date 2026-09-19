@@ -159,7 +159,14 @@ export function initCanvasContext(
 /**
  * Clear canvas.
  * @param releaseContext - If true, call loseContext() so the browser releases GPU resources (final teardown).
- *   If false, only unregister/delete the GL context so the same canvas can get a new context (re-init).
+ *   If false, only unregister/delete the Emscripten GL handle.
+ *
+ * NOTE: `false` does NOT give the canvas a fresh context afterwards, which an
+ * earlier version of this comment claimed. A canvas has exactly one WebGL2
+ * context for its lifetime; `getContext('webgl2')` keeps returning that same
+ * object, still carrying whatever state the previous Skia surface left bound.
+ * Re-initialising over it paints garbage — which is why `initPage` now builds
+ * the context once and reloads pages into the live surface instead.
  */
 export function clearCanvas(
   module: WasmModule,

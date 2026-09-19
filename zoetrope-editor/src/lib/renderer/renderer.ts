@@ -176,6 +176,17 @@ export class Renderer {
       { x: 0, y: 0 },
       background
     )
+
+    // Mirror the view state we just pushed into WASM. `applyViewport` diffs the
+    // incoming zoom against `prevZoom` to decide pan-vs-zoom, and the zoom branch
+    // paints from the tile cache (`_render_from_cache`). Leaving a stale zoom here
+    // — `destroyContext` doesn't reset it, only `destroy` does — makes the first
+    // view update after a page switch take the zoom path against a cache that
+    // belongs to the page we just left, so the canvas paints at the old scale
+    // while the selection chrome (which reads the viewport signal) sits at the
+    // new one.
+    this.viewport = null
+    this.prevZoom = 1
   }
 
   /**
