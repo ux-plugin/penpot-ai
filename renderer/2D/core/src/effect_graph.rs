@@ -426,15 +426,15 @@ pub fn lens_warp_slack(g: &Glass, scale: f32, half_diag_dev: f32) -> f32 {
     warp_slack(g.surface_type, g.thickness, g.refractive_index, g.edge_boost, g.zoom, g.chromatic_aberration, scale, half_diag_dev)
 }
 
-/// [`lens_warp_slack`] read off a lens warp's device field — the payload [`lens_device_field`]
-/// lays out, at the resolution it was built for. How far the frame graph's lens warp reads past
-/// its output: a magnifying lens samples up to `|1/zoom − 1|` of its half-diagonal toward its
-/// centre, so a flat allowance under-covers it and the taps land on stale rows.
+/// How far a lens warp samples OUTWARD of where magnification puts the tap, read off its device
+/// field (the payload [`lens_device_field`] lays out): the refraction and chromatic shift of
+/// [`lens_warp_slack`] without its magnification term. Magnification is not a reach: the shader
+/// taps `centre + (p − centre)/zoom`, a map of the output about the lens centre, which the frame
+/// graph applies exactly (`frame_graph::read_region`) rather than as a ring around the output.
 #[must_use]
 pub fn lens_warp_reach(u: &[f32]) -> f32 {
     let at = |i: usize| u.get(i).copied().unwrap_or(0.0);
-    let half_diag = at(4).hypot(at(5));
-    warp_slack(at(7) as i32, at(9), at(10), at(14), at(15), at(17), at(16), half_diag)
+    warp_slack(at(7) as i32, at(9), at(10), at(14), 1.0, at(17), at(16), 0.0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn lens_reach_from_the_payload_matches_the_slack_and_grows_with_magnification() {
+    fn lens_reach_is_the_outward_slack_whatever_the_magnification() {
         let geom = LensGeometry { center: Point::new(400.0, 300.0), width: 600.0, height: 300.0, corner_radius: 12.0, is_circle: false };
         let view = Affine::scale(2.0);
         for zoom in [1.0, 2.45] {
@@ -556,13 +556,34 @@ mod tests {
             // The graph builder stamps the chromatic shift into slot 17 of the warp's payload.
             let mut u = lens_device_field(&g, geom, (1600, 1200), (0.0, 0.0), view, 1.0);
             u[17] = g.chromatic_aberration;
-            let half_diag = (300.0f32 * 2.0).hypot(150.0 * 2.0);
-            let want = lens_warp_slack(&g, 2.0, half_diag);
+            // Refraction and chromatic shift only: at zoom 1 the slack's magnification term is zero.
+            let want = lens_warp_slack(&Glass { zoom: 1.0, ..g }, 2.0, 0.0);
             assert!((lens_warp_reach(&u) - want).abs() < 1e-3, "zoom {zoom}: {} vs {want}", lens_warp_reach(&u));
         }
-        // A 245% lens reaches most of the way to its centre: far past a flat 24 px allowance.
-        let u = lens_device_field(&Glass { zoom: 2.45, ..glass() }, geom, (1600, 1200), (0.0, 0.0), view, 1.0);
-        assert!(lens_warp_reach(&u) > 350.0, "{}", lens_warp_reach(&u));
+    }
+
+    #[test]
+    fn a_magnifier_reads_its_output_mapped_toward_its_centre() {
+        use crate::vello::frame_graph::{pad_at, read_region, Op};
+        let geom = LensGeometry { center: Point::new(1000.0, 500.0), width: 1200.0, height: 600.0, corner_radius: 0.0, is_circle: false };
+        let view = Affine::scale(2.0);
+        // A 245% lens whose centre (2000, 1000 device px) lies right of a 1600-wide frame: the
+        // visible slice of it reads a far smaller region, pulled toward the centre.
+        let op = Op::Warp(lens_device_field(&Glass { zoom: 2.45, ..glass() }, geom, (1600, 1200), (0.0, 0.0), view, 1.0).to_vec());
+        let out = kurbo::Rect::new(800.0, 400.0, 1600.0, 1200.0);
+        let p = f64::from(pad_at(&op, 1.0));
+        let r = read_region(&op, out, 1.0);
+        let map = |v: f64, c: f64| c + (v - c) / 2.45;
+        let want = kurbo::Rect::new(map(800.0, 2000.0), map(400.0, 1000.0), map(1600.0, 2000.0), map(1200.0, 1000.0)).inflate(p, p);
+        assert!((r.x0 - want.x0).abs() < 1e-3 && (r.y1 - want.y1).abs() < 1e-3, "{r:?} vs {want:?}");
+        assert!(r.width() < out.width() && r.height() < out.height(), "a magnifier reads less than it shows");
+        // At half resolution the same read, in half-resolution texels.
+        let half = read_region(&op, kurbo::Rect::new(400.0, 200.0, 800.0, 600.0), 0.5);
+        assert!((half.x1 - (map(1600.0, 2000.0) * 0.5 + f64::from(pad_at(&op, 0.5)))).abs() < 1e-3, "{half:?}");
+        // No magnification: the output grown by the pad, as for any neighbourhood op.
+        let flat = Op::Warp(lens_device_field(&glass(), geom, (1600, 1200), (0.0, 0.0), view, 1.0).to_vec());
+        let q = f64::from(pad_at(&flat, 1.0));
+        assert_eq!(read_region(&flat, out, 1.0), out.inflate(q, q));
     }
 
     #[test]

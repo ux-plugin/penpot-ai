@@ -157,9 +157,34 @@ pub fn pad_at(op: &Op, k: f32) -> f32 {
     }
 }
 
+/// The region `op` reads of its first input to make `out`, both in the texels of a value at `k`:
+/// `out` grown by [`pad_at`], and for a lens warp that mapped first about the lens centre by
+/// `1/zoom` — the shader taps `centre + (p − centre)/zoom` plus a refraction and chromatic shift
+/// the pad covers. A magnifier therefore reads a region smaller than its output, toward its
+/// centre, which may lie wholly outside `out`: a ring around `out` would be both far larger and,
+/// for a lens clipped by the frame, in the wrong place.
+#[must_use]
+pub fn read_region(op: &Op, out: Rect, k: f32) -> Rect {
+    let p = f64::from(pad_at(op, k));
+    // A lens always carries its zoom (the host's percentage over 100, 1 at rest); a warp payload
+    // without a positive one is not a magnifier.
+    if let Op::Warp(u) = op
+        && u.len() > 15
+        && u[15] > 0.0
+        && u[15] != 1.0
+        && u.get(crate::vello::bake::PAYLOAD_PROGRAM_SLOT).copied() != Some(crate::vello::bake::PROGRAM_NOISE)
+    {
+        let u = crate::vello::bake::payload_at(u, k);
+        let (cx, cy, z) = (f64::from(u[2]), f64::from(u[3]), f64::from(u[15].max(0.1)));
+        let map = |v: f64, c: f64| c + (v - c) / z;
+        return Rect::new(map(out.x0, cx), map(out.y0, cy), map(out.x1, cx), map(out.y1, cy)).inflate(p, p);
+    }
+    out.inflate(p, p)
+}
+
 /// The distance, in frame pixels, that `op` reads past its output — the real content an input
 /// must hold, independent of the grid it is computed on (a blur reaches `3σ`, a lens its
-/// refraction, magnification and chromatic shift — at least `24` — a noise warp its own reach). This is [`pad_at`] without the texel sampling ring: a served
+/// refraction and chromatic shift — at least `24` — a noise warp its own reach). This is [`pad_at`] without the texel sampling ring: a served
 /// ground needs only this many frame pixels of backdrop; the ring is a store-sampling concern,
 /// not a content one.
 #[must_use]
@@ -169,7 +194,8 @@ pub fn reach_px(op: &Op) -> f32 {
         Op::Warp(u) if u.get(crate::vello::bake::PAYLOAD_PROGRAM_SLOT).copied() == Some(crate::vello::bake::PROGRAM_NOISE) => {
             u.get(2).copied().unwrap_or(0.0)
         }
-        // A lens warp: its true displacement, floored at the old flat allowance so no read shrinks.
+        // A lens warp: its refraction and chromatic shift, floored at the old flat allowance.
+        // Magnification is not a reach — see [`read_region`].
         Op::Warp(u) => crate::effect_graph::lens_warp_reach(u).max(24.0),
         Op::Scatter(_) => 24.0,
         _ => 0.0,

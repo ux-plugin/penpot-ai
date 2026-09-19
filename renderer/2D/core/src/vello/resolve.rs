@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use crate::kurbo::{Rect, Vec2};
 
-use crate::vello::frame_graph::{pad_at, scale_rect, DrawItem, EdgeClampStyle, FrameGraph, NodeId, Op};
+use crate::vello::frame_graph::{pad_at, read_region, scale_rect, DrawItem, EdgeClampStyle, FrameGraph, NodeId, Op};
 use crate::vello::scheduler::{TILE_H, TILE_W};
 
 /// How far past the next rung the rule that lowered a pair must rise before the pair climbs back.
@@ -449,7 +449,7 @@ impl Demand {
                     union_into(&mut wanted[j], scale_rect(o, f64::from(res.k[j] / k)));
                 }
                 Op::Warp(_) | Op::Scatter(_) => {
-                    union_into(&mut wanted[node.inputs[0]], grown(pad_at(&node.op, k)));
+                    union_into(&mut wanted[node.inputs[0]], read_region(&node.op, o, k));
                     if let Some(&sdf) = node.inputs.get(1) {
                         union_into(&mut wanted[sdf], o);
                     }
@@ -488,10 +488,10 @@ impl Demand {
         !res.elided[i] && self.wanted[i].is_some() && !self.out[i].is_zero_area()
     }
 
-    /// The region node `i` reads of an input, in `i`'s own texels: its output grown by its pad.
+    /// The region node `i` reads of an input, in `i`'s own texels: its output grown by its pad,
+    /// mapped first for a lens (see [`read_region`]).
     pub fn read_rect(&self, g: &FrameGraph, res: &Res, i: NodeId) -> Rect {
-        let p = f64::from(pad_at(&g.nodes[i].op, res.k[i]));
-        self.out[i].inflate(p, p)
+        read_region(&g.nodes[i].op, self.out[i], res.k[i])
     }
 
     /// The rect chain node `i` reads of its input `j`, in `j`'s texels: its output grown by its
