@@ -1,12 +1,8 @@
-//! Backend-neutral scene model — the handoff representation a non-Skia backend (e.g. Vello)
-//! renders from.
+//! The scene model: the representation the document is converted into at the renderer's
+//! boundary and that every backend draws from. It knows nothing of any backend, so it compiles
+//! wherever the renderer does (native and wasm-bindgen alike).
 //!
-//! Approach B (see docs/vello-backend-plan.md): render-wasm keeps Skia internally and
-//! *converts* its shapes into this model at the handoff boundary, rather than swapping Skia
-//! types throughout the engine. This module therefore stays free of Skia (and of render-wasm's
-//! own types) so it also compiles for a Vello/wasm-bindgen module.
-//!
-//! Per D12 the geometry and paint atoms come from kurbo and peniko rather than being written
+//! The geometry and paint atoms come from kurbo and peniko rather than being written
 //! here: `kurbo::Rect`/`Affine`/`BezPath` for geometry, `peniko::Brush` for paint. That is why
 //! this file is short — what remains is only the part that is genuinely Penpot's, namely node
 //! identity, the geometry family, and the draw list.

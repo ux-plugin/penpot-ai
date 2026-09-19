@@ -1,9 +1,9 @@
-//! R1 viability spike: `RenderingContext` for classic `vello::Scene`.
+//! The classic Vello backend — compute-based, on wgpu / WebGPU — and the renderer's default.
 //!
 //! `scene.rs` (the neutral model → GPU-scene translation) is written against the
-//! [`RenderingContext`] trait, not a concrete `Scene`. vello_hybrid and vello_cpu implement it; this
-//! proves classic `vello` can too — which is the make-or-break for reusing the whole draw path on a
-//! third, compute-based backend (see `render-vello/docs/classic-vello-backend-plan.md`).
+//! [`RenderingContext`] trait, not a concrete `Scene`; vello_hybrid and vello_cpu implement it,
+//! and so does classic `vello` through this crate, which is what lets the whole draw path be
+//! shared across backends.
 //!
 //! The trait is *stateful* (`set_transform`, `set_paint`, then `fill_path`); classic `vello::Scene`
 //! is *immediate* (`fill(rule, transform, brush, …)`). So this is a wrapper, [`ClassicCtx`], that
