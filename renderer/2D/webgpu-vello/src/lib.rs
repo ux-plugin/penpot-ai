@@ -1027,6 +1027,8 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
             segments: sizes.segments,
             blend_spill: sizes.blend_spill,
             ptcl: sizes.ptcl,
+            // Filled in from the device by `phased_begin_into`.
+            max_binding: 0,
         };
     }
 
