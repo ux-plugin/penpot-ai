@@ -106,6 +106,13 @@ repair loop consumes).
    presentNodeIds)` flags dangling behavior after regeneration; new behaviorless
    nodes are expected, not errors.
 
+## Where this is going
+
+The target model — one tree for 2D/3D, components with cells / bindings /
+machine / transitions / timelines, tree-with-ids representation, TypeScript
+as the text front end, Luau for scripts, runtime versus editor — is in
+[MODEL.md](MODEL.md). Its §9 lists the engine changes in order.
+
 ## Inputs, gestures, devices
 
 How every user input (pointer, keyboard, gamepad, TV remote, pen, XR, watch,

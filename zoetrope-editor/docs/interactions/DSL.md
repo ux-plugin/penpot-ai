@@ -1,5 +1,10 @@
 # Interactions DSL — grammar (design-only)
 
+> **Superseded for the authoring surface** (2026-09-21): the free-text fields
+> in the UI use a TypeScript expression subset through the TS language
+> service, lowered to the id-based tree — see [MODEL.md](MODEL.md) §4–§5. This
+> file remains the sketch of a whole-page text projection.
+
 > Status: **DESIGN**. The parser is **not** built. This grammar exists so the IR
 > stays a *projection-friendly* model: a lossless, bidirectional text view can be
 > added later (the AI / power-user / diff surface) with zero change to the
