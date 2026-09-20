@@ -106,6 +106,12 @@ repair loop consumes).
    presentNodeIds)` flags dangling behavior after regeneration; new behaviorless
    nodes are expected, not errors.
 
+## Inputs, gestures, devices
+
+How every user input (pointer, keyboard, gamepad, TV remote, pen, XR, watch,
+voice, sensors, a user-defined device) lands in these three shapes, and what
+the catalog and runtime grow to get there: [INPUT_MODEL.md](INPUT_MODEL.md).
+
 ## Sanity gate — verified, not asserted
 
 [sanity.test.ts](../../test/lib/renderer/interactions/sanity.test.ts) proves each
