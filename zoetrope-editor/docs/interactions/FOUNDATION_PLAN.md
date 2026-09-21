@@ -1,6 +1,6 @@
 # Foundation plan — what to build once so the rest can go in parallel
 
-> Status: **PROPOSED 2026-09-21, not started.** Target model: [MODEL.md](MODEL.md).
+> Status: **IN PROGRESS** (2026-09-21: F1 and F5 landed; F2, F3, F4 open). Target model: [MODEL.md](MODEL.md).
 > The foundation is the set of contracts every later stream keys on. After
 > it lands, motion, machine, text front end, devices, 3D, player and codegen
 > each own their own files and can proceed on separate branches.
@@ -29,7 +29,7 @@
 Each is one commit with tests. Existing tests stay green, Build mode and
 Motion tab keep working through adapters. No panel is rewritten.
 
-### F1 · Property schemas (zod) → descriptors
+### F1 · Property schemas (zod) → descriptors — **done**
 
 Schema first, one declaration. Identity is a descriptor id, never the label.
 A shape type is a list of bundles; a bundle is a zod object whose fields
