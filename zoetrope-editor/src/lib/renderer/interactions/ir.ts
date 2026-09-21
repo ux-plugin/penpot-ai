@@ -278,6 +278,20 @@ export interface MergeReport {
   ok: boolean
 }
 
+/**
+ * The IR without anything owned by `ids`: their interactions, their refs,
+ * their own cells. Expressions elsewhere that mention those cells are left as
+ * they are — `validatePageInteractions` reports them. Returns the same object
+ * when nothing changes. Pure.
+ */
+export function dropNodes(ir: PageInteractions, ids: ReadonlySet<NodeId>): PageInteractions {
+  const interactions = ir.interactions.filter((it) => !ids.has(it.on.node))
+  const refs = ir.refs.filter((r) => !ids.has(r.node))
+  const cells = ir.cells.filter((c) => !(c.owner.kind === 'node' && ids.has(c.owner.node)))
+  if (interactions.length === ir.interactions.length && refs.length === ir.refs.length && cells.length === ir.cells.length) return ir
+  return { ...ir, interactions, refs, cells }
+}
+
 /** Collect every NodeId the IR references. */
 export function referencedNodeIds(ir: PageInteractions): Set<NodeId> {
   const ids = new Set<NodeId>()

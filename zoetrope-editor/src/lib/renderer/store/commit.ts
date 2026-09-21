@@ -17,8 +17,11 @@ import { useWorkspaceStore } from './workspace-store'
 import type { CommitChangesParams } from '../../changes/commit-types'
 import { expandBulkChanges } from '../../changes/bulk-changes'
 import { collectComponentEffects } from '../component/component-sync'
+import { collectAspectEffects, registerAspect } from '../../changes/aspects'
+import { interactionsAspect } from '../interactions/document/interactions-aspect'
 import { assertValidAddObjChange } from '../../common/shape-id'
 import { docProxy, getActiveOrSinglePageId } from './doc-proxy'
+import { snapshot } from 'valtio'
 import {
   emitChangesApplied,
   onChangesApplied,
@@ -49,6 +52,11 @@ onChangesApplied(workerSyncHandler)
 // updated page + mutates the proxy (no new changes), so order vs the others is
 // immaterial; placed last among the document subscribers.
 onChangesApplied(scene3dSyncHandler)
+
+// Aspects — side tables keyed by node id that must follow a delete/copy in the
+// same frame. They run BEFORE apply (like component sync) and their changes
+// join the frame. Order here is the order their effects land.
+registerAspect(interactionsAspect)
 
 function toPlainPage(page: IndexedPage): IndexedPage {
   try {
@@ -140,6 +148,7 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
     saveUndo,
     fromHistory,
     ignoreRendererSync,
+    copies,
   } = params
 
   // A crop-mode 3D scene pins its view frame while its box resizes, so the frame write
@@ -167,15 +176,22 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
         expandBulkChanges(redoChanges),
         explicitPageId ?? getActiveOrSinglePageId(),
       )
-  const framedRedo =
-    componentSync.redoChanges.length > 0
-      ? [...redoChanges, ...componentSync.redoChanges]
-      : redoChanges
-  // Mirrors redo backwards: the copies revert, then the main edit does.
-  const framedUndo =
-    componentSync.undoChanges.length > 0
-      ? [...componentSync.undoChanges, ...undoChanges]
-      : undoChanges
+  // Aspect effects: behaviour, motion, … owned by nodes this commit deletes or
+  // copies. Same rule as component sync: computed against the document before
+  // apply, skipped on replay, one frame.
+  const aspectFx = fromHistory
+    ? { redoChanges: [], undoChanges: [] }
+    : collectAspectEffects({
+        changes: expandBulkChanges(redoChanges),
+        fallbackPageId: explicitPageId ?? getActiveOrSinglePageId(),
+        // Snapshot: what a hook returns ends up in the history frame, and a
+        // valtio proxy there would break the undo vector's structuredClone.
+        getPage: (id) => snapshot(docProxy).pageMap.get(id) as IndexedPage | undefined,
+        copies,
+      })
+  const framedRedo = [...redoChanges, ...componentSync.redoChanges, ...aspectFx.redoChanges]
+  // Mirrors redo backwards: the effects revert, then the main edit does.
+  const framedUndo = [...aspectFx.undoChanges, ...componentSync.undoChanges, ...undoChanges]
 
   // Bulk changes are a history-frame representation only: expand them here so
   // the reducer, the renderer sync, the worker and every other subscriber keep

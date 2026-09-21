@@ -156,24 +156,27 @@ interface BehaviourHost {
 Unblocks: the Rust player, the Luau slot (its library is exactly this
 interface), codegen parity tests.
 
-### F5 · Aspect hooks on node lifecycle
+### F5 · Aspect hooks on node lifecycle — **done**
 
-Side tables keyed by node id, told when nodes change.
+Side tables keyed by node id, told when nodes change, in the same frame.
 
 ```ts
-// src/lib/renderer/aspects/registry.ts
+// src/lib/changes/aspects.ts
 interface Aspect {
   key: string
-  onDeleted(nodeIds: NodeId[], page: PageId): Change[]
-  onCopied(map: Map<NodeId, NodeId>, page: PageId): Change[]
-  onRenamed?(nodeId, from, to): Change[]
+  onDeleted?(ctx: { pageId; page; ids: Set<NodeId> }): { redoChanges; undoChanges } | null
+  onCopied?(ctx: { pageId; page; ids: Map<NodeId, NodeId> }): { redoChanges; undoChanges } | null
 }
-registerAspect(a)   // driven from the existing onChangesApplied bus, ordered in store/commit.ts
+registerAspect(a)   // ordered in store/commit.ts; runs BEFORE apply like component sync; skipped on replay
 ```
 
-- Behaviour (bindings, edges, timelines by node id) and `scene3d` register
-  first. Today deletion leaves dangling references that `reconcile` reports
-  after the fact; with F5 the fix-up is part of the same frame.
+- Hooks return extra changes; `commitChanges` appends redo after, prepends
+  undo before, one history frame. Deleted ids include descendants.
+- `copies` is a new optional `CommitChangesParams` field for callers that
+  duplicate subtrees (component copies, a future duplicate command).
+- Registered: `interactionsAspect` (drops a deleted node's interactions,
+  refs, own cells via `dropNodes`). Copies are not followed yet.
+- No rename hook: everything keys on ids.
 
 Unblocks: every stream that keys data by node id without touching the
 shape type.

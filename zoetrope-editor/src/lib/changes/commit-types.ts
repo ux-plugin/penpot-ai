@@ -22,4 +22,9 @@ export interface CommitChangesParams {
   fromHistory?: boolean
   /** Skip renderer sync after local document apply (rare). */
   ignoreRendererSync?: boolean
+  /**
+   * Subtrees this commit duplicates (source id → new id), so aspects keyed by
+   * node id can follow the copy in the same frame. See changes/aspects.ts.
+   */
+  copies?: ReadonlyArray<{ pageId: string; ids: ReadonlyMap<string, string> }>
 }
