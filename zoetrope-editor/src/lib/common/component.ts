@@ -16,6 +16,7 @@
  * on nor a declared property surface. See [[project_component_instance_model]].
  */
 import type { Uuid } from 'penpot-exporter/types'
+import type { PropId } from '../renderer/properties/registry'
 
 /**
  * Kinds of declared property a component exposes. These map onto React props at
@@ -24,11 +25,12 @@ import type { Uuid } from 'penpot-exporter/types'
  */
 export type ComponentPropType = 'text' | 'boolean' | 'instance-swap' | 'variant'
 
-/** One attribute, on one node of the main, that a prop drives. */
+/** One property, on one node of the main, that a prop drives. */
 export interface ComponentPropTarget {
   /** Node id *within the main instance* — resolved per copy through `shapeRef`. */
   nodeId: Uuid
-  attr: string
+  /** A registered property id (`text.content`, `base.hidden`), see renderer/properties. */
+  attr: PropId
 }
 
 export interface ComponentProp {

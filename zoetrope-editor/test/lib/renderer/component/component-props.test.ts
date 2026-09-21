@@ -3,6 +3,7 @@ import type { IndexedPage, IndexedShape } from '../../../../src/lib/worker/types
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
 import { docProxy, type DocumentMeta } from '../../../../src/lib/renderer/store/doc-proxy'
 import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
+import { propId as pid } from '../../../../src/lib/renderer/properties/registry'
 import { undo } from '../../../../src/lib/page-crud'
 import {
   createComponentFromFrame,
@@ -151,7 +152,7 @@ describe('declared component props', () => {
         name: 'label',
         type: 'text',
         defaultValue: 'Click me',
-        targets: [{ nodeId: 'label', attr: 'content' }],
+        targets: [{ nodeId: 'label', attr: pid('text.content') }],
       }))!
       expect(getComponent(componentId)!.props).toHaveLength(1)
 
@@ -181,7 +182,7 @@ describe('declared component props', () => {
         name: 'label',
         type: 'text',
         defaultValue: 'Click me',
-        targets: [{ nodeId: 'label', attr: 'content' }],
+        targets: [{ nodeId: 'label', attr: pid('text.content') }],
       }))!
       const copyB = (await instantiateComponent(componentId, { x: 1000, y: 100 }))!
 
@@ -198,7 +199,7 @@ describe('declared component props', () => {
         name: 'label',
         type: 'text',
         defaultValue: 'Click me',
-        targets: [{ nodeId: 'label', attr: 'content' }],
+        targets: [{ nodeId: 'label', attr: pid('text.content') }],
       }))!
       await setPropValue(copyId, propId, 'Save')
 
@@ -214,7 +215,7 @@ describe('declared component props', () => {
         name: 'showIcon',
         type: 'boolean',
         defaultValue: true,
-        targets: [{ nodeId: 'icon', attr: 'hidden' }],
+        targets: [{ nodeId: 'icon', attr: pid('base.hidden') }],
       }))!
 
       await setPropValue(copyId, propId, false)
@@ -229,7 +230,7 @@ describe('declared component props', () => {
         name: 'label',
         type: 'text',
         defaultValue: 'Click me',
-        targets: [{ nodeId: 'label', attr: 'content' }],
+        targets: [{ nodeId: 'label', attr: pid('text.content') }],
       }))!
       await setPropValue(copyId, propId, 'Save')
 
@@ -243,7 +244,7 @@ describe('declared component props', () => {
         name: 'label',
         type: 'text',
         defaultValue: 'Click me',
-        targets: [{ nodeId: 'label', attr: 'content' }],
+        targets: [{ nodeId: 'label', attr: pid('text.content') }],
       }))!
       await setPropValue(copyId, propId, 'Save')
 
@@ -271,13 +272,13 @@ describe('declared component props', () => {
         name: 'label',
         type: 'text',
         defaultValue: 'Click me',
-        targets: [{ nodeId: 'label', attr: 'content' }],
+        targets: [{ nodeId: 'label', attr: pid('text.content') }],
       }))!
       await addProp(componentId, {
         name: 'showIcon',
         type: 'boolean',
         defaultValue: true,
-        targets: [{ nodeId: 'icon', attr: 'hidden' }],
+        targets: [{ nodeId: 'icon', attr: pid('base.hidden') }],
       })
       await setPropValue(copyId, labelProp, 'Save')
 
@@ -300,7 +301,7 @@ describe('declared component props', () => {
         name: 'label',
         type: 'text',
         defaultValue: 'Click me',
-        targets: [{ nodeId: 'label', attr: 'content' }],
+        targets: [{ nodeId: 'label', attr: pid('text.content') }],
       }))!
       expect(await setPropValue('button', propId, 'Save')).toBe(false)
       expect(textOf('label')).toBe('Click me')
@@ -313,7 +314,7 @@ describe('declared component props', () => {
         name: 'label',
         type: 'text',
         defaultValue: 'Click me',
-        targets: [{ nodeId: 'label', attr: 'content' }],
+        targets: [{ nodeId: 'label', attr: pid('text.content') }],
       }))!
       await setPropValue(copyId, propId, 'Save')
 

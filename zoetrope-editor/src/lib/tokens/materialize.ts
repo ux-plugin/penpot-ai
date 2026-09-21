@@ -30,7 +30,7 @@ function stripUnit(s: string): string {
   return s.replace(/(px|rem)$/i, '')
 }
 
-function typographyToSpanPatch(v: Record<string, string>): SpanPatch {
+export function typographyToSpanPatch(v: Record<string, string>): SpanPatch {
   const span: SpanPatch = {}
   if (v.fontFamily) span.fontFamily = v.fontFamily
   if (v.fontSize) span.fontSize = stripUnit(v.fontSize)

@@ -27,6 +27,7 @@ import { newShapeId } from '../../common/shape-id'
 import { subtreeWithRoot } from '../../common/subtree'
 import { isComponentCopyRoot } from '../../worker/geometry/shapes'
 import { getComponent } from './component-crud'
+import { setPlainTextContent } from '../../common/text-content'
 import type { ComponentProp, ComponentPropType, LocalComponent } from '../../common/component'
 import type { IndexedShape } from '../../worker/types'
 import type { ModObjChange, PenpotNode, TextContent } from 'penpot-exporter/types'
@@ -129,39 +130,6 @@ export function resolvePropValues(copyRootId: string): Record<string, unknown> {
   return out
 }
 
-/**
- * Rewrite a text node's content to a plain string, keeping the first run's
- * styling.
- *
- * A text prop makes its target a single-run label — extra runs and paragraphs
- * are dropped rather than preserved with stale text. That is the honest reading
- * of "this node's text is a parameter": if it needs rich internal structure, it
- * is not a parameter.
- */
-function setPlainTextContent(content: TextContent | undefined, value: string): TextContent {
-  const asRecord = content as unknown as Record<string, unknown> | undefined
-  const paragraphSet = (asRecord?.children as Array<Record<string, unknown>> | undefined)?.[0]
-  const paragraph = (paragraphSet?.children as Array<Record<string, unknown>> | undefined)?.[0]
-  const firstRun = (paragraph?.children as Array<Record<string, unknown>> | undefined)?.[0]
-
-  return {
-    ...(asRecord ?? { type: 'root', verticalAlign: 'top' }),
-    type: 'root',
-    children: [
-      {
-        ...(paragraphSet ?? {}),
-        type: 'paragraph-set',
-        children: [
-          {
-            ...(paragraph ?? {}),
-            type: 'paragraph',
-            children: [{ ...(firstRun ?? {}), type: 'text', text: value }],
-          },
-        ],
-      },
-    ],
-  } as unknown as TextContent
-}
 
 /** The attribute write a prop of this type implies on its target node. */
 function propWrite(
