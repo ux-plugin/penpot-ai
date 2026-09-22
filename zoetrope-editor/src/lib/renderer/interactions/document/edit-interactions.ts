@@ -14,8 +14,19 @@
  * is split into a store half and a page half.
  */
 
-import type { PageInteractions, Interaction, Action, Cell, Store, ValueType, Json, Owner, Expr, NodeRefs } from '../ir'
-import { cellRef, isEnumType, REPEAT_PROP } from '../ir'
+import type { PageInteractions, Interaction, Action, Cell, Store, ValueType, Json, Owner, Expr, NodeRefs, Ref } from '../ir'
+import { cellRef, isEnumType, newCellUid, REPEAT_PROP } from '../ir'
+import { buildScope } from '../addressing'
+import { parseExprLenient, parseRef, rawExpr } from '../expr'
+
+/**
+ * Text from the inspector becomes a stored tree here, resolved against the IR
+ * alone (nodes the IR mentions are in scope; see `buildScope`). Text that does
+ * not parse is kept verbatim as an unresolved name, never dropped.
+ */
+const scopeOf = (ir: PageInteractions, items: string[] = []) => buildScope(ir, [], items)
+const exprOf = (ir: PageInteractions, text: string, items: string[] = []): Expr | undefined =>
+  text.trim() ? parseExprLenient(text, scopeOf(ir, items)) : undefined
 
 function mapInteraction(
   ir: PageInteractions,
@@ -55,7 +66,8 @@ export function setTrigger(ir: PageInteractions, id: string, type: string): Page
 export function setCondition(ir: PageInteractions, id: string, expr: string): PageInteractions {
   return mapInteraction(ir, id, (it) => {
     const next: Interaction = { ...it }
-    if (expr.trim()) next.if = expr
+    const guard = exprOf(ir, expr)
+    if (guard) next.if = guard
     else delete next.if
     return next
   })
@@ -74,12 +86,34 @@ export function setActionType(ir: PageInteractions, id: string, index: number, t
   return mapAction(ir, id, index, () => ({ type }))
 }
 
+/** Point an action at what `target` names (`items`, `card.state`); blank clears it. */
 export function setActionTarget(ir: PageInteractions, id: string, index: number, target: string): PageInteractions {
-  return mapAction(ir, id, index, (a) => ({ ...a, target: target || undefined }))
+  const ref: Ref | undefined = target.trim() ? (parseRef(target, scopeOf(ir)) ?? { kind: 'name', name: target }) : undefined
+  return putActionTarget(ir, id, index, ref)
+}
+
+/** Point an action at a node — a slot for `show-in-slot`. */
+export function setActionNodeTarget(ir: PageInteractions, id: string, index: number, node: string): PageInteractions {
+  return putActionTarget(ir, id, index, node ? { kind: 'node', node } : undefined)
+}
+
+function putActionTarget(ir: PageInteractions, id: string, index: number, target: Ref | undefined): PageInteractions {
+  return mapAction(ir, id, index, (a) => {
+    const next: Action = { ...a }
+    if (target) next.target = target
+    else delete next.target
+    return next
+  })
 }
 
 export function setActionValue(ir: PageInteractions, id: string, index: number, value: string): PageInteractions {
-  return mapAction(ir, id, index, (a) => ({ ...a, value: value || undefined }))
+  return mapAction(ir, id, index, (a) => {
+    const next: Action = { ...a }
+    const expr = exprOf(ir, value)
+    if (expr) next.value = expr
+    else delete next.value
+    return next
+  })
 }
 
 /**
@@ -97,7 +131,8 @@ export function setActionParam(
 ): PageInteractions {
   return mapAction(ir, id, index, (a) => {
     const params = { ...a.params }
-    if (value.trim()) params[key] = value
+    const expr = exprOf(ir, value)
+    if (expr) params[key] = expr as never
     else delete params[key]
     const next: Action = { ...a }
     if (Object.keys(params).length) next.params = params
@@ -112,21 +147,22 @@ export const PAGE: Owner = { kind: 'page' }
 export const DOCUMENT: Owner = { kind: 'document' }
 export const nodeOwner = (node: string): Owner => ({ kind: 'node', node })
 
-export function makeListCell(id: string, owner: Owner = PAGE): Cell {
-  return { id, owner, type: { collection: 'object' }, initial: [] }
+export function makeListCell(id: string, owner: Owner = PAGE, uid = newCellUid()): Cell {
+  return { uid, id, owner, type: { collection: 'object' }, initial: [] }
 }
 
-export function makeCell(id: string, type: ValueType = 'any', initial: Json = null, owner: Owner = PAGE): Cell {
-  return { id, owner, type, initial }
+export function makeCell(id: string, type: ValueType = 'any', initial: Json = null, owner: Owner = PAGE, uid = newCellUid()): Cell {
+  return { uid, id, owner, type, initial }
 }
 
-export function makeFormula(id: string, formula: Expr = '', owner: Owner = PAGE): Cell {
-  return { id, owner, type: 'any', initial: null, formula }
+/** A formula cell. An empty formula is kept as empty text until the designer fills it in. */
+export function makeFormula(id: string, formula: Expr = rawExpr(''), owner: Owner = PAGE, uid = newCellUid()): Cell {
+  return { uid, id, owner, type: 'any', initial: null, formula }
 }
 
 /** A node's variant set: an enum cell it owns, starting on the first value. */
-export function makeVariantCell(node: string, id: string, values: string[]): Cell {
-  return { id, owner: nodeOwner(node), type: { enum: values }, initial: values[0] ?? null }
+export function makeVariantCell(node: string, id: string, values: string[], uid = newCellUid()): Cell {
+  return { uid, id, owner: nodeOwner(node), type: { enum: values }, initial: values[0] ?? null }
 }
 
 /** Sanitize a user-typed name into a valid cell identifier. */
@@ -187,7 +223,8 @@ export function setCellType(ir: PageInteractions, ref: string, type: ValueType):
 export function setCellFormula(ir: PageInteractions, ref: string, formula: string): PageInteractions {
   return mapCell(ir, ref, (c) => {
     const next: Cell = { ...c }
-    if (formula.trim()) next.formula = formula
+    const expr = exprOf(ir, formula)
+    if (expr) next.formula = expr
     else delete next.formula
     return next
   })
@@ -249,7 +286,7 @@ export function addStoreField(
   type: ValueType = 'string',
 ): PageInteractions {
   if (!id || isNameTaken(ir, id, stores) || !stores.some((s) => s.id === store)) return ir
-  return { ...ir, cells: [...ir.cells, { id, owner: DOCUMENT, type, initial: defaultInitial(type), store }] }
+  return { ...ir, cells: [...ir.cells, { uid: newCellUid(), id, owner: DOCUMENT, type, initial: defaultInitial(type), store }] }
 }
 
 /** Detach every cell of a store — the page half of removing a store. */
@@ -309,7 +346,12 @@ export function getRef(ir: PageInteractions, node: string, prop: string): Expr |
 
 /** Point `node.prop` at an expression, or (with a blank string) back at its literal. */
 export function setRef(ir: PageInteractions, node: string, prop: string, expr: string): PageInteractions {
-  if (!expr.trim()) return clearRef(ir, node, prop)
+  const tree = exprOf(ir, expr)
+  return tree ? putRef(ir, node, prop, tree) : clearRef(ir, node, prop)
+}
+
+/** The stored form of `setRef`. */
+export function putRef(ir: PageInteractions, node: string, prop: string, expr: Expr): PageInteractions {
   return mapRefs(ir, node, (r) => ({ ...r, props: { ...r.props, [prop]: expr } }))
 }
 
@@ -327,7 +369,7 @@ export function clearRef(ir: PageInteractions, node: string, prop: string): Page
 export function moveRef(ir: PageInteractions, node: string, from: string, to: string): PageInteractions {
   const expr = getRef(ir, node, from)
   if (expr === undefined || from === to) return ir
-  return setRef(clearRef(ir, node, from), node, to, expr)
+  return putRef(clearRef(ir, node, from), node, to, expr)
 }
 
 /**
@@ -340,14 +382,21 @@ export function setRepeat(
   node: string,
   patch: { over?: string; as?: string; key?: string },
 ): PageInteractions {
+  const existing = ir.refs.find((r) => r.node === node)
+  const as = (patch.as ?? existing?.item?.as ?? '').trim()
+  const itemName = as || 'item'
+  const over = patch.over !== undefined ? (exprOf(ir, patch.over) ?? rawExpr('')) : (existing?.props[REPEAT_PROP] ?? rawExpr(''))
+  const key = patch.key !== undefined ? exprOf(ir, patch.key, [itemName]) : existing?.item?.key
+  return putRepeat(ir, node, { over, as: as || undefined, key })
+}
+
+/** The stored form of `setRepeat`. */
+export function putRepeat(ir: PageInteractions, node: string, loop: { over: Expr; as?: string; key?: Expr }): PageInteractions {
   return mapRefs(ir, node, (r) => {
-    const over = patch.over ?? r.props[REPEAT_PROP] ?? ''
     const item: NonNullable<NodeRefs['item']> = {}
-    const as = (patch.as ?? r.item?.as ?? '').trim()
-    if (as) item.as = as
-    const key = (patch.key ?? r.item?.key ?? '').trim()
-    if (key) item.key = key
-    const next: NodeRefs = { ...r, props: { ...r.props, [REPEAT_PROP]: over } }
+    if (loop.as) item.as = loop.as
+    if (loop.key) item.key = loop.key
+    const next: NodeRefs = { ...r, props: { ...r.props, [REPEAT_PROP]: loop.over } }
     if (Object.keys(item).length) next.item = item
     else delete next.item
     return next
@@ -363,5 +412,5 @@ export function moveRepeat(ir: PageInteractions, from: string, to: string): Page
   const r = ir.refs.find((x) => x.node === from)
   const over = r?.props[REPEAT_PROP]
   if (!over || from === to) return ir
-  return setRepeat(clearRepeat(ir, from), to, { over, as: r?.item?.as, key: r?.item?.key })
+  return putRepeat(clearRepeat(ir, from), to, { over, as: r?.item?.as, key: r?.item?.key })
 }

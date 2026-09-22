@@ -61,7 +61,7 @@ describe('ApiSession (web/platform path)', () => {
 
     expect(res.offline).toBeFalsy()
     expect(res.reply).toBe('Added a click handler')
-    expect(res.ir?.version).toBe(2)
+    expect(res.ir?.version).toBe(3) // the wire form is text (version 2); it is upgraded on receipt
     expect(res.ir?.interactions).toHaveLength(1)
     expect(session.history().map((t) => t.role)).toEqual(['user', 'assistant'])
   })

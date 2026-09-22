@@ -49,7 +49,7 @@ import {
   diffRuntime,
   leavesDesign,
 } from '../../../../src/lib/renderer/interactions/preview/runtime'
-import { variantCell } from './todo-ir'
+import { act, ex, refs, variantCell, up } from './todo-ir'
 
 beforeAll(() => initDefaultCatalog())
 
@@ -122,7 +122,7 @@ describe('authoring — moving a cell into a store changes nothing else about it
   it('shares one namespace across stores, formulas and cells', () => {
     const stores = addStore([], 'cart')
     let ir = addCell(emptyPageInteractions(), makeCell('n', 'number', 0), stores)
-    ir = addCell(ir, makeFormula('double', 'n * 2'), stores)
+    ir = addCell(ir, makeFormula('double', ex(ir, 'n * 2')), stores)
     for (const taken of ['cart', 'n', 'double']) expect(isNameTaken(ir, taken, stores)).toBe(true)
     expect(addCell(ir, makeCell('cart', 'string', ''), stores).cells).toHaveLength(2) // a cell can't shadow a store
     expect(addStore(stores, 'cart')).toHaveLength(1) // nor a store itself
@@ -144,7 +144,7 @@ describe('authoring — moving a cell into a store changes nothing else about it
 
   it('refuses only formulas as edit targets — a store cell is editable', () => {
     let ir = backedCell(emptyPageInteractions(), 'query', '')
-    ir = addCell(ir, makeFormula('double', 'query'))
+    ir = addCell(ir, makeFormula('double', ex(ir, 'query')))
     expect(editableError(ir, 'query')).toBeNull()
     expect(editableError(ir, 'double')).toMatch(/formula/)
     expect(editableError(ir, 'nope')).toMatch(/not a value/)
@@ -163,7 +163,7 @@ describe('derivation — one authored write, two lowerings', () => {
     if (backed) ir = setCellStore(ir, 'items', 'app', APP)
     ir.interactions.push({
       on: { node: 'card', trigger: { type: 'press' } },
-      do: [{ type: 'collection.append', target: 'items', value: '1' }],
+      do: [act(ir, { type: 'collection.append', target: 'items', value: '1' })],
     })
     return ir
   }
@@ -188,7 +188,7 @@ describe('derivation — one authored write, two lowerings', () => {
 
   it('a store cell the design never writes gets a value prop and NO callback', () => {
     const ir = backedCell(emptyPageInteractions(), 'productTitle', 'Sample product', 'the product shown here')
-    ir.refs.push({ node: 'title', props: { text: 'productTitle' } })
+    ir.refs.push(refs(ir, 'title', { text: 'productTitle' }))
     const src = emitReactComponent(ir, card, { componentName: 'Card' })
     expect(src).toContain('  productTitle: string')
     expect(src).not.toContain('onProductTitleChange')
@@ -205,7 +205,7 @@ describe('derivation — one authored write, two lowerings', () => {
 
   it('reads a cell as a bare identifier either way, so expressions never change', () => {
     const ir = backedCell(emptyPageInteractions(), 'productTitle', 'Sample product')
-    ir.refs.push({ node: 'title', props: { text: 'productTitle' } })
+    ir.refs.push(refs(ir, 'title', { text: 'productTitle' }))
     const src = emitReactComponent(ir, card, { componentName: 'Card' })
     expect(src).toContain('{productTitle}')
     expect(src).not.toContain('props.productTitle')
@@ -213,18 +213,16 @@ describe('derivation — one authored write, two lowerings', () => {
 
   it('routes a two-way field outward too — same derivation, different trigger', () => {
     const ir = backedCell(emptyPageInteractions(), 'query', '')
-    ir.refs.push({ node: 'title', props: { value: 'query' } })
+    ir.refs.push(refs(ir, 'title', { value: 'query' }))
     expect(emitReactComponent(ir, card, { componentName: 'Card' })).toContain(
       'onChange={(e) => onQueryChange(e.target.value)}',
     )
   })
 
   it("a node's variant set is a cell it owns — written like any other, through its own hook", () => {
-    const ir = emptyPageInteractions()
-    ir.cells.push(variantCell('card', ['closed', 'open']))
-    ir.interactions.push({
-      on: { node: 'card', trigger: { type: 'press' } },
-      do: [{ type: 'set-variable', target: 'card.state', value: '"open"' }],
+    const ir = up({
+      cells: [variantCell('card', ['closed', 'open'])],
+      interactions: [{ on: { node: 'card', trigger: { type: 'press' } }, do: [{ type: 'set-variable', target: 'card.state', value: '"open"' }] }],
     })
     const src = emitReactComponent(ir, card, { componentName: 'Card' })
     expect(src).toContain('const [card_state, setCard_state] = useState')
@@ -244,7 +242,7 @@ describe('derivation — one authored write, two lowerings', () => {
 
   it('grows exactly one outbound port however many actions write the cell', () => {
     const ir = clickAppends(true)
-    ir.interactions[0].do.push({ type: 'collection.clear', target: 'items' })
+    ir.interactions[0].do.push(act(ir, { type: 'collection.clear', target: 'items' }))
     expect(normalize(ir).nodes.filter((n) => n.kind === 'port' && n.dir === 'out')).toHaveLength(1)
   })
 
@@ -266,29 +264,28 @@ describe('preview — every cell runs on its own value', () => {
 
   it('writes a store cell locally — the preview is the design, not the real app', () => {
     const ir = backedCell(emptyPageInteractions(), 'n', 1)
-    expect(applyAction({ type: 'increment', target: 'n' }, {}, initRuntime(ir)).store.n).toBe(2)
+    expect(applyAction(act(ir, { type: 'increment', target: 'n' }), {}, initRuntime(ir), ir).store.n).toBe(2)
   })
 
   it('reports that the write left the design — derived from where the cell lives', () => {
     const ir = backedCell(emptyPageInteractions(), 'n', 1)
-    const changes = diffRuntime(initRuntime(ir), applyAction({ type: 'increment', target: 'n' }, {}, initRuntime(ir)))
+    const changes = diffRuntime(initRuntime(ir), applyAction(act(ir, { type: 'increment', target: 'n' }), {}, initRuntime(ir), ir))
     expect(changes).toHaveLength(1)
     expect(leavesDesign(ir, changes[0])).toBe(true)
   })
 
   it('does not report a local write as leaving', () => {
     const ir = addCell(emptyPageInteractions(), makeCell('n', 'number', 1))
-    const changes = diffRuntime(initRuntime(ir), applyAction({ type: 'increment', target: 'n' }, {}, initRuntime(ir)))
+    const changes = diffRuntime(initRuntime(ir), applyAction(act(ir, { type: 'increment', target: 'n' }), {}, initRuntime(ir), ir))
     expect(leavesDesign(ir, changes[0])).toBe(false)
   })
 
   it("seeds a node's variant set on its first value and evaluates it as <node>.<cell>", () => {
-    const ir = emptyPageInteractions()
-    ir.cells.push(variantCell('card', ['closed', 'open']))
+    const ir = up({ cells: [variantCell('card', ['closed', 'open'])] })
     const rt = initRuntime(ir)
     expect(rt.store['card.state']).toBe('closed')
     expect(buildEnv(ir, rt)).toMatchObject({ card: { state: 'closed' } })
-    const next = applyAction({ type: 'set-variable', target: 'card.state', value: '"open"' }, buildEnv(ir, rt), rt, ir)
+    const next = applyAction(act(ir, { type: 'set-variable', target: 'card.state', value: '"open"' }), buildEnv(ir, rt), rt, ir)
     expect(next.store['card.state']).toBe('open')
   })
 })
@@ -305,26 +302,26 @@ describe('addressing — a cell is a cell, wherever it lives', () => {
     const ir = backedList('rows')
     ir.interactions.push({
       on: { node: 'btn', trigger: { type: 'press' } },
-      do: [{ type: 'collection.append', target: 'rows', value: '1' }],
+      do: [act(ir, { type: 'collection.append', target: 'rows', value: '1' })],
     })
     expect(validatePageInteractions(ir, nodes)).toEqual([])
   })
 
   it('repeats over a list a store supplies', () => {
     const ir = backedList('rows')
-    ir.refs.push({ node: 'row', props: { repeat: 'rows' } })
+    ir.refs.push(refs(ir, 'row', { repeat: 'rows' }))
     expect(validatePageInteractions(ir, nodes)).toEqual([])
   })
 
   it('still refuses a non-list as a list target', () => {
     const ir = addCell(emptyPageInteractions(), makeCell('n', 'number', 0))
-    ir.refs.push({ node: 'row', props: { repeat: 'n' } })
+    ir.refs.push(refs(ir, 'row', { repeat: 'n' }))
     expect(validatePageInteractions(ir, nodes)[0].message).toMatch(/not a list/)
   })
 
   it('accepts an increment with no amount — blank means +1 in both the runtime and the emitter', () => {
     const ir = addCell(emptyPageInteractions(), makeCell('n', 'number', 0))
-    ir.interactions.push({ on: { node: 'btn', trigger: { type: 'press' } }, do: [{ type: 'increment', target: 'n' }] })
+    ir.interactions.push({ on: { node: 'btn', trigger: { type: 'press' } }, do: [act(ir, { type: 'increment', target: 'n' })] })
     expect(validatePageInteractions(ir, nodes)).toEqual([])
   })
 })

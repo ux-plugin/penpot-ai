@@ -8,7 +8,7 @@ import { ZERO_UUID } from '@zoetrope-editor/common/conversions'
 import { applyGeometryDefaults } from '@zoetrope-editor/common/shape-defaults'
 import type { IndexedPage, IndexedShape } from './types'
 import type { PageInteractions, AnyPageInteractions } from '../renderer/interactions/ir'
-import { upgradePageInteractions } from '../renderer/interactions/ir'
+import { upgradePageInteractions } from '../renderer/interactions/upgrade'
 
 /**
  * Truncate a UUID-like string to the standard 36-char format when it has extra garbage

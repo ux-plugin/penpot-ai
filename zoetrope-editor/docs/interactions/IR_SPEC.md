@@ -14,27 +14,34 @@ stored sugar  ──(normalize)──►  reactive graph  ──(emit-react)─�
 ```
 
 - **Stored sugar** is what serializes and what the UI edits. **The graph is a
-  compile artifact** (never stored). Expressions are stored as **source text** and
-  parsed at compile time — keeping the IR diffable and DSL-projectable.
-- **Storage**: page-scoped — a `PageInteractions` block (`version: 2`) per
+  compile artifact** (never stored). Expressions are stored as **trees whose
+  references are ids** (`Expr` / `Ref`); text is a projection made at the edge
+  (`expr.ts`), so renaming a cell never breaks a wire.
+- **Storage**: page-scoped — a `PageInteractions` block (`version: 3`) per
   `IndexedPage` (shape/render model untouched; nodes referenced by id, the
   `objects` key). Stores are document-wide: `DocumentMeta.stores`.
-- **Upgrade**: a stored `version: 1` block (variables / derived / bindings /
-  states / repeaters / editable) is converted on read by
-  `upgradePageInteractions`; its stores are hoisted onto the document.
+- **Upgrade**: a stored `version: 1` (variables / derived / bindings / states /
+  repeaters / editable) or `version: 2` (expressions as text, cells by name)
+  block is converted on read by `upgradePageInteractions` (`upgrade.ts`); a
+  version-1 block's stores are hoisted onto the document. The 2 → 3 step is
+  deterministic: a cell's `uid` is its version-2 reference.
 
 ## The model — three things
 
 ```
-cells        the ONE kind of state       Cell { id, owner, type, initial, formula?, store? }
-refs         a node's properties point   NodeRefs { node, props: { prop: expr }, item? }
+cells        the ONE kind of state       Cell { uid, id, owner, type, initial, formula?, store? }
+refs         a node's properties point   NodeRefs { node, props: { prop: Expr }, item? }
              at cells
-interactions write cells                 Interaction { on: { node, trigger }, if?, do: Action[] }
+interactions write cells                 Interaction { on: { node, trigger }, if?: Expr, do: Action[] }
+
+Ref  = cell(uid) | item(name) | node(id) | name(text)          what a reference points at
+Expr = the constrained-JS AST with `ref` nodes holding a Ref   what is stored
 ```
 
-- A **cell** either holds a value (`initial` is what the preview starts from) or
-  is a **formula** (`formula` present — computed from other cells, read-only).
-  `owner` says who it belongs to and so where the inspector shows it:
+- A **cell** has a stable `uid` (identity, never shown) and an `id` (its name:
+  `draft`, or `state` in `card.state`). It either holds a value (`initial` is
+  what the preview starts from) or is a **formula** (`formula` present —
+  computed from other cells, read-only). `owner` says who it belongs to and so where the inspector shows it:
   `document`, `page`, or `node` (a node's own cell, e.g. a **variant set**:
   `type: { enum: [...] }`, addressed as `<node>.<cell>`). `store` names the
   document store the cell lives in — present ⇔ the value is supplied from
@@ -53,17 +60,19 @@ interactions write cells                 Interaction { on: { node, trigger }, if
 
 | File | Responsibility |
 |---|---|
-| [ir.ts](../../src/lib/renderer/interactions/ir.ts) | `Cell`/`NodeRefs`/`Interaction`, `PageInteractions`, the v1 upgrade, the merge contract (`reconcile`/`referencedNodeIds`), normalized `GraphNode`. |
+| [ir.ts](../../src/lib/renderer/interactions/ir.ts) | `Ref`/`Expr`, `Cell`/`NodeRefs`/`Interaction`, `PageInteractions` (v3), the earlier `V1*`/`V2*` shapes, the merge contract (`reconcile`/`referencedNodeIds`/`dropNodes`), normalized `GraphNode`. |
+| [expr.ts](../../src/lib/renderer/interactions/expr.ts) | The edge: `parseExpr`/`resolveExpr` (text → ids), `namesOf`/`exprText` (ids → text), `parseRef`, `walkRefs`/`cellsIn`/`unresolvedNames`, `toTextIR` (the version-2 text projection, the AI wire format). |
+| [upgrade.ts](../../src/lib/renderer/interactions/upgrade.ts) | `upgradePageInteractions`: v1 → v2 → v3 on read. |
 | [catalog/](../../src/lib/renderer/interactions/catalog) | Open-union registry for trigger/action types: platform tags, fallbacks, `lowers`. Phase 0 entries in `triggers.ts`/`actions.ts`. |
-| [expression.ts](../../src/lib/renderer/interactions/expression.ts) | Constrained JS-subset: parser → `ExprNode`, `evaluate` (preview), `toJs` (lowering), `freeRefs`. |
-| [addressing.ts](../../src/lib/renderer/interactions/addressing.ts) | The reference namespace: `buildScope`, `parseRefPath`, `resolveCell`, `validatePageInteractions`. |
+| [expression.ts](../../src/lib/renderer/interactions/expression.ts) | Constrained JS-subset over NAMES: parser → `ExprNode`, `printExpr`, `evaluate` (preview), `toJs` (lowering), `freeRefs`. |
+| [addressing.ts](../../src/lib/renderer/interactions/addressing.ts) | The text namespace: `buildScope` (what names mean), `parseRefPath`, `resolveCell`; `validatePageInteractions` over stored trees. |
 | [anchor.ts](../../src/lib/renderer/interactions/anchor.ts) | `data-node-id` format + the 1:1 anchor-invariant validator. |
 | [compile/normalize.ts](../../src/lib/renderer/interactions/compile/normalize.ts) | Sugar → reactive graph. |
 | [compile/emit-react.ts](../../src/lib/renderer/interactions/compile/emit-react.ts) | Reactive behavior → idiomatic React (web emitter). |
 | [document/edit-interactions.ts](../../src/lib/renderer/interactions/document/edit-interactions.ts) | Pure reducers the inspector commits through: cells, stores, refs, interactions. |
 | [preview/runtime.ts](../../src/lib/renderer/interactions/preview/runtime.ts) | The pure preview interpreter: `initRuntime`, `applyAction`, `diffRuntime`, `affectedNodes`. |
 
-## The addressing namespace
+## The addressing namespace (text)
 
 ```
 ref ::= cell                  (a page or document cell:  items, cart.items)
@@ -71,11 +80,13 @@ ref ::= cell                  (a page or document cell:  items, cart.items)
       | item '.' field        (loop item, inside a repeated node)
 ```
 Resolution precedence: loop-item > cell > node. A node id that is not an
-identifier is spelled `n_…` in expressions (`nodeRef`). A page is valid when
-every `freeRefs` root of every expression resolves, every behavior node exists,
-trigger/action types are known, and action targets are writable cells of the
-kind the catalog `expects` (a formula is never writable; `collection.*` needs a
-list).
+identifier is spelled `n_…` in expressions (`nodeRef`). Text is resolved ONCE,
+when typed (the reducers) or when a version-2 block is read (the upgrade); a
+name that resolves to nothing is kept as a `name` ref so nothing is lost. A
+page is valid when no stored expression holds an unresolved name or a missing
+cell, every behavior node exists, trigger/action types are known, and action
+targets are writable cells of the kind the catalog `expects` (a formula is
+never writable; `collection.*` needs a list).
 
 ## The expression whitelist
 

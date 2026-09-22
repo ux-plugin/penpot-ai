@@ -16,7 +16,8 @@ import { streamText } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { listTriggers, listActions } from '../catalog'
 import type { PageInteractions, AnyPageInteractions } from '../ir'
-import { upgradePageInteractions } from '../ir'
+import { upgradePageInteractions } from '../upgrade'
+import { toTextIR } from '../expr'
 import { getDesktopChat, getKeyStore } from '../../desktop-bridge'
 
 export interface AiChatContext {
@@ -71,7 +72,7 @@ function buildPrompt(ctx: AiChatContext): string {
     nodes || '(none)',
     '',
     'Current IR:',
-    JSON.stringify(ctx.ir),
+    JSON.stringify(toTextIR(ctx.ir)),
     '',
     history ? `Conversation so far:\n${history}\n` : '',
     `User request: ${ctx.request}`,
@@ -93,7 +94,7 @@ function looksLikeIR(x: unknown): x is AnyPageInteractions {
   if (!x || typeof x !== 'object') return false
   const o = x as Record<string, unknown>
   if (!Array.isArray(o.interactions)) return false
-  if (o.version === 2) return Array.isArray(o.cells) && Array.isArray(o.refs)
+  if (o.version === 2 || o.version === 3) return Array.isArray(o.cells) && Array.isArray(o.refs)
   return o.version === 1 && Array.isArray(o.variables) && Array.isArray(o.bindings)
 }
 

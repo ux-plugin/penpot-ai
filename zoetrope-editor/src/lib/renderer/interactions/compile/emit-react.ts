@@ -16,11 +16,11 @@
  * additive sibling.
  */
 
-import type { PageInteractions, NodeId, ValueType, Action, ActionType, Cell, NodeRefs } from '../ir'
-import { actionParam, isBacked, isFormula, isEnumType, cellRef, nodeRef, editedCell, refsOf, emptyPageInteractions, REPEAT_PROP, VALUE_PROP } from '../ir'
+import type { PageInteractions, NodeId, ValueType, Action, ActionType, Cell, NodeRefs, Ref } from '../ir'
+import { actionParam, isBacked, isFormula, isEnumType, cellOf, cellRef, nodeRef, editedCell, refsOf, emptyPageInteractions, REPEAT_PROP, VALUE_PROP } from '../ir'
 import { getAction } from '../catalog'
-import { parse, toJs, objectBodyJs, type ToJsOptions } from '../expression'
-import { parseRefPath, cellFor } from '../addressing'
+import { toJs, objectBodyJs, type ToJsOptions } from '../expression'
+import { namesOf, refName } from '../expr'
 import { anchorAttr, instanceKeyAttr } from '../anchor'
 
 /**
@@ -236,9 +236,8 @@ function tsType(vt: ValueType): string {
 /** Cells the design WRITES — every action target plus every edited cell. */
 function writtenCells(ir: PageInteractions): Set<string> {
   const written = new Set<string>()
-  const add = (target: string | undefined) => {
-    if (!target) return
-    const c = cellFor(ir, target)
+  const add = (target: Ref | undefined) => {
+    const c = cellOf(ir, target)
     if (c) written.add(cellRef(c))
   }
   for (const it of ir.interactions) for (const a of it.do) add(a.target)
@@ -334,20 +333,10 @@ const outsideWriter = (c: Cell): CellWriter => ({
 })
 
 /** The writer for `target`, chosen by whether the design owns that cell. */
-export function writerFor(ir: PageInteractions, target: string | undefined, dependsOnPrev: boolean): CellWriter {
-  const c = target ? cellFor(ir, target) : undefined
+export function writerFor(ir: PageInteractions, target: Ref | undefined, dependsOnPrev: boolean): CellWriter {
+  const c = cellOf(ir, target)
   if (c && isBacked(c)) return outsideWriter(c)
-  let setter: string
-  if (c) setter = setterFor(c)
-  else {
-    let root = ''
-    try {
-      root = target ? parseRefPath(target).root : ''
-    } catch {
-      root = ''
-    }
-    setter = setterName(root)
-  }
+  const setter = c ? setterFor(c) : setterName(target ? refName(target, ir) : '')
   return dependsOnPrev ? localWriter(setter) : plainWriter(setter)
 }
 
@@ -371,9 +360,9 @@ export function readsPrev(type: ActionType): boolean {
  * is what the parity tests exercise; `emitReactComponent` passes one chosen per
  * target via `writerFor`, and `opts` its expression lowering.
  */
-export function emitAction(a: Action, writer?: CellWriter, opts: ToJsOptions = {}): string {
-  const targetRoot = a.target ? parseRefPath(a.target).root : ''
-  const value = a.value ? toJs(parse(a.value), opts) : 'undefined'
+export function emitAction(a: Action, ir: PageInteractions, writer?: CellWriter, opts: ToJsOptions = {}): string {
+  const targetRoot = a.target ? refName(a.target, ir) : ''
+  const value = a.value ? toJs(namesOf(a.value, ir), opts) : 'undefined'
   const w = writer ?? (readsPrev(a.type) ? localWriter(setterName(targetRoot)) : plainWriter(setterName(targetRoot)))
   const prev = w.prev
   const set = (v: string) => w.deliver(v)
@@ -382,7 +371,7 @@ export function emitAction(a: Action, writer?: CellWriter, opts: ToJsOptions = {
       return set(`[...${prev}, ${value}]`)
     case 'collection.insert': {
       const at = actionParam(a, 'at')
-      const i = at ? toJs(parse(at), opts) : '0'
+      const i = at ? toJs(namesOf(at, ir), opts) : '0'
       return set(`[...${prev}.slice(0, ${i}), ${value}, ...${prev}.slice(${i})]`)
     }
     case 'collection.remove':
@@ -395,11 +384,11 @@ export function emitAction(a: Action, writer?: CellWriter, opts: ToJsOptions = {
       let next: string
       if (!a.value) next = 'item'
       else {
-        const body = objectBodyJs(parse(a.value), opts)
+        const body = objectBodyJs(namesOf(a.value, ir), opts)
         next = body === undefined ? value : body ? `{ ...item, ${body} }` : 'item'
       }
       const where = actionParam(a, 'where')
-      const mapped = where ? `${toJs(parse(where), opts)} ? ${next} : item` : next
+      const mapped = where ? `${toJs(namesOf(where, ir), opts)} ? ${next} : item` : next
       // The arrow body is ALWAYS parenthesized: an unwrapped `{ ...item, x: 1 }`
       // parses as a block statement, not an object literal.
       return set(`${prev}.map((item) => (${mapped}))`)
@@ -437,12 +426,12 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
     hooks.push(`const [${cellIdent(c)}, ${setterFor(c)}] = useState<${tsType(c.type)}>(${JSON.stringify(init)})`)
   }
 
-  const formulas = ir.cells.filter(isFormula).map((c) => `const ${cellIdent(c)} = ${toJs(parse(c.formula!), js)}`)
+  const formulas = ir.cells.filter(isFormula).map((c) => `const ${cellIdent(c)} = ${toJs(namesOf(c.formula!, ir), js)}`)
 
   const handlers = ir.interactions.map((it) => {
-    const stmts = it.do.map((a) => emitAction(a, writerFor(ir, a.target, readsPrev(a.type)), js))
+    const stmts = it.do.map((a) => emitAction(a, ir, writerFor(ir, a.target, readsPrev(a.type)), js))
     let body: string
-    if (it.if) body = `  if (${toJs(parse(it.if), js)}) {\n${stmts.map((s) => '    ' + s).join('\n')}\n  }`
+    if (it.if) body = `  if (${toJs(namesOf(it.if, ir), js)}) {\n${stmts.map((s) => '    ' + s).join('\n')}\n  }`
     else body = stmts.map((s) => '  ' + s).join('\n')
     return `const ${handlerName(it.on.node, it.on.trigger.type)} = () => {\n${body}\n}`
   })
@@ -528,7 +517,7 @@ function emitNode(node: PNode, ir: PageInteractions, js: ToJsOptions): string {
     .split('\n')
     .map((l) => '  ' + l)
     .join('\n')
-  return `{${toJs(parse(repeat), js)}.map((${as}) => (\n${inner}\n))}`
+  return `{${toJs(namesOf(repeat, ir), js)}.map((${as}) => (\n${inner}\n))}`
 }
 
 function emitElement(node: PNode, ir: PageInteractions, js: ToJsOptions, rep?: NodeRefs): string {
@@ -538,7 +527,7 @@ function emitElement(node: PNode, ir: PageInteractions, js: ToJsOptions, rep?: N
   const props: string[] = [anchorAttr(node.nodeId)]
   if (rep) {
     const as = rep.item?.as ?? 'item'
-    const keyExpr = rep.item?.key ? toJs(parse(rep.item.key), js) : `${as}.id`
+    const keyExpr = rep.item?.key ? toJs(namesOf(rep.item.key, ir), js) : `${as}.id`
     props.push(`key={${keyExpr}}`, instanceKeyAttr(keyExpr))
   }
 
@@ -554,7 +543,7 @@ function emitElement(node: PNode, ir: PageInteractions, js: ToJsOptions, rep?: N
   for (const [prop, from] of Object.entries(refs?.props ?? {})) {
     if (prop === REPEAT_PROP) continue
     if (prop === VALUE_PROP && edited) continue
-    const expr = toJs(parse(from), js)
+    const expr = toJs(namesOf(from, ir), js)
     if (prop === 'text' || prop === 'children') textChild = expr
     else if (STYLE_PROPS.has(prop)) styleMap.set(prop, expr)
     else props.push(`${prop}={${expr}}`)
@@ -568,7 +557,7 @@ function emitElement(node: PNode, ir: PageInteractions, js: ToJsOptions, rep?: N
     const inputType = inputTypeFor(ir, node.nodeId)
     if (inputType) props.push(`type="${inputType}"`)
     props.push(`${VALUE_PROP}={${cellIdent(edited)}}`)
-    const write = writerFor(ir, cellRef(edited), false).deliver(CHANGE_EVENT.read)
+    const write = writerFor(ir, { kind: 'cell', cell: edited.uid }, false).deliver(CHANGE_EVENT.read)
     props.push(`${CHANGE_EVENT.prop}={(e) => ${write}}`)
   }
 

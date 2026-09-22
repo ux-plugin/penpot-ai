@@ -9,10 +9,10 @@
  * (InteractionRuntime.tsx) is a thin wrapper over these functions.
  */
 
-import type { PageInteractions, Interaction, Action, NodeId, Cell } from '../ir'
-import { actionParam, isBacked, isFormula, isEnumType, cellRef, nodeRef, refsOf, REPEAT_PROP } from '../ir'
-import { parse, evaluate } from '../expression'
-import { parseRefPath, cellFor } from '../addressing'
+import type { PageInteractions, Interaction, Action, NodeId, Cell, Expr, Ref } from '../ir'
+import { actionParam, isBacked, isFormula, isEnumType, cellRef, cellOf, nodeRef, refsOf, LIT, REPEAT_PROP } from '../ir'
+import { evaluate } from '../expression'
+import { namesOf } from '../expr'
 
 export interface RuntimeState {
   /**
@@ -30,12 +30,19 @@ export interface RuntimeState {
   slotViews: Record<string, string>
 }
 
-const safeEval = (src: string, env: Record<string, unknown>): unknown => {
+const safeEval = (expr: Expr, env: Record<string, unknown>, ir: PageInteractions): unknown => {
   try {
-    return evaluate(parse(src), env)
+    return evaluate(namesOf(expr, ir), env)
   } catch {
     return undefined
   }
+}
+
+/** A cell's current value in an environment (a node's cell sits under its node). */
+export function cellValue(env: Record<string, unknown>, c: Cell): unknown {
+  if (c.owner.kind !== 'node') return env[c.id]
+  const root = env[nodeRef(c.owner.node)]
+  return isRecord(root) ? root[c.id] : undefined
 }
 const asArray = (x: unknown): unknown[] => (Array.isArray(x) ? x : [])
 const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
@@ -49,13 +56,7 @@ const asNumber = (x: unknown): number => {
  * emitter makes the same call on the same AST, so preview and generated code
  * agree without either inspecting runtime values.
  */
-const isObjectLiteral = (src: string): boolean => {
-  try {
-    return parse(src).type === 'object'
-  } catch {
-    return false
-  }
-}
+const isObjectLiteral = (expr: Expr): boolean => expr.type === 'object'
 // JSON round-trip, not structuredClone: cell initials are always JSON, and the
 // IR may arrive as a valtio tracking proxy (from useSnapshot) that
 // structuredClone rejects with DataCloneError.
@@ -92,30 +93,29 @@ function place(env: Record<string, unknown>, c: Cell, value: unknown): void {
 export function buildEnv(ir: PageInteractions, rt: RuntimeState, extra: Record<string, unknown> = {}): Record<string, unknown> {
   const env: Record<string, unknown> = { ...extra }
   for (const c of ir.cells) if (!isFormula(c)) place(env, c, rt.store[cellRef(c)])
-  for (const c of ir.cells) if (isFormula(c)) place(env, c, safeEval(c.formula!, env))
+  for (const c of ir.cells) if (isFormula(c)) place(env, c, safeEval(c.formula!, env, ir))
   return env
 }
 
-/** The store key an action target writes: the cell it addresses, else its root. */
-function targetKey(ir: PageInteractions | undefined, target: string | undefined): string {
+/** The store key an action target writes: the cell it addresses (`card.state`), or a node (a slot). */
+function targetKey(ir: PageInteractions, target: Ref | undefined): string {
   if (!target) return ''
-  const c = ir ? cellFor(ir, target) : undefined
-  if (c) return cellRef(c)
-  try {
-    return parseRefPath(target).root
-  } catch {
-    return target
+  switch (target.kind) {
+    case 'cell': {
+      const c = cellOf(ir, target)
+      return c ? cellRef(c) : target.cell
+    }
+    case 'node':
+      return target.node
+    default:
+      return target.name
   }
 }
 
-/**
- * Apply one action. `ir` resolves the target to its cell (a node's cell is
- * stored as `card.state`); without it the target's root is the key, which is
- * what the catalog-parity tests exercise on page cells.
- */
-export function applyAction(a: Action, env: Record<string, unknown>, rt: RuntimeState, ir?: PageInteractions): RuntimeState {
+/** Apply one action. `ir` resolves the target to its cell (a node's cell is stored as `card.state`). */
+export function applyAction(a: Action, env: Record<string, unknown>, rt: RuntimeState, ir: PageInteractions): RuntimeState {
   const key = targetKey(ir, a.target)
-  const value = a.value != null ? safeEval(a.value, env) : undefined
+  const value = a.value != null ? safeEval(a.value, env, ir) : undefined
   const setVar = (v: unknown): RuntimeState => ({ ...rt, store: { ...rt.store, [key]: v } })
   switch (a.type) {
     case 'collection.append':
@@ -123,11 +123,11 @@ export function applyAction(a: Action, env: Record<string, unknown>, rt: Runtime
     case 'collection.insert': {
       // `at` clamps into range; absent means 0, so the plain form is a prepend.
       const prev = asArray(rt.store[key])
-      const at = Math.max(0, Math.min(prev.length, Math.trunc(asNumber(safeEval(actionParam(a, 'at') ?? '0', env)))))
+      const at = Math.max(0, Math.min(prev.length, Math.trunc(asNumber(safeEval(actionParam(a, 'at') ?? LIT(0), env, ir)))))
       return setVar([...prev.slice(0, at), value, ...prev.slice(at)])
     }
     case 'collection.remove':
-      return setVar(asArray(rt.store[key]).filter((item) => !safeEval(a.value ?? 'false', { ...env, item })))
+      return setVar(asArray(rt.store[key]).filter((item) => !safeEval(a.value ?? LIT(false), { ...env, item }, ir)))
     case 'collection.update': {
       const where = actionParam(a, 'where')
       const patch = a.value ? isObjectLiteral(a.value) : false
@@ -135,9 +135,9 @@ export function applyAction(a: Action, env: Record<string, unknown>, rt: Runtime
         asArray(rt.store[key]).map((item) => {
           const itemEnv = { ...env, item }
           // No `where` means every item — stated in the panel, never silent.
-          if (where && !safeEval(where, itemEnv)) return item
+          if (where && !safeEval(where, itemEnv, ir)) return item
           if (!a.value) return item
-          const next = safeEval(a.value, itemEnv)
+          const next = safeEval(a.value, itemEnv, ir)
           return patch && isRecord(item) && isRecord(next) ? { ...item, ...next } : next
         }),
       )
@@ -153,10 +153,10 @@ export function applyAction(a: Action, env: Record<string, unknown>, rt: Runtime
       // expression. The emitter branches on the same truthiness.
       return setVar(asNumber(rt.store[key]) + (a.value ? asNumber(value) : 1))
     case 'show-in-slot':
-      // target = slot id (root); value = a *literal* view-frame id, not an
-      // expression (a raw UUID wouldn't evaluate). Default in-place swap, no
-      // history — back-button/routing is a lowering concern, not a runtime one.
-      return { ...rt, slotViews: { ...rt.slotViews, [key]: a.value ?? '' } }
+      // target = the slot node; value = a *literal* view-frame id (a string
+      // literal, not an expression — a raw UUID wouldn't evaluate). Default
+      // in-place swap, no history — routing is a lowering concern.
+      return { ...rt, slotViews: { ...rt.slotViews, [key]: typeof value === 'string' ? value : '' } }
     case 'open-url':
       if (typeof value === 'string' && typeof window !== 'undefined') window.open(value)
       return rt
@@ -181,7 +181,7 @@ export function activeSlotView(
 }
 
 export function runInteraction(ir: PageInteractions, rt: RuntimeState, it: Interaction, env: Record<string, unknown>): RuntimeState {
-  if (it.if && !safeEval(it.if, env)) return rt
+  if (it.if && !safeEval(it.if, env, ir)) return rt
   let next = rt
   for (const a of it.do) next = applyAction(a, env, next, ir)
   return next
@@ -264,7 +264,7 @@ export function affectedNodes(ir: PageInteractions, before: RuntimeState, after:
 
   for (const r of ir.refs) {
     for (const [prop, expr] of Object.entries(r.props)) {
-      if (!same(safeEval(expr, envBefore), safeEval(expr, envAfter))) mark(r.node, prop === REPEAT_PROP ? 'list' : prop)
+      if (!same(safeEval(expr, envBefore, ir), safeEval(expr, envAfter, ir))) mark(r.node, prop === REPEAT_PROP ? 'list' : prop)
     }
   }
   for (const c of diffRecord('cell', before.store, after.store)) {
@@ -304,7 +304,7 @@ export function pushActivity(log: LoggedActivity[], entry: ActivityEntry, cap = 
 }
 
 /** The list a repeated node maps over, if the node is repeated. */
-export function repeatOf(ir: PageInteractions, node: NodeId): { over: string; as: string; key?: string } | undefined {
+export function repeatOf(ir: PageInteractions, node: NodeId): { over: Expr; as: string; key?: Expr } | undefined {
   const refs = refsOf(ir, node)
   const over = refs?.props[REPEAT_PROP]
   if (!over) return undefined

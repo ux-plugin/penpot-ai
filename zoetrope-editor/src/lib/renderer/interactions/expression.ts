@@ -1,10 +1,12 @@
 /**
  * The interactions expression language — a constrained JS subset.
  *
- * Pure · total · side-effect-free · serializable. Authored as text, stored in the
- * IR as text (`ir.Expr`), parsed here to an `ExprNode` AST, then either:
+ * Pure · total · side-effect-free · serializable. Authored as text, parsed here
+ * to an `ExprNode` AST over NAMES, resolved to an id-based tree for storage
+ * (`ir.Expr`, see ./expr), and at use time turned back into the name form to be:
  *   - evaluated for authoring-time preview (`evaluate`), or
- *   - lowered to a JS source string the React emitter transliterates (`toJs`).
+ *   - lowered to a JS source string the React emitter transliterates (`toJs`), or
+ *   - printed back as text for the inspector (`printExpr`).
  *
  * The evaluator and the JS lowering are kept semantically identical so a binding
  * previews the same value it will compute in the generated app (and identically
@@ -26,19 +28,24 @@
 
 export type BinaryOp = '==' | '!=' | '<' | '>' | '<=' | '>=' | '+' | '-' | '*' | '/' | '%'
 
-export type ExprNode =
+/** The payload of a `ref` node. The parser produces names; the stored IR resolves them to ids (see ./expr). */
+export interface NameRef {
+  name: string
+}
+
+export type ExprNode<R = NameRef> =
   | { type: 'lit'; value: string | number | boolean | null }
-  | { type: 'array'; items: ExprNode[] }
-  | { type: 'object'; props: Array<{ key: string; value: ExprNode }> }
-  | { type: 'ref'; name: string }
-  | { type: 'member'; object: ExprNode; property: string }
-  | { type: 'index'; object: ExprNode; index: ExprNode }
-  | { type: 'unary'; op: '!' | '-'; operand: ExprNode }
-  | { type: 'binary'; op: BinaryOp; left: ExprNode; right: ExprNode }
-  | { type: 'logical'; op: '&&' | '||'; left: ExprNode; right: ExprNode }
-  | { type: 'conditional'; test: ExprNode; consequent: ExprNode; alternate: ExprNode }
-  | { type: 'call'; callee: ExprNode; args: ExprNode[] }
-  | { type: 'lambda'; params: string[]; body: ExprNode }
+  | { type: 'array'; items: ExprNode<R>[] }
+  | { type: 'object'; props: Array<{ key: string; value: ExprNode<R> }> }
+  | ({ type: 'ref' } & R)
+  | { type: 'member'; object: ExprNode<R>; property: string }
+  | { type: 'index'; object: ExprNode<R>; index: ExprNode<R> }
+  | { type: 'unary'; op: '!' | '-'; operand: ExprNode<R> }
+  | { type: 'binary'; op: BinaryOp; left: ExprNode<R>; right: ExprNode<R> }
+  | { type: 'logical'; op: '&&' | '||'; left: ExprNode<R>; right: ExprNode<R> }
+  | { type: 'conditional'; test: ExprNode<R>; consequent: ExprNode<R>; alternate: ExprNode<R> }
+  | { type: 'call'; callee: ExprNode<R>; args: ExprNode<R>[] }
+  | { type: 'lambda'; params: string[]; body: ExprNode<R> }
 
 export class ExprError extends Error {
   constructor(
@@ -535,6 +542,83 @@ export function freeRefs(node: ExprNode, bound: Set<string> = new Set(), out: Se
     }
   }
   return out
+}
+
+// ---- printer (the inverse of `parse`, for the inspector and the AI wire format) ----
+
+const PREC: Record<string, number> = {
+  conditional: 1,
+  '||': 2,
+  '&&': 3,
+  '==': 4,
+  '!=': 4,
+  '<': 5,
+  '>': 5,
+  '<=': 5,
+  '>=': 5,
+  '+': 6,
+  '-': 6,
+  '*': 7,
+  '/': 7,
+  '%': 7,
+  unary: 8,
+  postfix: 9,
+  atom: 10,
+}
+
+function precOf(node: ExprNode): number {
+  switch (node.type) {
+    case 'conditional':
+    case 'lambda':
+      return PREC.conditional
+    case 'logical':
+    case 'binary':
+      return PREC[node.op]
+    case 'unary':
+      return PREC.unary
+    case 'member':
+    case 'index':
+    case 'call':
+      return PREC.postfix
+    default:
+      return PREC.atom
+  }
+}
+
+/**
+ * Source text for an AST, in the same language `parse` reads: `==` stays `==`,
+ * parentheses only where precedence needs them. `parse(printExpr(n))` is `n`.
+ */
+export function printExpr(node: ExprNode): string {
+  const child = (n: ExprNode, min: number): string => (precOf(n) < min ? `(${printExpr(n)})` : printExpr(n))
+  switch (node.type) {
+    case 'lit':
+      return node.value === null ? 'null' : typeof node.value === 'string' ? JSON.stringify(node.value) : String(node.value)
+    case 'array':
+      return '[' + node.items.map(printExpr).join(', ') + ']'
+    case 'object':
+      return node.props.length ? '{ ' + node.props.map((p) => `${jsKey(p.key)}: ${printExpr(p.value)}`).join(', ') + ' }' : '{}'
+    case 'ref':
+      return node.name
+    case 'member':
+      return `${child(node.object, PREC.postfix)}.${node.property}`
+    case 'index':
+      return `${child(node.object, PREC.postfix)}[${printExpr(node.index)}]`
+    case 'unary':
+      return `${node.op}${child(node.operand, PREC.unary)}`
+    case 'binary':
+    case 'logical': {
+      const p = PREC[node.op]
+      // left-associative: the right operand needs parens at equal precedence
+      return `${child(node.left, p)} ${node.op} ${child(node.right, p + 1)}`
+    }
+    case 'conditional':
+      return `${child(node.test, PREC.conditional + 1)} ? ${printExpr(node.consequent)} : ${printExpr(node.alternate)}`
+    case 'call':
+      return `${child(node.callee, PREC.postfix)}(${node.args.map(printExpr).join(', ')})`
+    case 'lambda':
+      return node.params.length === 1 ? `${node.params[0]} => ${printExpr(node.body)}` : `(${node.params.join(', ')}) => ${printExpr(node.body)}`
+  }
 }
 
 // ---- convenience wrappers (operate on source text) ----

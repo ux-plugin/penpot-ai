@@ -1,6 +1,6 @@
 # Foundation plan — what to build once so the rest can go in parallel
 
-> Status: **IN PROGRESS** (2026-09-21: F1 and F5 landed; F2, F3, F4 open). Target model: [MODEL.md](MODEL.md).
+> Status: **IN PROGRESS** (2026-09-22: F1, F2 and F5 landed; F3, F4 open). Target model: [MODEL.md](MODEL.md).
 > The foundation is the set of contracts every later stream keys on. After
 > it lands, motion, machine, text front end, devices, 3D, player and codegen
 > each own their own files and can proceed on separate branches.
@@ -72,29 +72,27 @@ Steps:
 Unblocks: motion (what can be keyed), machine/bindings (what can be bound),
 tokens, codegen (type per path), 3D lift (declares its paths first).
 
-### F2 · Tree expressions with ids
+### F2 · Tree expressions with ids — **done**
 
 Storage stops being strings.
 
 ```ts
-// src/lib/renderer/interactions/expr/
-Ref  = { kind:'cell'; cell: CellId }
-     | { kind:'item'; path: string[] }
-     | { kind:'playback'; timeline: TimelineId; field:'done'|'playing'|'time' }
-     | { kind:'store'; store: string; path: string[] }
-     | { kind:'trigger'; path: string[] }              // payload of the current trigger
-Expr = the existing ExprNode with `{ type:'ref'; name }` replaced by `{ type:'ref'; ref: Ref }`
+// src/lib/renderer/interactions/ir.ts · expr.ts · upgrade.ts
+Ref  = { kind:'cell'; cell: uid } | { kind:'item'; name } | { kind:'node'; node } | { kind:'name'; name }
+Expr = ExprNode<{ ref: Ref }>      // the parser's AST with ids in the ref nodes
 ```
 
 - `PageInteractions` **version 3**: `Cell.formula`, `NodeRefs.props[*]`,
-  `Interaction.if`, `Action.value`, `item.key` hold `Expr` trees. `upgrade(v2)`
-  parses each string and resolves names to ids through `buildScope`.
-- `print(expr, scope) → string` and `parse(text, scope) → Expr` are the
-  adapters. `evaluate`, `toJs`, `freeRefs` already take `ExprNode`, so they
-  change only at the `ref` case. The inspector keeps its text inputs by
-  printing and parsing at the edge.
-- Cells get a stable `CellId` distinct from their display name (rename is
-  now free).
+  `Interaction.if`, `Action.value`, `Action.params[where|at]`, `item.key` are
+  `Expr`; `Action.target` is a `Ref`. `upgradePageInteractions` reads v1/v2
+  and resolves text through `buildScope`; deterministic (`uid` = the v2 name).
+- `parseExpr(text, scope)` / `exprText(expr, ir)` are the adapters; reducers
+  take text and store trees (a syntax error is kept verbatim as a `name` ref).
+  `evaluate`/`toJs`/`printExpr` run on the name form via `namesOf`.
+- `Cell.uid` is identity; `Cell.id` is the name. Renaming is now free.
+- `toTextIR` is the version-2 projection: the AI wire format and DSL.md's base.
+- Deferred to F3: `playback` and `trigger` ref kinds (need timelines and the
+  event-payload scope).
 
 Unblocks: machine (edges hold `Expr`), TS front end (lowers into this),
 bindings UI, codegen, the Rust player (same enum in `serde`).

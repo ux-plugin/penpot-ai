@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import type { PenpotPage } from 'penpot-exporter/types'
 import { flattenPageToIndexed, unflattenIndexedPageToPage } from '../../../../src/lib/worker/flatten'
-import { emptyPageInteractions, type PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
+import type { PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
+import type { IndexedPage } from '../../../../src/lib/worker/types'
+import { toTextIR } from '../../../../src/lib/renderer/interactions/expr'
 import { nodesToPresentation, findPNode } from '../../../../src/lib/renderer/interactions/document/nodes-to-presentation'
+import { listCell, pageCell, up } from './todo-ir'
 
 const ZERO = '00000000-0000-0000-0000-000000000000'
 
@@ -28,8 +31,7 @@ function makePage(interactions?: PageInteractions): PenpotPage {
 
 describe('serialization — interactions survive flatten/unflatten', () => {
   it('carries PageInteractions through the round-trip', () => {
-    const ir = emptyPageInteractions()
-    ir.cells.push({ id: 'items', owner: { kind: 'page' }, type: { collection: 'object' }, initial: [] })
+    const ir = up({ cells: [listCell('items')] })
 
     const indexed = flattenPageToIndexed(makePage(ir))
     expect(indexed.interactions?.cells.map((c) => c.id)).toEqual(['items'])
@@ -50,9 +52,9 @@ describe('serialization — interactions survive flatten/unflatten', () => {
       repeaters: [{ node: 'row', over: 'items' }],
     }
     const indexed = flattenPageToIndexed(makePage(v1 as unknown as PageInteractions))
-    expect(indexed.interactions?.version).toBe(2)
+    expect(indexed.interactions?.version).toBe(3)
     expect(indexed.interactions?.cells.map((c) => c.id)).toEqual(['items'])
-    expect(indexed.interactions?.refs).toEqual([{ node: 'row', props: { text: 'item.label', repeat: 'items' } }])
+    expect(toTextIR(indexed.interactions!).refs).toEqual([{ node: 'row', props: { text: 'item.label', repeat: 'items' } }])
   })
 
   it('leaves interactions undefined when the page has none', () => {
@@ -87,11 +89,13 @@ describe('nodesToPresentation — shapes -> PNode tree with anchors', () => {
   })
 
   it('derives roles from the behaviour authored on each node', () => {
-    const ir = emptyPageInteractions()
-    ir.cells.push({ id: 'draft', owner: { kind: 'page' }, type: 'string', initial: '' })
-    ir.cells.push({ id: 'items', owner: { kind: 'page' }, type: { collection: 'object' }, initial: [] })
-    ir.refs.push({ node: 'addBtn', props: { value: 'draft' } })
-    ir.refs.push({ node: 'row', props: { repeat: 'items' } })
+    const ir = up({
+      cells: [pageCell('draft', 'string', ''), listCell('items')],
+      refs: [
+        { node: 'addBtn', props: { value: 'draft' } },
+        { node: 'row', props: { repeat: 'items' } },
+      ],
+    })
 
     const root = nodesToPresentation(flattenPageToIndexed(makePage(ir)))
     const kids = root?.children ?? []
@@ -101,17 +105,13 @@ describe('nodesToPresentation — shapes -> PNode tree with anchors', () => {
   })
 
   it('a press makes a node a button; open-url makes it a link', () => {
-    const ir = emptyPageInteractions()
-    ir.interactions.push({ id: 'i1', on: { node: 'addBtn', trigger: { type: 'press' } }, do: [] })
+    const ir = up({ interactions: [{ id: 'i1', on: { node: 'addBtn', trigger: { type: 'press' } }, do: [] }] })
     expect(
       nodesToPresentation(flattenPageToIndexed(makePage(ir)))?.children?.find((k) => k.nodeId === 'addBtn')?.role,
     ).toBe('button')
 
-    const linkIr = emptyPageInteractions()
-    linkIr.interactions.push({
-      id: 'i1',
-      on: { node: 'addBtn', trigger: { type: 'press' } },
-      do: [{ type: 'open-url', value: '"https://example.com"' }],
+    const linkIr = up({
+      interactions: [{ id: 'i1', on: { node: 'addBtn', trigger: { type: 'press' } }, do: [{ type: 'open-url', value: '"https://example.com"' }] }],
     })
     expect(
       nodesToPresentation(flattenPageToIndexed(makePage(linkIr)))?.children?.find((k) => k.nodeId === 'addBtn')?.role,

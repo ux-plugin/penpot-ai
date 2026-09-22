@@ -10,6 +10,7 @@ import {
 import { undo, redo } from '../../../../src/lib/page-crud'
 import { emptyPageInteractions } from '../../../../src/lib/renderer/interactions/ir'
 import type { PageInteractions, Cell } from '../../../../src/lib/renderer/interactions/ir'
+import { rawExpr } from '../../../../src/lib/renderer/interactions/expr'
 
 const PAGE_ID = 'page1'
 const ROOT = '00000000-0000-0000-0000-000000000000'
@@ -21,7 +22,7 @@ function makePage(): IndexedPage {
   } as unknown as IndexedPage
 }
 
-const formula = (id: string, expr: string): Cell => ({ id, owner: { kind: 'page' }, type: 'any', initial: null, formula: expr })
+const formula = (id: string, expr: string): Cell => ({ uid: id, id, owner: { kind: 'page' }, type: 'any', initial: null, formula: rawExpr(expr) })
 
 function irA(): PageInteractions {
   return { ...emptyPageInteractions(), cells: [formula('d1', '1 + 1')] }

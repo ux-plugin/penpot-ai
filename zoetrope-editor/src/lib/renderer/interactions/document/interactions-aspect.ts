@@ -8,7 +8,8 @@
 
 import type { Aspect, AspectEffects, DeletedNodes } from '../../../changes/aspects'
 import { buildSetPageInteractions } from '../../../changes/page-interactions-change'
-import { dropNodes, upgradePageInteractions, type AnyPageInteractions } from '../ir'
+import { dropNodes, type AnyPageInteractions } from '../ir'
+import { upgradePageInteractions } from '../upgrade'
 
 function onDeleted({ pageId, page, ids }: DeletedNodes): AspectEffects | null {
   const stored = page.interactions as AnyPageInteractions | undefined

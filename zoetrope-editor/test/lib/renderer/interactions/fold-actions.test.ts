@@ -16,15 +16,21 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { initDefaultCatalog, listActions, isPlanned } from '../../../../src/lib/renderer/interactions/catalog'
 import { applyAction, type RuntimeState } from '../../../../src/lib/renderer/interactions/preview/runtime'
 import { emitAction } from '../../../../src/lib/renderer/interactions/compile/emit-react'
-import type { Action } from '../../../../src/lib/renderer/interactions/ir'
+import type { Action, PageInteractions, V2Action } from '../../../../src/lib/renderer/interactions/ir'
+import { act, listCell, pageCell, up } from './todo-ir'
 
 beforeAll(() => initDefaultCatalog())
+
+/** The page every fixture targets: `v` (any), `todos` (a list). */
+const IR: PageInteractions = up({ cells: [pageCell('v', 'any', null), listCell('todos')] })
+/** An action from its text form, against that page. */
+const A = (a: V2Action): Action => act(IR, a)
 
 const emptyRt = (store: Record<string, unknown>): RuntimeState => ({ store, slotViews: {} })
 
 /** Run an action through the preview interpreter, returning the target's value. */
 function viaRuntime(a: Action, prev: unknown, target = 'v'): unknown {
-  return applyAction(a, {}, emptyRt({ [target]: prev })).store[target]
+  return applyAction(a, {}, emptyRt({ [target]: prev }), IR).store[target]
 }
 
 /**
@@ -33,7 +39,7 @@ function viaRuntime(a: Action, prev: unknown, target = 'v'): unknown {
  * applying it to `prev` reproduces exactly what React's setState would store.
  */
 function viaEmitter(a: Action, prev: unknown): unknown {
-  const src = emitAction(a)
+  const src = emitAction(a, IR)
   const arg = src.slice(src.indexOf('(') + 1, -1)
   const evaluated: unknown = new Function(`return (${arg})`)()
   return typeof evaluated === 'function' ? (evaluated as (p: unknown) => unknown)(prev) : evaluated
@@ -52,12 +58,12 @@ describe('collection.update — the action that used to silently do nothing', ()
   ]
 
   it('patches only the matching item when the value is an object literal', () => {
-    const a: Action = {
+    const a: Action = A({
       type: 'collection.update',
       target: 'v',
       value: '{ done: true }',
       params: { where: 'item.id == 2' },
-    }
+    })
     expectParity(a, rows, [
       { id: 1, label: 'a', done: false },
       { id: 2, label: 'b', done: true },
@@ -65,7 +71,7 @@ describe('collection.update — the action that used to silently do nothing', ()
   })
 
   it('merges rather than replaces — untouched fields survive the patch', () => {
-    const a: Action = { type: 'collection.update', target: 'v', value: '{ done: true }' }
+    const a: Action = A({ type: 'collection.update', target: 'v', value: '{ done: true }' })
     const out = viaRuntime(a, rows) as Array<Record<string, unknown>>
     expect(out[0].label).toBe('a')
     expect(out[1].label).toBe('b')
@@ -73,7 +79,7 @@ describe('collection.update — the action that used to silently do nothing', ()
   })
 
   it('a blank `where` updates every item (stated in the panel, never silent)', () => {
-    const a: Action = { type: 'collection.update', target: 'v', value: '{ done: true }' }
+    const a: Action = A({ type: 'collection.update', target: 'v', value: '{ done: true }' })
     expectParity(a, rows, [
       { id: 1, label: 'a', done: true },
       { id: 2, label: 'b', done: true },
@@ -81,54 +87,54 @@ describe('collection.update — the action that used to silently do nothing', ()
   })
 
   it('a non-object value REPLACES the matched item', () => {
-    const a: Action = {
+    const a: Action = A({
       type: 'collection.update',
       target: 'v',
       value: '"gone"',
       params: { where: 'item.id == 1' },
-    }
+    })
     expectParity(a, rows, ['gone', { id: 2, label: 'b', done: false }])
   })
 
   it('leaves items alone when no value is supplied', () => {
-    const a: Action = { type: 'collection.update', target: 'v' }
+    const a: Action = A({ type: 'collection.update', target: 'v' })
     expectParity(a, rows, rows)
   })
 
   it('emits a spread merge, not a nested spread of an object literal', () => {
-    const src = emitAction({ type: 'collection.update', target: 'todos', value: '{ done: true }', params: { where: 'item.id == 2' } })
+    const src = emitAction(A({ type: 'collection.update', target: 'todos', value: '{ done: true }', params: { where: 'item.id == 2' } }), IR)
     expect(src).toBe('setTodos((prev) => prev.map((item) => ((item.id === 2) ? { ...item, done: true } : item)))')
   })
 })
 
 describe('new fold actions', () => {
   it('toggle-variable flips a boolean', () => {
-    const a: Action = { type: 'toggle-variable', target: 'v' }
+    const a: Action = A({ type: 'toggle-variable', target: 'v' })
     expectParity(a, false, true)
     expectParity(a, true, false)
   })
 
   it('increment adds the value, defaulting to 1 when blank', () => {
-    expectParity({ type: 'increment', target: 'v' }, 5, 6)
-    expectParity({ type: 'increment', target: 'v', value: '3' }, 5, 8)
-    expectParity({ type: 'increment', target: 'v', value: '-1' }, 5, 4)
+    expectParity(A({ type: 'increment', target: 'v' }), 5, 6)
+    expectParity(A({ type: 'increment', target: 'v', value: '3' }), 5, 8)
+    expectParity(A({ type: 'increment', target: 'v', value: '-1' }), 5, 4)
   })
 
   it('collection.clear empties the list', () => {
-    expectParity({ type: 'collection.clear', target: 'v' }, [1, 2, 3], [])
+    expectParity(A({ type: 'collection.clear', target: 'v' }), [1, 2, 3], [])
   })
 
   it('collection.insert defaults to the top of the list', () => {
-    expectParity({ type: 'collection.insert', target: 'v', value: '9' }, [1, 2], [9, 1, 2])
+    expectParity(A({ type: 'collection.insert', target: 'v', value: '9' }), [1, 2], [9, 1, 2])
   })
 
   it('collection.insert honours an `at` index', () => {
-    const a: Action = { type: 'collection.insert', target: 'v', value: '9', params: { at: '1' } }
+    const a: Action = A({ type: 'collection.insert', target: 'v', value: '9', params: { at: '1' } })
     expectParity(a, [1, 2], [1, 9, 2])
   })
 
   it('collection.insert clamps an out-of-range index instead of tearing the list', () => {
-    const a: Action = { type: 'collection.insert', target: 'v', value: '9', params: { at: '99' } }
+    const a: Action = A({ type: 'collection.insert', target: 'v', value: '9', params: { at: '99' } })
     expect(viaRuntime(a, [1, 2])).toEqual([1, 2, 9])
   })
 })
@@ -140,14 +146,14 @@ describe('catalog honesty', () => {
    * catalog entry can't quietly ship unexecuted.
    */
   const FIXTURES: Record<string, { action: Action; prev: unknown }> = {
-    'collection.append': { action: { type: 'collection.append', target: 'v', value: '1' }, prev: [] },
-    'collection.insert': { action: { type: 'collection.insert', target: 'v', value: '1' }, prev: [] },
-    'collection.remove': { action: { type: 'collection.remove', target: 'v', value: 'item == 1' }, prev: [1] },
-    'collection.update': { action: { type: 'collection.update', target: 'v', value: '2' }, prev: [1] },
-    'collection.clear': { action: { type: 'collection.clear', target: 'v' }, prev: [1] },
-    'set-variable': { action: { type: 'set-variable', target: 'v', value: '1' }, prev: 0 },
-    'toggle-variable': { action: { type: 'toggle-variable', target: 'v' }, prev: false },
-    increment: { action: { type: 'increment', target: 'v' }, prev: 0 },
+    'collection.append': { action: A({ type: 'collection.append', target: 'v', value: '1' }), prev: [] },
+    'collection.insert': { action: A({ type: 'collection.insert', target: 'v', value: '1' }), prev: [] },
+    'collection.remove': { action: A({ type: 'collection.remove', target: 'v', value: 'item == 1' }), prev: [1] },
+    'collection.update': { action: A({ type: 'collection.update', target: 'v', value: '2' }), prev: [1] },
+    'collection.clear': { action: A({ type: 'collection.clear', target: 'v' }), prev: [1] },
+    'set-variable': { action: A({ type: 'set-variable', target: 'v', value: '1' }), prev: 0 },
+    'toggle-variable': { action: A({ type: 'toggle-variable', target: 'v' }), prev: false },
+    increment: { action: A({ type: 'increment', target: 'v' }), prev: 0 },
   }
 
   const stateful = listActions().filter((e) => !isPlanned(e) && e.lowers === 'fold')
@@ -159,13 +165,13 @@ describe('catalog honesty', () => {
   it.each(stateful.map((e) => e.key))('%s actually changes state in the preview runtime', (key) => {
     const { action, prev } = FIXTURES[key]
     const before = emptyRt({ v: prev })
-    const after = applyAction(action, {}, before)
+    const after = applyAction(action, {}, before, IR)
     expect(after).not.toBe(before)
     expect(after.store).not.toEqual(before.store)
   })
 
   it.each(stateful.map((e) => e.key))('%s lowers to real code, not a TODO comment', (key) => {
-    expect(emitAction(FIXTURES[key].action)).not.toMatch(/TODO\(web emit\)/)
+    expect(emitAction(FIXTURES[key].action, IR)).not.toMatch(/TODO\(web emit\)/)
   })
 
   it('planned entries are exactly the ones no side executes yet', () => {
@@ -174,6 +180,6 @@ describe('catalog honesty', () => {
   })
 
   it('a planned action still lowers to a marked TODO rather than wrong code', () => {
-    expect(emitAction({ type: 'navigate', target: 'other' })).toMatch(/TODO\(web emit\)/)
+    expect(emitAction(A({ type: 'navigate', target: 'other' }), IR)).toMatch(/TODO\(web emit\)/)
   })
 })

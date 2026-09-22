@@ -10,8 +10,8 @@
 
 import { describe, it, expect, beforeAll } from 'vitest'
 import { initDefaultCatalog } from '../../../../src/lib/renderer/interactions/catalog'
-import { emptyPageInteractions, type PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
-import { pageCell, listCell, variantCell } from './todo-ir'
+import type { PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
+import { pageCell, listCell, variantCell, up } from './todo-ir'
 import {
   initRuntime,
   buildEnv,
@@ -55,16 +55,16 @@ describe('diffRuntime', () => {
 describe('affectedNodes — where an effect actually lands', () => {
   /** Click Save → status flips; a Badge elsewhere reads status through a reference. */
   function ir(): PageInteractions {
-    const it = emptyPageInteractions()
-    it.cells.push(pageCell('status', 'string', 'draft'))
-    it.refs.push({ node: 'badge', props: { text: 'status' } })
-    it.refs.push({ node: 'footer', props: { text: '"static"' } })
-    it.interactions.push({
-      id: 'i1',
-      on: { node: 'saveBtn', trigger: { type: 'press' } },
-      do: [{ type: 'set-variable', target: 'status', value: '"done"' }],
+    return up({
+      cells: [pageCell('status', 'string', 'draft')],
+      refs: [
+        { node: 'badge', props: { text: 'status' } },
+        { node: 'footer', props: { text: '"static"' } },
+      ],
+      interactions: [
+        { id: 'i1', on: { node: 'saveBtn', trigger: { type: 'press' } }, do: [{ type: 'set-variable', target: 'status', value: '"done"' }] },
+      ],
     })
-    return it
   }
 
   it('names the node whose reference changed — not the node that was clicked', () => {
@@ -87,17 +87,14 @@ describe('affectedNodes — where an effect actually lands', () => {
   })
 
   it('flags a repeated template when its list changes', () => {
-    const model = emptyPageInteractions()
-    model.cells.push(listCell('items'))
-    model.refs.push({ node: 'row', props: { repeat: 'items' } })
+    const model = up({ cells: [listCell('items')], refs: [{ node: 'row', props: { repeat: 'items' } }] })
     const before = initRuntime(model)
     const after = { ...before, store: { items: [{ id: 1 }] } }
     expect(affectedNodes(model, before, after)).toEqual([{ node: 'row', props: ['list'] }])
   })
 
   it('flags a node whose own cell changed and a slot that swapped', () => {
-    const model = emptyPageInteractions()
-    model.cells.push(variantCell('card', ['idle', 'open']))
+    const model = up({ cells: [variantCell('card', ['idle', 'open'])] })
     const affected = affectedNodes(model, rtOf({ 'card.state': 'idle' }, {}), rtOf({ 'card.state': 'open' }, { outlet: 'about' }))
     expect(affected).toEqual([
       { node: 'card', props: ['state'] },

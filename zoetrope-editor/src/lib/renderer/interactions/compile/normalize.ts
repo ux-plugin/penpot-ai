@@ -9,33 +9,35 @@
  * same catalog `lowers` metadata, so the two never disagree.
  */
 
-import type { PageInteractions, ReactiveGraph, GraphNode, Cell } from '../ir'
-import { cellRef, isBacked, isFormula, editedCell } from '../ir'
+import type { PageInteractions, ReactiveGraph, GraphNode, Cell, Expr, Ref } from '../ir'
+import { cellRef, cellByUid, cellOf, isBacked, isFormula, editedCell, LIT, REF } from '../ir'
 import { getAction } from '../catalog'
-import { parse, freeRefs } from '../expression'
-import { cellFor } from '../addressing'
+import { cellsIn, refName } from '../expr'
+
+/** `event.value` — the reducer of a two-way edit. */
+const EVENT_VALUE: Expr = { type: 'member', object: REF({ kind: 'name', name: 'event' }), property: 'value' }
 
 export function normalize(ir: PageInteractions): ReactiveGraph {
   const nodes: GraphNode[] = []
   const edges: Array<{ from: string; to: string }> = []
 
   const cellId = (c: Cell): string => `${isFormula(c) ? 'derived' : 'cell'}:${cellRef(c)}`
-  const depId = (ref: string): string | undefined => {
-    const c = cellFor(ir, ref)
-    return c ? cellId(c) : undefined
+  const depIds = (expr: Expr): string[] => {
+    const out: string[] = []
+    for (const uid of cellsIn(expr)) {
+      const c = cellByUid(ir, uid)
+      if (c) out.push(cellId(c))
+    }
+    return out
   }
-  const isOutside = (ref: string | undefined): boolean => {
-    if (!ref) return false
-    const c = cellFor(ir, ref)
-    return !!c && isBacked(c)
-  }
-  const outsideKey = (ref: string): string => cellRef(cellFor(ir, ref)!)
+  const targetName = (t: Ref | undefined): string => (t ? refName(t, ir) : '')
 
   // One outbound port per cell, however many actions write it.
   const outPorts = new Set<string>()
-  const leave = (from: string, target: string | undefined) => {
-    if (!target || !isOutside(target)) return
-    const key = outsideKey(target)
+  const leave = (from: string, target: Ref | undefined) => {
+    const c = cellOf(ir, target)
+    if (!c || !isBacked(c)) return
+    const key = cellRef(c)
     const out = `port:out:${key}`
     if (!outPorts.has(key)) {
       outPorts.add(key)
@@ -50,12 +52,9 @@ export function normalize(ir: PageInteractions): ReactiveGraph {
   for (const c of ir.cells) {
     const key = cellRef(c)
     if (isFormula(c)) {
-      const inputs = [...freeRefs(parse(c.formula!))]
+      const inputs = depIds(c.formula!)
       nodes.push({ kind: 'derive', id: `derived:${key}`, inputs, expr: c.formula! })
-      for (const inp of inputs) {
-        const from = depId(inp)
-        if (from) edges.push({ from, to: `derived:${key}` })
-      }
+      for (const from of inputs) edges.push({ from, to: `derived:${key}` })
       continue
     }
     nodes.push({ kind: 'source', id: `cell:${key}`, produces: 'signal', of: { source: 'state', cell: key } })
@@ -72,7 +71,7 @@ export function normalize(ir: PageInteractions): ReactiveGraph {
     it.do.forEach((a, j) => {
       const nid = `act:${i}:${j}`
       const lowers = getAction(a.type)?.lowers ?? 'effect'
-      if (lowers === 'fold') nodes.push({ kind: 'fold', id: nid, on: src, state: a.target ?? '', reducer: a.value ?? 'null' })
+      if (lowers === 'fold') nodes.push({ kind: 'fold', id: nid, on: src, state: targetName(a.target), reducer: a.value ?? LIT(null) })
       else if (lowers === 'switch') nodes.push({ kind: 'switch', id: nid, on: src, cases: {} })
       else nodes.push({ kind: 'effect', id: nid, on: src, call: a.type })
       edges.push({ from: src, to: nid })
@@ -89,10 +88,7 @@ export function normalize(ir: PageInteractions): ReactiveGraph {
     for (const [prop, expr] of Object.entries(r.props)) {
       const nid = `sink:${i}:${prop}`
       nodes.push({ kind: 'sink', id: nid, from: expr, node: r.node, prop })
-      for (const inp of freeRefs(parse(expr))) {
-        const from = depId(inp)
-        if (from) edges.push({ from, to: nid })
-      }
+      for (const from of depIds(expr)) edges.push({ from, to: nid })
     }
     // A node that EDITS a cell: the read is the sink above; the write is a
     // discrete event folded back into the same cell. Two one-way edges, no
@@ -102,9 +98,9 @@ export function normalize(ir: PageInteractions): ReactiveGraph {
       const src = `evt:edit:${i}`
       nodes.push({ kind: 'source', id: src, produces: 'event', of: { source: 'event', node: r.node, trigger: 'value-change' } })
       const fold = `fold:edit:${i}`
-      nodes.push({ kind: 'fold', id: fold, on: src, state: cellRef(edited), reducer: 'event.value' })
+      nodes.push({ kind: 'fold', id: fold, on: src, state: cellRef(edited), reducer: EVENT_VALUE })
       edges.push({ from: src, to: fold })
-      leave(fold, cellRef(edited))
+      leave(fold, { kind: 'cell', cell: edited.uid })
     }
   })
 

@@ -1,6 +1,6 @@
 /**
  * Addressing — the one namespace every expression, property reference and
- * action target uses.
+ * action target uses when written as TEXT.
  *
  *   ref ::= cell                // items, draft            (a page or document cell)
  *         | node '.' cell       // card.state              (a node's own cell)
@@ -8,20 +8,17 @@
  *
  * Two jobs:
  *   1. `buildScope` — a symbol table from the page IR + the node ids present on
- *      the page (the keys of `IndexedPage.objects`).
- *   2. `validatePageInteractions` — walk every expression/target and report refs
- *      that resolve to nothing, action targets of the wrong kind, unknown
- *      trigger/action types, etc.
- *
- * Reference paths are parsed by reusing the expression parser (a ref is just a
- * root identifier followed by member/index access), and expression refs come
- * from `freeRefs`, so the addressing rules and the expression language can never
- * drift apart.
+ *      the page (the keys of `IndexedPage.objects`). Text becomes ids through it
+ *      (./expr `resolveExpr`); ids never depend on it again.
+ *   2. `validatePageInteractions` — walk every stored expression/target and
+ *      report references that point at nothing, action targets of the wrong
+ *      kind, unknown trigger/action types, etc.
  */
 
-import type { PageInteractions, NodeId, ValueType, Action, Cell } from './ir'
-import { cellRef, nodeRef, isCollectionType, isEnumType, isFormula, REPEAT_PROP } from './ir'
-import { parse, freeRefs, type ExprNode } from './expression'
+import type { PageInteractions, NodeId, ValueType, Action, Cell, Expr, Ref } from './ir'
+import { cellRef, cellByUid, nodeRef, isCollectionType, isEnumType, isFormula, REPEAT_PROP } from './ir'
+import { parse, type ExprNode } from './expression'
+import { refName, unresolvedNames, walkRefs } from './expr'
 import { getTrigger, getAction } from './catalog'
 
 /**
@@ -43,11 +40,26 @@ export interface Sym {
 /** A flat symbol table. Precedence on collision: cells and loop items shadow nodes. */
 export type Scope = Map<string, Sym>
 
-export function buildScope(ir: PageInteractions, nodeIds: Set<NodeId>): Scope {
+/** Every node the IR mentions — so a scope can be built from the IR alone. */
+function mentionedNodes(ir: PageInteractions): Set<NodeId> {
+  const ids = new Set<NodeId>()
+  for (const c of ir.cells) if (c.owner.kind === 'node') ids.add(c.owner.node)
+  for (const r of ir.refs) ids.add(r.node)
+  for (const it of ir.interactions) ids.add(it.on.node)
+  return ids
+}
+
+/**
+ * The symbol table text resolves through. `nodeIds` are the page's objects;
+ * nodes the IR itself mentions are always included, so reducers can resolve
+ * without a node table.
+ */
+export function buildScope(ir: PageInteractions, nodeIds: Iterable<NodeId> = [], extraItems: Iterable<string> = []): Scope {
   const scope: Scope = new Map()
   // nodes first (lowest precedence), under their id and, when that is not an
   // identifier, the mangled spelling expressions use
-  for (const id of nodeIds) {
+  const nodes = new Set<NodeId>([...nodeIds, ...mentionedNodes(ir)])
+  for (const id of nodes) {
     const sym: Sym = { name: id, kind: 'node', cells: new Map() }
     scope.set(id, sym)
     scope.set(nodeRef(id), sym)
@@ -67,6 +79,7 @@ export function buildScope(ir: PageInteractions, nodeIds: Set<NodeId>): Scope {
     const name = r.item?.as ?? 'item'
     scope.set(name, { name, kind: 'loop-item' })
   }
+  for (const name of extraItems) scope.set(name, { name, kind: 'loop-item' })
   return scope
 }
 
@@ -113,7 +126,7 @@ export function parseRefPath(src: string): RefPath {
 }
 
 /**
- * The cell a reference addresses, or undefined: a page/document cell by its
+ * The cell a reference TEXT addresses, or undefined: a page/document cell by its
  * root (`cart.items` addresses `cart` — a write lands on the cell), a node's
  * cell as `<node>.<cell>`.
  */
@@ -156,21 +169,19 @@ export interface AddressingIssue {
 }
 
 export function validatePageInteractions(ir: PageInteractions, nodeIds: Set<NodeId>): AddressingIssue[] {
-  const scope = buildScope(ir, nodeIds)
   const issues: AddressingIssue[] = []
   const add = (where: string, message: string) => issues.push({ where, message })
 
-  const checkExpr = (src: string | undefined, where: string): void => {
-    if (src == null) return
-    let node: ExprNode
-    try {
-      node = parse(src)
-    } catch (e) {
-      add(where, `invalid expression: ${(e as Error).message}`)
-      return
-    }
-    for (const r of freeRefs(node)) if (!scope.get(r)) add(where, `unknown reference '${r}'`)
+  const checkExpr = (expr: Expr | undefined, where: string): void => {
+    if (expr == null) return
+    for (const name of unresolvedNames(expr)) add(where, `unknown reference '${name}'`)
+    walkRefs(expr, (r) => {
+      if (r.kind === 'cell' && !cellByUid(ir, r.cell)) add(where, `reference to a cell that no longer exists`)
+      if (r.kind === 'node' && !nodeIds.has(r.node)) add(where, `reference to unknown node '${r.node}'`)
+    })
   }
+
+  const targetCell = (t: Ref): Cell | undefined => (t.kind === 'cell' ? cellByUid(ir, t.cell) : undefined)
 
   const validateAction = (a: Action, where: string): void => {
     const entry = getAction(a.type)
@@ -180,39 +191,37 @@ export function validatePageInteractions(ir: PageInteractions, nodeIds: Set<Node
     }
     if (entry.expects.value && a.value == null) add(where, `action '${a.type}' requires a value`)
     checkExpr(a.value, `${where}.value`)
+    for (const p of entry.expects.params ?? []) {
+      const v = a.params?.[p.key]
+      if (v !== undefined && typeof v === 'object') checkExpr(v as Expr, `${where}.${p.key}`)
+    }
 
     const want = entry.expects.target
     if (!want || want === 'none') return
-    // screen/overlay ids are opaque strings for now (no screen registry yet).
+    // screen/overlay ids are opaque for now (no screen registry yet).
     if (want === 'screen' || want === 'overlay') return
 
     if (a.target == null) {
       add(where, `action '${a.type}' requires a target`)
       return
     }
-    let path: RefPath
-    try {
-      path = parseRefPath(a.target)
-    } catch (e) {
-      add(where, (e as Error).message)
-      return
-    }
-    const sym = scope.get(path.root)
-    if (!sym) {
-      add(where, `target references unknown '${path.root}'`)
-      return
-    }
+    const shown = refName(a.target, ir)
     if (want === 'slot') {
-      if (sym.kind !== 'node') add(where, `target '${a.target}' must be a slot node`)
+      if (a.target.kind !== 'node') add(where, `target '${shown}' must be a slot node`)
+      else if (!nodeIds.has(a.target.node)) add(where, `target references unknown '${shown}'`)
       return
     }
-    const cell = resolveCell(scope, a.target)
+    if (a.target.kind === 'name') {
+      add(where, `target references unknown '${shown}'`)
+      return
+    }
+    const cell = targetCell(a.target)
     if (!cell) {
-      add(where, `target '${a.target}' is not a value`)
+      add(where, `target '${shown}' is not a value`)
       return
     }
-    if (isFormula(cell)) add(where, `target '${a.target}' is a formula — computed, not writable`)
-    else if (want === 'collection' && !isCollectionType(cell.type)) add(where, `target '${a.target}' must be a list`)
+    if (isFormula(cell)) add(where, `target '${shown}' is a formula — computed, not writable`)
+    else if (want === 'collection' && !isCollectionType(cell.type)) add(where, `target '${shown}' must be a list`)
   }
 
   ir.cells.forEach((c, i) => {
@@ -230,9 +239,10 @@ export function validatePageInteractions(ir: PageInteractions, nodeIds: Set<Node
       const where = `refs[${i}](${r.node}.${prop})`
       checkExpr(expr, where)
       if (prop === REPEAT_PROP) {
-        const cell = resolveCell(scope, expr)
-        if (!cell) add(where, `repeats over unknown reference '${expr}'`)
-        else if (!isCollectionType(cell.type)) add(where, `repeats over '${expr}' which is not a list`)
+        const cell = expr.type === 'ref' ? targetCell(expr.ref) : undefined
+        const shown = expr.type === 'ref' ? refName(expr.ref, ir) : '<expression>'
+        if (!cell) add(where, `repeats over unknown reference '${shown}'`)
+        else if (!isCollectionType(cell.type)) add(where, `repeats over '${shown}' which is not a list`)
       }
     }
     if (r.item?.key) checkExpr(r.item.key, `refs[${i}](${r.node}).item.key`)

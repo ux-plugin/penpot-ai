@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { IndexedPage } from '../../../../src/lib/worker/types'
 import { nodesToPresentation } from '../../../../src/lib/renderer/interactions/document/nodes-to-presentation'
 import { initRuntime, applyAction, activeSlotView } from '../../../../src/lib/renderer/interactions/preview/runtime'
-import { emptyPageInteractions } from '../../../../src/lib/renderer/interactions/ir'
+import { emptyPageInteractions, LIT } from '../../../../src/lib/renderer/interactions/ir'
 import type { Action } from '../../../../src/lib/renderer/interactions/ir'
 import type { PNode } from '../../../../src/lib/renderer/interactions/compile/emit-react'
 
@@ -45,8 +45,8 @@ describe('slot preview — document → projection → runtime resolution', () =
 
   it('a fired show-in-slot swaps the shown view to the targeted one', () => {
     const slot = outletOf(slotPage('home'))
-    const show: Action = { type: 'show-in-slot', target: 'outlet', value: 'about' }
-    const rt = applyAction(show, {}, initRuntime(emptyPageInteractions()))
+    const show: Action = { type: 'show-in-slot', target: { kind: 'node', node: 'outlet' }, value: LIT('about') }
+    const rt = applyAction(show, {}, initRuntime(emptyPageInteractions()), emptyPageInteractions())
 
     expect(rt.slotViews.outlet).toBe('about')
     // the override wins over the 'home' design default

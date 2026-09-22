@@ -30,6 +30,7 @@ import {
   makeCell,
   makeFormula,
 } from '../../../../src/lib/renderer/interactions/document/edit-interactions'
+import { ex, text, txt } from './todo-ir'
 
 beforeAll(() => initDefaultCatalog())
 
@@ -51,7 +52,7 @@ describe('editableError — writability is a property of the cell', () => {
 
   it('rejects a formula as a category error, not a missing feature', () => {
     let ir = addCell(emptyPageInteractions(), makeCell('n', 'number', 0))
-    ir = addCell(ir, makeFormula('double', 'n * 2'))
+    ir = addCell(ir, makeFormula('double', ex(ir, 'n * 2')))
     expect(editableError(ir, 'double')).toMatch(/formula/)
   })
 
@@ -80,7 +81,7 @@ describe('editedCell — what makes a reference two-way', () => {
 
   it('is nothing for an expression over cells, or for a formula — those are one-way reads', () => {
     let ir = addCell(emptyPageInteractions(), makeCell('draft', 'string', ''))
-    ir = addCell(ir, makeFormula('upper', 'draft + "!"'))
+    ir = addCell(ir, makeFormula('upper', ex(ir, 'draft + "!"')))
     expect(editedCell(setRef(ir, 'a', VALUE_PROP, 'draft + "?"'), 'a')).toBeUndefined()
     expect(editedCell(setRef(ir, 'b', VALUE_PROP, 'upper'), 'b')).toBeUndefined()
   })
@@ -98,9 +99,11 @@ describe('normalize — two-way expands into three one-directional primitives', 
   })
 
   it('reads through a sink fed by the cell', () => {
-    const g = graph()
+    const ir = authorField()
+    const g = normalize(ir)
     const sink = g.nodes.find((n) => n.kind === 'sink')
-    expect(sink).toMatchObject({ node: 'field', prop: 'value', from: 'draft' })
+    expect(sink).toMatchObject({ node: 'field', prop: 'value' })
+    expect(sink && sink.kind === 'sink' ? txt(ir, sink.from) : '').toBe('draft')
     expect(g.edges).toContainEqual({ from: 'cell:draft', to: sink!.id })
   })
 
@@ -146,7 +149,7 @@ describe('editing is an ordinary property reference', () => {
     let ir = authorField()
     ir = setRef(ir, 'field', VALUE_PROP, 'other')
     expect(ir.refs).toHaveLength(1)
-    expect(ir.refs[0].props).toEqual({ value: 'other' })
+    expect(text(ir).refs[0].props).toEqual({ value: 'other' })
   })
 
   it('a blank expression clears it, dropping an otherwise empty reference block', () => {
@@ -164,7 +167,7 @@ describe('editing is an ordinary property reference', () => {
   it('does not mutate the input IR', () => {
     const before = authorField()
     const after = setRef(before, 'field', VALUE_PROP, 'changed')
-    expect(before.refs[0].props.value).toBe('draft')
+    expect(txt(before, before.refs[0].props.value)).toBe('draft')
     expect(after).not.toBe(before)
   })
 })

@@ -7,7 +7,8 @@ import { useJournalStore } from '../../../../src/lib/history/journal/journal-sto
 import { commitChanges } from '../../../../src/lib/renderer/store/commit'
 import { currentInteractions } from '../../../../src/lib/renderer/interactions/document/commit-interactions'
 import { undo, redo } from '../../../../src/lib/page-crud'
-import { dropNodes, emptyPageInteractions, type PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
+import { dropNodes, type PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
+import { up } from './todo-ir'
 
 const PAGE_ID = 'page1'
 const ROOT = '00000000-0000-0000-0000-000000000000'
@@ -17,8 +18,7 @@ const LABEL = '33333333-3333-4333-8333-333333333333'
 const OTHER = '44444444-4444-4444-8444-444444444444'
 
 function ir(): PageInteractions {
-  return {
-    ...emptyPageInteractions(),
+  return up({
     cells: [
       { id: 'count', owner: { kind: 'page' }, type: 'number', initial: 0 },
       { id: 'state', owner: { kind: 'node', node: CARD }, type: { enum: ['a', 'b'] }, initial: 'a' },
@@ -31,7 +31,7 @@ function ir(): PageInteractions {
       { on: { node: BTN, trigger: { type: 'press' } }, do: [{ type: 'increment', target: 'count' }] },
       { on: { node: OTHER, trigger: { type: 'press' } }, do: [{ type: 'increment', target: 'count' }] },
     ],
-  }
+  })
 }
 
 function makePage(): IndexedPage {

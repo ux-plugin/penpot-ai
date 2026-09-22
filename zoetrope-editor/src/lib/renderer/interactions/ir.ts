@@ -21,12 +21,14 @@
  * reactive graph (`GraphNode`) it compiles into — a compile artifact, never
  * stored. Trigger/action types are OPEN string unions backed by the catalog
  * (./catalog), so new interaction types are additive entries. Expressions are
- * stored as source text (a constrained JS subset, ./expression) and parsed at
- * compile time, which keeps the IR diffable.
+ * stored as TREES whose references are ids (`Expr`/`Ref`), so a rename never
+ * breaks a wire; text is a projection (./expr).
  *
  * Stores are DOCUMENT-wide (a data source is the same on every page); they live
  * on the document (`DocumentMeta.stores`), and a cell names its store by id.
  */
+
+import type { ExprNode } from './expression'
 
 /** A shape id — the key in `IndexedPage.objects`. */
 export type NodeId = string
@@ -35,16 +37,30 @@ export type NodeId = string
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json }
 
 /**
- * Expression source text in the constrained JS subset (see ./expression).
- * Pure, total, no side effects. Parsed to an AST at compile time.
+ * A resolved reference — WHAT an expression or action target points at, by id.
+ * Names are for people (`draft`, `card.state`); identity never depends on them,
+ * so renaming a cell touches nothing else.
+ *   - `cell`  a cell, by `Cell.uid`
+ *   - `item`  the loop variable of a repeated node, by the name it was given
+ *   - `node`  a node (a slot to show a view in; the root of `card.state` while resolving)
+ *   - `name`  anything else: a lambda parameter, `Math`, or text that resolved
+ *             to nothing — validation reports those, printing shows them as typed
  */
-export type Expr = string
+export type Ref =
+  | { kind: 'cell'; cell: string }
+  | { kind: 'item'; name: string }
+  | { kind: 'node'; node: NodeId }
+  | { kind: 'name'; name: string }
 
 /**
- * A reference in the addressing grammar (see ./addressing), stored as source:
- *   `items` | `card.state` | `onSave`
+ * A stored expression: the constrained-JS AST (see ./expression) with every
+ * reference resolved to a `Ref`. Pure, total, no side effects. Authored as text
+ * and parsed+resolved at the edge (./expr); never stored as text.
  */
-export type Ref = string
+export type Expr = ExprNode<{ ref: Ref }>
+
+export const LIT = (value: string | number | boolean | null): Expr => ({ type: 'lit', value })
+export const REF = (ref: Ref): Expr => ({ type: 'ref', ref })
 
 export type Persistence = 'none' | 'local-storage'
 
@@ -87,6 +103,9 @@ export interface Store {
  * value it is.
  */
 export interface Cell {
+  /** Stable identity, never shown. What every `Ref` points at. */
+  uid: string
+  /** The name people see and expressions print: `draft`, or `state` in `card.state`. */
   id: string
   owner: Owner
   type: ValueType
@@ -123,7 +142,7 @@ export function isCollectionType(t: ValueType | undefined): t is { collection: V
  * cell by its id, a node's cell as `<node>.<id>` (see `nodeRef`). Also the key
  * the preview runtime stores its value under.
  */
-export function cellRef(c: Cell): Ref {
+export function cellRef(c: Cell): string {
   return c.owner.kind === 'node' ? `${nodeRef(c.owner.node)}.${c.id}` : c.id
 }
 
@@ -164,13 +183,18 @@ export interface Action {
 }
 
 /**
- * Read an expression param off an action (`where`, `at`, …), normalizing absent,
- * non-string, and blank to `undefined` so callers get one "not supplied" case.
+ * Read an expression param off an action (`where`, `at`, …). Expression params
+ * are stored as `Expr` trees inside `params`; anything else there is plain data.
  * Which keys an action reads is declared by its catalog entry's `expects.params`.
  */
 export function actionParam(a: Action, key: string): Expr | undefined {
   const v = a.params?.[key]
-  return typeof v === 'string' && v.trim() ? v : undefined
+  return isExpr(v) ? v : undefined
+}
+
+/** Whether a JSON value is a stored expression tree. */
+export function isExpr(v: unknown): v is Expr {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) && typeof (v as { type?: unknown }).type === 'string'
 }
 
 /** A node-attached interaction: trigger -> guard -> actions. */
@@ -218,7 +242,7 @@ export const VALUE_PROP = 'value'
 // ---- the page-scoped block ----
 
 export interface PageInteractions {
-  version: 2
+  version: 3
   cells: Cell[]
   refs: NodeRefs[]
   interactions: Interaction[]
@@ -226,12 +250,31 @@ export interface PageInteractions {
 }
 
 export function emptyPageInteractions(): PageInteractions {
-  return { version: 2, cells: [], refs: [], interactions: [], appRules: [] }
+  return { version: 3, cells: [], refs: [], interactions: [], appRules: [] }
 }
 
 /** The cell `ref` names, if any: `items`, or `card.state` for a node's cell. */
-export function findCell(ir: PageInteractions, ref: Ref): Cell | undefined {
+export function findCell(ir: PageInteractions, ref: string): Cell | undefined {
   return ir.cells.find((c) => cellRef(c) === ref)
+}
+
+/** The cell with this identity, if any. */
+export function cellByUid(ir: PageInteractions, uid: string): Cell | undefined {
+  return ir.cells.find((c) => c.uid === uid)
+}
+
+/** The cell a reference points at, if it points at one. */
+export function cellOf(ir: PageInteractions, ref: Ref | undefined): Cell | undefined {
+  return ref?.kind === 'cell' ? cellByUid(ir, ref.cell) : undefined
+}
+
+/** A fresh cell identity. Opaque; only ever compared for equality. */
+export function newCellUid(): string {
+  const rnd =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+      : Math.random().toString(36).slice(2, 14)
+  return `c_${rnd}`
 }
 
 /** A node's property references, or none. */
@@ -251,8 +294,8 @@ export function propRef(ir: PageInteractions, node: NodeId, prop: string): Expr 
  */
 export function editedCell(ir: PageInteractions, node: NodeId): Cell | undefined {
   const expr = propRef(ir, node, VALUE_PROP)
-  if (!expr) return undefined
-  const cell = findCell(ir, expr.trim())
+  if (!expr || expr.type !== 'ref') return undefined
+  const cell = cellOf(ir, expr.ref)
   return cell && !isFormula(cell) ? cell : undefined
 }
 
@@ -262,7 +305,7 @@ export function editedCell(ir: PageInteractions, node: NodeId): Cell | undefined
  * a category error rather than a missing feature. A store cell is editable — what
  * a write has to do to reach the real source is derived plumbing.
  */
-export function editableError(ir: PageInteractions, target: Ref): string | null {
+export function editableError(ir: PageInteractions, target: string): string | null {
   if (!target.trim()) return 'Pick a value to edit'
   const cell = findCell(ir, target)
   if (!cell) return `${target} is not a value on this page`
@@ -314,15 +357,60 @@ export function reconcile(ir: PageInteractions, presentNodeIds: Set<NodeId>): Me
   return { dangling, ok: dangling.length === 0 }
 }
 
-// ---- version 1 → 2 ----
+// ---- earlier stored shapes (upgraded on read by ./upgrade) ----
 //
-// Version 1 stored six things a version-2 document says with two: variables and
-// derived values (cells), node variant states (a node's enum cell, named `state`
-// so `card.state` keeps meaning what it meant), bindings and editables and
-// repeaters (property references). Stores were page-scoped; `upgrade` hands them
-// back for the caller to hoist onto the document.
+// Version 2 stored expressions as source text and addressed cells by name.
+// Version 1 stored six things version 2 says with two. Both are read-only
+// shapes kept here so a stored document of any version loads.
 
-interface V1Variable {
+export interface V2Cell {
+  id: string
+  owner: Owner
+  type: ValueType
+  initial: Json
+  formula?: string
+  store?: string
+  description?: string
+  persist?: Persistence
+}
+
+export interface V2Action {
+  type: ActionType
+  /** A reference in the name grammar: `items`, `card.state`, `cart.items`, or a slot id. */
+  target?: string
+  value?: string
+  params?: Record<string, Json>
+}
+
+export interface V2Interaction {
+  id?: string
+  on: { node: NodeId; trigger: Trigger }
+  if?: string
+  do: V2Action[]
+}
+
+export interface V2AppRule {
+  id?: string
+  on: Trigger
+  if?: string
+  do: V2Action[]
+}
+
+export interface V2NodeRefs {
+  node: NodeId
+  props: Record<string, string>
+  item?: { as?: string; key?: string }
+}
+
+export interface V2PageInteractions {
+  version: 2
+  cells: V2Cell[]
+  refs: V2NodeRefs[]
+  interactions: V2Interaction[]
+  appRules: V2AppRule[]
+}
+
+export interface V1Variable {
   id: string
   type: ValueType
   scope: 'local' | 'page' | 'global'
@@ -332,82 +420,30 @@ interface V1Variable {
   persist?: Persistence
 }
 
-interface V1PageInteractions {
+export interface V1PageInteractions {
   version: 1
   stores: Store[]
   variables: V1Variable[]
-  derived: { id: string; expr: Expr }[]
-  interactions: Interaction[]
-  appRules: AppRule[]
-  bindings: { node: NodeId; prop: string; from: Expr }[]
-  editable: { node: NodeId; prop: string; target: Ref }[]
-  states: { node: NodeId; states: string[]; active: { from: 'self'; initial?: string } | { bind: Expr } }[]
-  repeaters: { node: NodeId; over: Ref; as?: string; key?: Expr }[]
+  derived: { id: string; expr: string }[]
+  interactions: V2Interaction[]
+  appRules: V2AppRule[]
+  bindings: { node: NodeId; prop: string; from: string }[]
+  editable: { node: NodeId; prop: string; target: string }[]
+  states: { node: NodeId; states: string[]; active: { from: 'self'; initial?: string } | { bind: string } }[]
+  repeaters: { node: NodeId; over: string; as?: string; key?: string }[]
 }
 
 /** The node's variant cell is named `state`, as `<node>.state` was in version 1. */
 export const STATE_CELL = 'state'
 
-export type AnyPageInteractions = PageInteractions | V1PageInteractions
+export type AnyPageInteractions = PageInteractions | V2PageInteractions | V1PageInteractions
 
-/** Whether a stored block still has the version-1 shape. */
 export function isV1(ir: AnyPageInteractions): ir is V1PageInteractions {
   return (ir as { version?: number }).version === 1
 }
 
-/**
- * Upgrade a version-1 block. Returns the version-2 block and the stores it
- * carried, for the document to adopt. Pure; a version-2 block passes through
- * with no stores.
- */
-export function upgradePageInteractions(ir: AnyPageInteractions): { ir: PageInteractions; stores: Store[] } {
-  if (!isV1(ir)) return { ir, stores: [] }
-  const cells: Cell[] = []
-  for (const v of ir.variables ?? []) {
-    const owner: Owner = v.scope === 'global' ? { kind: 'document' } : { kind: 'page' }
-    const cell: Cell = { id: v.id, owner, type: v.type, initial: v.initial }
-    if (v.store) cell.store = v.store
-    if (v.description) cell.description = v.description
-    if (v.persist) cell.persist = v.persist
-    cells.push(cell)
-  }
-  for (const d of ir.derived ?? []) cells.push({ id: d.id, owner: { kind: 'page' }, type: 'any', initial: null, formula: d.expr })
-  for (const s of ir.states ?? []) {
-    const cell: Cell = { id: STATE_CELL, owner: { kind: 'node', node: s.node }, type: { enum: s.states }, initial: null }
-    if ('bind' in s.active) cell.formula = s.active.bind
-    else cell.initial = s.active.initial ?? s.states[0] ?? null
-    cells.push(cell)
-  }
-
-  const refs = new Map<NodeId, NodeRefs>()
-  const at = (node: NodeId): NodeRefs => {
-    let r = refs.get(node)
-    if (!r) {
-      r = { node, props: {} }
-      refs.set(node, r)
-    }
-    return r
-  }
-  for (const b of ir.bindings ?? []) at(b.node).props[b.prop] = b.from
-  for (const e of ir.editable ?? []) at(e.node).props[e.prop] = e.target
-  for (const rep of ir.repeaters ?? []) {
-    const r = at(rep.node)
-    r.props[REPEAT_PROP] = rep.over
-    const item: NonNullable<NodeRefs['item']> = {}
-    if (rep.as) item.as = rep.as
-    if (rep.key) item.key = rep.key
-    if (Object.keys(item).length) r.item = item
-  }
-
-  // `node.setState` on `<node>.state` is `set-variable` on the node's cell.
-  const action = (a: Action): Action => (a.type === 'node.setState' ? { ...a, type: 'set-variable' } : a)
-  const interactions = (ir.interactions ?? []).map((it) => ({ ...it, do: it.do.map(action) }))
-  const appRules = (ir.appRules ?? []).map((ar) => ({ ...ar, do: ar.do.map(action) }))
-
-  return {
-    ir: { version: 2, cells, refs: [...refs.values()], interactions, appRules },
-    stores: ir.stores ?? [],
-  }
+export function isV2(ir: AnyPageInteractions): ir is V2PageInteractions {
+  return (ir as { version?: number }).version === 2
 }
 
 // ---- normalized reactive graph (compile artifact; built by ./compile/normalize) ----
@@ -422,7 +458,7 @@ export type GraphValueKind = 'signal' | 'event'
 
 export type SourceOf =
   | { source: 'event'; node?: NodeId; trigger: TriggerType }
-  | { source: 'state'; cell: Ref }
+  | { source: 'state'; cell: string }
   | { source: 'port'; port: string }
 
 export type GraphNode =
@@ -433,7 +469,7 @@ export type GraphNode =
   | { kind: 'sample'; id: string; on: string; read: string } // event × signal -> event
   | { kind: 'switch'; id: string; on: string; cases: Record<string, string> }
   | { kind: 'effect'; id: string; on: string; call: string; ok?: string; err?: string }
-  | { kind: 'sink'; id: string; from: string; node: NodeId; prop: string }
+  | { kind: 'sink'; id: string; from: Expr; node: NodeId; prop: string }
   | { kind: 'port'; id: string; dir: 'in' | 'out' }
 
 export interface ReactiveGraph {

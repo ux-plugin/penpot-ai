@@ -21,6 +21,7 @@ import {
   propRef,
   editedCell,
   editableError,
+  actionParam,
   REPEAT_PROP,
   VALUE_PROP,
   type PageInteractions,
@@ -36,6 +37,7 @@ import { listTriggers, listActions, getAction, isPlanned, type CatalogStatus } f
 import { isSlotShape, isFrameShape } from '../../worker/geometry/shapes'
 import { addViewToSlot } from '../../renderer/slot/slot-edit'
 import { parse } from '../../renderer/interactions/expression'
+import { exprText, refName } from '../../renderer/interactions/expr'
 import {
   addInteraction,
   removeInteraction,
@@ -45,6 +47,7 @@ import {
   removeAction,
   setActionType,
   setActionTarget,
+  setActionNodeTarget,
   setActionValue,
   setActionParam,
   addCell,
@@ -141,7 +144,9 @@ function ActionRow({
   const expectsValue = entry?.expects.value ?? false
   const expectsParams = entry?.expects.params ?? []
   const id = it.id as string
-  const err = exprError(action.value)
+  const valueText = exprText(action.value, liveIR())
+  const targetText = action.target ? refName(action.target, liveIR()) : ''
+  const err = exprError(valueText)
 
   const targets = expectsTarget === 'collection' ? cells.filter((c) => isCollectionType(c.type)) : cells
 
@@ -170,7 +175,7 @@ function ActionRow({
         {(expectsTarget === 'variable' || expectsTarget === 'collection') && (
           <select
             className={selectCls}
-            value={action.target ?? ''}
+            value={targetText}
             onChange={(e) => commit(setActionTarget(liveIR(), id, index, e.target.value))}
             aria-label="Target value"
           >
@@ -186,8 +191,8 @@ function ActionRow({
         {expectsTarget === 'slot' && (
           <select
             className={selectCls}
-            value={action.target ?? ''}
-            onChange={(e) => commit(setActionTarget(liveIR(), id, index, e.target.value))}
+            value={action.target?.kind === 'node' ? action.target.node : ''}
+            onChange={(e) => commit(setActionNodeTarget(liveIR(), id, index, e.target.value))}
             aria-label="Target slot"
           >
             <option value="">{slots.length ? 'choose slot…' : 'add a slot first'}</option>
@@ -219,13 +224,14 @@ function ActionRow({
           <span>show</span>
           <select
             className={selectCls}
-            value={action.value ?? ''}
+            value={action.value?.type === 'lit' && typeof action.value.value === 'string' ? action.value.value : ''}
             onChange={(e) => {
               const viewId = e.target.value
-              commit(setActionValue(liveIR(), id, index, viewId))
+              // The view id is a literal, not an expression: quoted so it stores as one.
+              commit(setActionValue(liveIR(), id, index, viewId ? JSON.stringify(viewId) : ''))
               // Register the chosen view on the target slot so it has a candidate
               // to mirror (defaults the slot's active view if it had none yet).
-              if (viewId && action.target) void addViewToSlot(action.target, viewId)
+              if (viewId && action.target?.kind === 'node') void addViewToSlot(action.target.node, viewId)
             }}
             aria-label="View to show"
           >
@@ -244,7 +250,7 @@ function ActionRow({
               <input
                 key={`${id}-${index}-${action.type}`}
                 className={cn(inputCls, err && 'border-destructive')}
-                defaultValue={action.value ?? ''}
+                defaultValue={valueText}
                 placeholder={valuePlaceholder(action.type)}
                 onBlur={(e) => commit(setActionValue(liveIR(), id, index, e.target.value))}
                 onKeyDown={(e) => {
@@ -257,7 +263,7 @@ function ActionRow({
           )}
 
           {expectsParams.map((p) => {
-            const cur = typeof action.params?.[p.key] === 'string' ? (action.params[p.key] as string) : ''
+            const cur = exprText(actionParam(action, p.key), liveIR())
             const pErr = exprError(cur)
             return (
               <div key={p.key} className="mt-1.5 flex items-start gap-1.5">
@@ -301,7 +307,8 @@ function InteractionCard({
   liveIR: LiveIR
 }) {
   const id = it.id as string
-  const condErr = exprError(it.if)
+  const condText = exprText(it.if, liveIR())
+  const condErr = exprError(condText)
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-border p-2.5">
       <div className="flex items-center gap-1.5">
@@ -357,7 +364,7 @@ function InteractionCard({
         <input
           key={`${id}-cond`}
           className={cn(inputCls, condErr && 'border-destructive')}
-          defaultValue={it.if ?? ''}
+          defaultValue={condText}
           placeholder="e.g. items.length < 10"
           onBlur={(e) => commit(setCondition(liveIR(), id, e.target.value))}
           onKeyDown={(e) => {
@@ -398,9 +405,10 @@ function ListSection({
   const rep = template ? refsOf(ir, template.id) : undefined
   const on = Boolean(rep && template)
   const hasLists = lists.length > 0
-  const over = rep?.props[REPEAT_PROP] ?? ''
+  const over = exprText(rep?.props[REPEAT_PROP], ir)
   const overMissing = on && over !== '' && !lists.some((v) => v.id === over)
-  const keyErr = exprError(rep?.item?.key)
+  const keyText = exprText(rep?.item?.key, ir)
+  const keyErr = exprError(keyText)
   const childName = (c: IndexedShape) => c.name ?? c.id.slice(0, 8)
 
   const toggle = () => {
@@ -477,9 +485,9 @@ function ListSection({
           {overMissing && <p className="text-[10px] text-destructive">List “{over}” was removed — pick another.</p>}
 
           <input
-            key={`${template.id}-key-${rep.item?.key ?? ''}`}
+            key={`${template.id}-key-${keyText}`}
             className={cn(inputCls, keyErr && 'border-destructive')}
-            defaultValue={rep.item?.key ?? ''}
+            defaultValue={keyText}
             placeholder="key (optional), e.g. item.id"
             onBlur={(e) => commit(setRepeat(liveIR(), template.id, { key: e.target.value }))}
             onKeyDown={(e) => {
@@ -656,7 +664,7 @@ function BindSection({
       {bindings.length === 0 && <p className="mb-1.5 text-[11px] text-muted-foreground/70">No bindings yet.</p>}
       <div className="mb-2 flex flex-col gap-1.5">
         {bindings.map(([prop, expr]) => (
-          <BindRow key={prop} nodeId={nodeId} prop={prop} expr={expr} forEachItem={forEachItem} commit={commit} liveIR={liveIR} />
+          <BindRow key={prop} nodeId={nodeId} prop={prop} expr={exprText(expr, ir)} forEachItem={forEachItem} commit={commit} liveIR={liveIR} />
         ))}
       </div>
       <button
@@ -863,7 +871,8 @@ function CellRow({
 
 function FormulaRow({ c, commit, liveIR }: { c: Cell; commit: Commit; liveIR: LiveIR }) {
   const ref = cellRef(c)
-  const err = exprError(c.formula)
+  const formulaText = exprText(c.formula, liveIR())
+  const err = exprError(formulaText)
   return (
     <div className="rounded-md border border-border/70 p-2">
       <div className="flex items-center gap-1.5">
@@ -883,7 +892,7 @@ function FormulaRow({ c, commit, liveIR }: { c: Cell; commit: Commit; liveIR: Li
       <input
         key={`${ref}-expr`}
         className={cn(inputCls, 'mt-1.5', err && 'border-destructive')}
-        defaultValue={c.formula ?? ''}
+        defaultValue={formulaText}
         placeholder="formula, e.g. items.length == 0"
         onBlur={(e) => commit(setCellFormula(liveIR(), ref, e.target.value))}
         onKeyDown={(e) => {

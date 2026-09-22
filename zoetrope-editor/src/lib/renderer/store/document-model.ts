@@ -16,7 +16,8 @@ import { setSelectedIds } from './document-selection'
 import { docProxy, getActiveOrSinglePageId, type DocumentMeta } from './doc-proxy'
 import { emptyTokensLib } from '../../tokens/types'
 import { hydrateScene3dFromDocument } from '../three/scene3d-sync'
-import { upgradePageInteractions, type AnyPageInteractions, type Store } from '../interactions/ir'
+import type { AnyPageInteractions, Store } from '../interactions/ir'
+import { upgradePageInteractions } from '../interactions/upgrade'
 
 function buildPageMap(children: PenpotDocument['children']): Map<string, IndexedPage> {
   const map = new Map<string, IndexedPage>()

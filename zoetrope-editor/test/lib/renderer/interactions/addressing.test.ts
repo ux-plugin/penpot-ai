@@ -6,28 +6,31 @@ import {
   validatePageInteractions,
   AddressingError,
 } from '../../../../src/lib/renderer/interactions/addressing'
-import { emptyPageInteractions, type PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
+import type { PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
 import { initDefaultCatalog } from '../../../../src/lib/renderer/interactions/catalog'
-import { listCell, formulaCell, variantCell } from './todo-ir'
+import { act, ex, listCell, formulaCell, refs, up, variantCell } from './todo-ir'
 
 const NODE_IDS = new Set(['addBtn', 'list', 'card'])
 
 /** A valid "todo" page: add to list, disable-when-empty, a repeat, a variant set. */
 function todoIR(): PageInteractions {
-  const ir = emptyPageInteractions()
-  ir.cells.push(listCell('items'))
-  // A cell the real app supplies is a cell like any other — same kind in the
-  // scope, so nothing reading an expression has to know where a value came from.
-  ir.cells.push(listCell('initialItems', [], { store: 'app' }))
-  ir.cells.push(formulaCell('isEmpty', 'items.length == 0'))
-  ir.cells.push(variantCell('card', ['collapsed', 'expanded'], { initial: 'collapsed' }))
-  ir.interactions.push({
-    on: { node: 'addBtn', trigger: { type: 'press' } },
-    do: [{ type: 'collection.append', target: 'items', value: '{ label: "" }' }],
+  return up({
+    cells: [
+      listCell('items'),
+      // A cell the real app supplies is a cell like any other — same kind in the
+      // scope, so nothing reading an expression has to know where a value came from.
+      listCell('initialItems', [], { store: 'app' }),
+      formulaCell('isEmpty', 'items.length == 0'),
+      variantCell('card', ['collapsed', 'expanded'], { initial: 'collapsed' }),
+    ],
+    interactions: [
+      { on: { node: 'addBtn', trigger: { type: 'press' } }, do: [{ type: 'collection.append', target: 'items', value: '{ label: "" }' }] },
+    ],
+    refs: [
+      { node: 'addBtn', props: { disabled: 'isEmpty' } },
+      { node: 'list', props: { repeat: 'items' }, item: { as: 'item' } },
+    ],
   })
-  ir.refs.push({ node: 'addBtn', props: { disabled: 'isEmpty' } })
-  ir.refs.push({ node: 'list', props: { repeat: 'items' }, item: { as: 'item' } })
-  return ir
 }
 
 beforeAll(() => initDefaultCatalog())
@@ -64,14 +67,14 @@ describe('validatePageInteractions', () => {
 
   it('flags an unknown reference in a guard', () => {
     const ir = todoIR()
-    ir.interactions[0].if = 'missing > 0'
+    ir.interactions[0].if = ex(ir, 'missing > 0')
     const issues = validatePageInteractions(ir, NODE_IDS)
     expect(issues.some((x) => /unknown reference 'missing'/.test(x.message))).toBe(true)
   })
 
   it('flags a reference on a node that does not exist', () => {
     const ir = todoIR()
-    ir.refs.push({ node: 'ghost', props: { disabled: 'isEmpty' } })
+    ir.refs.push(refs(ir, 'ghost', { disabled: 'isEmpty' }))
     const issues = validatePageInteractions(ir, NODE_IDS)
     expect(issues.some((x) => /unknown node 'ghost'/.test(x.message))).toBe(true)
   })
@@ -79,7 +82,7 @@ describe('validatePageInteractions', () => {
   it('flags an action target of the wrong kind', () => {
     const ir = todoIR()
     // append must target a list; card.state is a value, but not a list
-    ir.interactions[0].do = [{ type: 'collection.append', target: 'card.state', value: '1' }]
+    ir.interactions[0].do = [act(ir, { type: 'collection.append', target: 'card.state', value: '1' })]
     const issues = validatePageInteractions(ir, NODE_IDS)
     expect(issues.some((x) => /must be a list/.test(x.message))).toBe(true)
   })
@@ -95,15 +98,15 @@ describe('validatePageInteractions', () => {
 
   it("writes a node's cell as <node>.<cell>, and refuses a cell the node does not have", () => {
     const ir = todoIR()
-    ir.interactions[0].do = [{ type: 'set-variable', target: 'card.state', value: '"expanded"' }]
+    ir.interactions[0].do = [act(ir, { type: 'set-variable', target: 'card.state', value: '"expanded"' })]
     expect(validatePageInteractions(ir, NODE_IDS)).toEqual([])
-    ir.interactions[0].do = [{ type: 'set-variable', target: 'card.nope', value: '"expanded"' }]
+    ir.interactions[0].do = [act(ir, { type: 'set-variable', target: 'card.nope', value: '"expanded"' })]
     expect(validatePageInteractions(ir, NODE_IDS).some((x) => /not a value/.test(x.message))).toBe(true)
   })
 
   it('refuses to write a formula', () => {
     const ir = todoIR()
-    ir.interactions[0].do = [{ type: 'set-variable', target: 'isEmpty', value: 'true' }]
+    ir.interactions[0].do = [act(ir, { type: 'set-variable', target: 'isEmpty', value: 'true' })]
     expect(validatePageInteractions(ir, NODE_IDS).some((x) => /formula/.test(x.message))).toBe(true)
   })
 })

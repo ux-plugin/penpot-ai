@@ -5,6 +5,7 @@ import { emptyPageInteractions } from '../../../../src/lib/renderer/interactions
 import { nodesToPresentation } from '../../../../src/lib/renderer/interactions/document/nodes-to-presentation'
 import { emitReactComponent, type PNode } from '../../../../src/lib/renderer/interactions/compile/emit-react'
 import { initRuntime } from '../../../../src/lib/renderer/interactions/preview/runtime'
+import { pageCell, up } from './todo-ir'
 
 const ZERO = '00000000-0000-0000-0000-000000000000'
 
@@ -13,6 +14,7 @@ describe('runtime clone — proxy-safe (DataCloneError regression)', () => {
     // useSnapshot wraps the IR in a tracking Proxy that structuredClone rejects.
     const ir = emptyPageInteractions()
     ir.cells.push({
+      uid: 'items',
       id: 'items',
       owner: { kind: 'page' },
       type: { collection: 'object' },
@@ -77,8 +79,7 @@ describe('emit-react — style prop', () => {
   })
 
   it('emits ONLY the authored click on a button — no keyboard or ARIA assumed', () => {
-    const ir = emptyPageInteractions()
-    ir.interactions.push({ id: 'i1', on: { node: 'btn', trigger: { type: 'press' } }, do: [] })
+    const ir = up({ interactions: [{ id: 'i1', on: { node: 'btn', trigger: { type: 'press' } }, do: [] }] })
     const code = emitReactComponent(ir, { nodeId: 'btn', role: 'button', text: 'Add' }, { componentName: 'Screen' })
     expect(code).toContain('onClick={handle_btn_press}') // what the designer authored
     expect(code).not.toContain('role=') // and nothing else on top
@@ -96,9 +97,7 @@ describe('emit-react — style prop', () => {
 
 describe('emit-react — style-prop references (wire fill to state)', () => {
   it('routes a background reference into inline style, overriding the static fill', () => {
-    const ir = emptyPageInteractions()
-    ir.cells.push({ id: 'accent', owner: { kind: 'page' }, type: 'string', initial: '#e11d48' })
-    ir.refs.push({ node: 'btn', props: { background: 'accent' } })
+    const ir = up({ cells: [pageCell('accent', 'string', '#e11d48')], refs: [{ node: 'btn', props: { background: 'accent' } }] })
     const root: PNode = { nodeId: 'btn', role: 'button', text: 'Buy', style: { background: '#999999' } }
     const code = emitReactComponent(ir, root, { componentName: 'Screen' })
     expect(code).toContain('"background": accent') // dynamic expression
@@ -106,8 +105,8 @@ describe('emit-react — style-prop references (wire fill to state)', () => {
   })
 
   it('a non-CSS reference stays a raw element prop', () => {
-    const ir = emptyPageInteractions()
-    ir.refs.push({ node: 'inp', props: { value: 'query' } })
+    // `query` is not a cell on this page: an unresolved name still emits as the identifier it names.
+    const ir = up({ refs: [{ node: 'inp', props: { value: 'query' } }] })
     const root: PNode = { nodeId: 'inp', role: 'field' }
     const code = emitReactComponent(ir, root, { componentName: 'Screen' })
     expect(code).toContain('value={query}')

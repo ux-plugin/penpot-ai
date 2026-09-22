@@ -7,7 +7,7 @@
  */
 
 import { useEffect, useMemo, useState, createElement, type ReactNode } from 'react'
-import type { PageInteractions, Interaction } from '../ir'
+import type { PageInteractions, Interaction, Expr } from '../ir'
 import { cellRef, editedCell, refsOf, REPEAT_PROP, VALUE_PROP } from '../ir'
 import {
   STYLE_PROPS,
@@ -17,7 +17,8 @@ import {
   baseStyleFor,
   type PNode,
 } from '../compile/emit-react'
-import { parse, evaluate } from '../expression'
+import { evaluate } from '../expression'
+import { namesOf } from '../expr'
 import {
   initRuntime,
   buildEnv,
@@ -26,6 +27,7 @@ import {
   diffRuntime,
   affectedNodes,
   repeatOf,
+  cellValue,
   type RuntimeState,
   type ActivityEntry,
 } from './runtime'
@@ -52,9 +54,9 @@ const EVENT_PROP: Record<string, string> = {
   'mouse-leave': 'onMouseLeave',
 }
 
-const safeEval = (src: string, env: Env): unknown => {
+const safeEval = (expr: Expr, env: Env, ir: PageInteractions): unknown => {
   try {
-    return evaluate(parse(src), env)
+    return evaluate(namesOf(expr, ir), env)
   } catch {
     return undefined
   }
@@ -130,10 +132,10 @@ function renderNode(
 ): ReactNode {
   const rep = repeatOf(ir, node.nodeId)
   if (rep) {
-    const coll = asArray(safeEval(rep.over, env))
+    const coll = asArray(safeEval(rep.over, env, ir))
     return coll.map((item, i) => {
       const itemEnv: Env = { ...env, [rep.as]: item }
-      const k = rep.key ? safeEval(rep.key, itemEnv) : isRecord(item) && 'id' in item ? item.id : i
+      const k = rep.key ? safeEval(rep.key, itemEnv, ir) : isRecord(item) && 'id' in item ? item.id : i
       const key = typeof k === 'string' || typeof k === 'number' ? k : i
       return renderElement(node, itemEnv, ir, fire, edit, slots, true, key)
     })
@@ -168,7 +170,7 @@ function renderElement(
   for (const [prop, from] of Object.entries(refs?.props ?? {})) {
     if (prop === REPEAT_PROP) continue
     if (prop === VALUE_PROP && edited) continue
-    const val = safeEval(from, env)
+    const val = safeEval(from, env, ir)
     if (prop === 'text' || prop === 'children') textChild = val
     else if (STYLE_PROPS.has(prop)) style[prop] = val
     else props[prop] = val
@@ -180,7 +182,7 @@ function renderElement(
     const key = cellRef(edited)
     const inputType = inputTypeFor(ir, node.nodeId)
     if (inputType) props.type = inputType
-    props[VALUE_PROP] = safeEval(key, env) ?? ''
+    props[VALUE_PROP] = cellValue(env, edited) ?? ''
     props.onChange = (ev: { target: { value: unknown } }) => edit(node.nodeId, key, ev.target.value)
   }
 

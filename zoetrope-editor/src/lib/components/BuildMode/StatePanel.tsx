@@ -23,6 +23,7 @@
 import { cn } from '@/lib/utils'
 import type { PageInteractions } from '../../renderer/interactions/ir'
 import { cellRef, isFormula } from '../../renderer/interactions/ir'
+import { exprText } from '../../renderer/interactions/expr'
 import { leavesDesign, type LoggedActivity, type StateChange } from '../../renderer/interactions/preview/runtime'
 
 /** Compact one-line rendering of a runtime value. */
@@ -130,7 +131,7 @@ export function StatePanel({
                 <div key={cellRef(d)} className={rowCls}>
                   <span className="text-muted-foreground">{cellRef(d)}</span>
                   <span className="text-foreground">{fmt(readRef(env, cellRef(d)))}</span>
-                  <span className="text-[10px] text-muted-foreground" title={d.formula}>
+                  <span className="text-[10px] text-muted-foreground" title={exprText(d.formula, ir)}>
                     ƒ
                   </span>
                 </div>

@@ -3,6 +3,7 @@ import { emptyPageInteractions, type PageInteractions } from '../../../../src/li
 import { makeListCell } from '../../../../src/lib/renderer/interactions/document/edit-interactions'
 import { interpret, type InterpretContext } from '../../../../src/lib/renderer/interactions/nl/interpret'
 import { initRuntime, buildEnv, runInteraction } from '../../../../src/lib/renderer/interactions/preview/runtime'
+import { refName, toTextIR } from '../../../../src/lib/renderer/interactions/expr'
 
 const NODES = [
   { id: 'btn', name: 'Add button' },
@@ -28,7 +29,7 @@ describe('interpret — stub NL → IR', () => {
     const ir = r.apply(withItems())
     expect(ir.interactions).toHaveLength(1)
     expect(ir.interactions[0]).toMatchObject({ on: { node: 'btn', trigger: { type: 'press' } } })
-    expect(ir.interactions[0].do[0]).toMatchObject({ type: 'collection.append', target: 'items' })
+    expect(toTextIR(ir).interactions[0].do[0]).toMatchObject({ type: 'collection.append', target: 'items' })
     expect(r.reply).toContain('append an item to items')
   })
 
@@ -37,7 +38,7 @@ describe('interpret — stub NL → IR', () => {
     expect(r.ok).toBe(true)
     if (!r.ok) return
     const ir = r.apply(withItems())
-    expect(ir.interactions[0].do[0]).toEqual({ type: 'set-variable', target: 'items', value: '[]' })
+    expect(toTextIR(ir).interactions[0].do[0]).toEqual({ type: 'set-variable', target: 'items', value: '[]' })
   })
 
   it('creates a collection when none exists yet', () => {
@@ -47,7 +48,7 @@ describe('interpret — stub NL → IR', () => {
     const ir = r.apply(emptyPageInteractions())
     expect(ir.cells).toHaveLength(1) // a list got created
     expect(ir.cells[0].type).toEqual({ collection: 'object' })
-    expect(ir.interactions[0].do[0].target).toBe(ir.cells[0].id)
+    expect(refName(ir.interactions[0].do[0].target!, ir)).toBe(ir.cells[0].id)
   })
 
   it('"this" resolves to the selected node', () => {
