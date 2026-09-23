@@ -122,10 +122,11 @@ pub(crate) fn emit(cx: &Resolved, work: &Work, s: &Schedule, params: Params) -> 
         draws.push(DrawCmd::Clip { rect: Rect::new(0.0, 0.0, cx.store.width, pitch) });
     }
     for i in 0..cx.g.nodes.len() {
-        if !cx.live(i) || !cx.g.is_spine(i) || cx.spines.halo_of[i].is_some() {
+        if !cx.g.is_spine(i) || cx.spines.halo_of[i].is_some() {
             continue;
         }
         match &cx.g.nodes[i].op {
+            _ if !cx.live(i) => {}
             Op::Draw(_) => {
                 let items = cx.dem.kept[i].clone();
                 if !items.is_empty() {
@@ -186,10 +187,7 @@ pub(crate) fn emit(cx: &Resolved, work: &Work, s: &Schedule, params: Params) -> 
     }
     for i in 0..cx.g.nodes.len() {
         let Some(h) = cx.halo_of(i) else { continue };
-        if !cx.live(i) {
-            continue;
-        }
-        let vh = work.value_of[h].expect("a live halo has a value");
+        let Some(vh) = work.value_of[h] else { continue };
         let rows = s.store_rect(cx, work, vh);
         for (a, read) in snapshots_of(i) {
             let footprint = (read + s.origin(cx, vh)).intersect(rows);

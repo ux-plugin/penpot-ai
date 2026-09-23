@@ -1,11 +1,12 @@
 //! Step 7a: the operands every arm reads and the descriptor `fine.wgsl` runs it by, serialised
 //! into the plan's one parameter buffer — one descriptor per arm: the 26-float header and the
-//! operand records, each a store fact (`[source, x0, y0, x1, y1, dx, dy, decode]`).
+//! operand records, each a store fact (`[source, x0, y0, x1, y1, dx, dy, decode]`), and the scale
+//! each read operand is read at (its value's resolution over the arm's).
 
 use crate::kurbo::Vec2;
 
 use crate::vello::arms::{is_pointwise, Kind, Work};
-use crate::vello::bake::{self, Policy, REC_COUNT, REC_STRIDE};
+use crate::vello::bake::{self, Policy, REC_COUNT, REC_SCALES, REC_STRIDE};
 use crate::vello::frame_graph::{BlurAxis, ComposeMode, EdgeClampStyle, NodeId, Op};
 use crate::vello::resolve::Resolved;
 use crate::vello::schedule::Schedule;
@@ -96,6 +97,15 @@ impl Params {
         r
     }
 
+    /// The texels of the value operand `op` reads per texel of an arm running at `k`: 1 for
+    /// anything but a store value, and for a silhouette (the marker draws it at the arm's own).
+    fn scale_of(cx: &Resolved, work: &Work, op: Operand, k: f32) -> f32 {
+        match op {
+            Operand::Value { v, .. } if !matches!(work.values[v].kind, Kind::Silhouette(_)) => cx.res.k[work.values[v].node] / k,
+            _ => 1.0,
+        }
+    }
+
     fn unit_of(cx: &Resolved, i: NodeId) -> Option<UnitOp> {
         Some(match &cx.g.nodes[i].op {
             Op::Blur { sigma, axis, linear, edge_clamp_style, .. } => UnitOp::Blur {
@@ -146,7 +156,7 @@ impl Params {
         let mut edge_coverage = false;
         let mut blur: Option<(f32, u32, bool, bool)> = None;
         let mut program: Option<f32> = None;
-        let mut resample: Option<(f32, f32)> = None;
+        let mut resample: Option<f32> = None;
         for (k, &i) in nodes.iter().enumerate() {
             let node = &cx.g.nodes[i];
             match &node.op {
@@ -155,13 +165,11 @@ impl Params {
                     edge_coverage = *edge_clamp_style == EdgeClampStyle::Transparent;
                 }
                 Op::Resample { .. } => {
-                    let j = cx.input(i, 0);
-                    let past = if Work::rooted_in_leaf(cx, i) { bake::RESAMPLE_TRANSPARENT } else { bake::RESAMPLE_CLAMP };
-                    resample = Some((cx.res.k[j] / cx.res.k[i], past));
+                    resample = Some(if Work::rooted_in_leaf(cx, i) { bake::RESAMPLE_TRANSPARENT } else { bake::RESAMPLE_CLAMP });
                 }
                 Op::Colour(c) => tint = Some([c[0], c[1], c[2], c[3]]),
                 Op::MaskMix(u) if u.get(bake::PAYLOAD_PROGRAM_SLOT).copied() == Some(bake::PROGRAM_RADIAL) => program = Some(bake::PROGRAM_RADIAL),
-                Op::Halo { of } => resample = Some((cx.res.k[*of] / cx.res.k[i], bake::RESAMPLE_KEEP)),
+                Op::Halo { .. } => resample = Some(bake::RESAMPLE_KEEP),
                 _ => {}
             }
             if let Some(u) = Self::unit_of(cx, i) {
@@ -228,9 +236,8 @@ impl Params {
             Some((sigma, taps, linear, axis_y)) => bake::blur_arm(sigma, taps, linear, axis_y, policy, tint.filter(|_| policy.colour_over)),
             None => bake::arm_descriptor(&run, policy, program),
         };
-        if let Some((ratio, past)) = resample {
+        if let Some(past) = resample {
             desc[0] = (desc[0] as u32 | bake::bits::RESAMPLE) as f32;
-            desc[2] = ratio;
             desc[3] = past;
         }
         if work.snapshot_of(cx, a).is_some() {
@@ -248,14 +255,17 @@ impl Params {
             (0, Some(c)) => (cx.dem.out[c], Vec2::ZERO),
             (v, _) => (s.store_rect(cx, work, v), s.slot[v].place),
         };
+        let k = cx.res.k[compose.or_else(|| nodes.last().copied()).expect("an arm has nodes or a compose")];
+        let scales = [value, reference, coverage, distance].map(|op| Self::scale_of(cx, work, op, k));
         let mut records = [[0.0f32; REC_STRIDE]; REC_COUNT];
         records[REC_VALUE] = Self::record(cx, work, s, value, 0.0);
         records[REC_REF] = Self::record(cx, work, s, reference, 0.0);
         records[REC_COVERAGE] = Self::record(cx, work, s, coverage, 0.0);
-        records[REC_DISTANCE] = Self::record(cx, work, s, distance, Self::decode_of(work, distance));
+        records[REC_DISTANCE] = Self::record(cx, work, s, distance, Self::decode_of(work, distance) / scales[REC_DISTANCE]);
         records[REC_OUTPUT] = [SRC_STORE, out_rect.x0 as f32, out_rect.y0 as f32, out_rect.x1 as f32, out_rect.y1 as f32, out_place.x as f32, out_place.y as f32, 0.0];
         records[5][0] = rec[10][0];
         records[5][1] = rec[10][1];
+        records[REC_SCALES / REC_STRIDE][REC_SCALES % REC_STRIDE..].copy_from_slice(&scales);
         let off = self.floats.len();
         self.floats.extend_from_slice(&desc);
         for r in &records {

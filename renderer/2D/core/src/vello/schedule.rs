@@ -90,7 +90,7 @@ impl Schedule {
                         let (w, h) = tiles(v);
                         let from = match id[v] {
                             None if baked[v] => 0,
-                            None => b + shift - 1,
+                            None => (b + shift).saturating_sub(1),
                             Some(_) => s.slot[v].last_read + 1,
                         };
                         for q in from..=d + shift {
@@ -112,7 +112,7 @@ impl Schedule {
                     let (w, h) = tiles(v);
                     let placed = match id[v] {
                         None => {
-                            s.slot[v].birth = if baked[v] { 0 } else { b + shift - 1 };
+                            s.slot[v].birth = if baked[v] { 0 } else { (b + shift).saturating_sub(1) };
                             s.slot[v].last_read = d + shift;
                             Some(packer.place(w, h, s.slot[v].birth, s.slot[v].last_read))
                         }

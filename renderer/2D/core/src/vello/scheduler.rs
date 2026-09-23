@@ -84,7 +84,44 @@ pub fn plan(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f6
     let mut laps = Laps::new("plan");
     let expanded = expanded(graph, width, height, max_dim, pages);
     laps.lap("expanded");
+    if plan_capture::on() {
+        plan_capture::push(format!("graph\n{}", crate::vello::graph_build::dump(graph)));
+        plan_capture::push(expanded.as_ref().map_or_else(|| "expanded: none\n".to_string(), |x| format!("expanded\n{}", crate::vello::graph_build::dump(x))));
+    }
     plan_of(expanded.as_ref().unwrap_or(graph), width, height, max_dim, pages, memory)
+}
+
+/// Debug capture of the last planned frame as text (graph, expansion, schedule, passes), for hosts
+/// with no stderr. Off by default.
+pub mod plan_capture {
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        static ON: Cell<bool> = const { Cell::new(false) };
+        static TEXT: RefCell<String> = const { RefCell::new(String::new()) };
+    }
+
+    /// Start capturing: the next planned frame replaces the text.
+    pub fn set(on: bool) {
+        ON.with(|c| c.set(on));
+        TEXT.with(|t| t.borrow_mut().clear());
+    }
+
+    #[must_use]
+    pub fn on() -> bool {
+        ON.with(Cell::get)
+    }
+
+    pub(crate) fn push(s: String) {
+        TEXT.with(|t| t.borrow_mut().push_str(&s));
+    }
+
+    /// The captured text; capturing stops once read.
+    #[must_use]
+    pub fn take() -> String {
+        ON.with(|c| c.set(false));
+        TEXT.with(|t| std::mem::take(&mut *t.borrow_mut()))
+    }
 }
 
 /// The plan of `graph` as it is, unexpanded: resolve, then the arms, the schedule, the
@@ -93,10 +130,24 @@ fn plan_of(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64
     let mut laps = Laps::new("plan");
     let mut cx = Resolved::of(graph, width, height, max_dim, pages);
     laps.lap("resolved");
+    let outs = |cx: &Resolved| (0..cx.g.nodes.len()).map(|i| format!("  {i:>3} {:<34} k={:<7} live={} out {:?}\n", cx.g.nodes[i].label, cx.res.k[i], cx.live(i), cx.dem.out[i])).collect::<String>();
+    if plan_capture::on() {
+        plan_capture::push(format!("demand at targets\n{}", outs(&cx)));
+    }
     cx.resolve(memory);
     laps.lap("decided");
+    if plan_capture::on() {
+        plan_capture::push(format!("demand after decide\n{}", outs(&cx)));
+    }
     let work = Work::of(&cx);
     laps.lap("work");
+    if plan_capture::on() {
+        let mut t = format!("values (store width {} rows {})\n", cx.store.width, cx.store.rows);
+        for (i, v) in work.values.iter().enumerate() {
+            t.push_str(&format!("  v{i} {} k={} rect {:?} w={}\n", cx.g.nodes[v.node].label, cx.res.k[v.node], v.rect, v.rect.width()));
+        }
+        plan_capture::push(t);
+    }
     let sched = Schedule::fit(&cx, &work);
     laps.lap("schedule");
     if std::env::var_os("WV_PLAN_DUMP").is_some() {
@@ -106,6 +157,10 @@ fn plan_of(graph: &FrameGraph, width: u32, height: u32, max_dim: u32, pages: f64
     laps.lap("params");
     let plan = emit(&cx, &work, &sched, params);
     laps.lap("emit");
+    if plan_capture::on() {
+        plan_capture::push(format!("{}", Dump(&cx, &work, &sched)));
+        plan_capture::push(plan.dump());
+    }
     plan
 }
 
@@ -303,9 +358,9 @@ mod tests {
         assert_eq!(ps.arms[outer].value, Operand::Value { v: w.arms[down].out, shift: Vec2::ZERO }, "B's warp reads the snapshot");
         let desc = &params[ps.arms[fill].off as usize..];
         let bits = desc[0] as u32;
-        assert_eq!((bits & bake::bits::RESAMPLE, bits & bake::bits::SNAPSHOT, desc[2], desc[3]), (bake::bits::RESAMPLE, bake::bits::SNAPSHOT, 2.0, bake::RESAMPLE_KEEP), "a keep-resample by two, taken as a snapshot");
+        assert_eq!((bits & bake::bits::RESAMPLE, bits & bake::bits::SNAPSHOT, desc[26 + bake::REC_SCALES], desc[3]), (bake::bits::RESAMPLE, bake::bits::SNAPSHOT, 2.0, bake::RESAMPLE_KEEP), "a keep-resample by two, taken as a snapshot");
         let desc = &params[ps.arms[down].off as usize..];
-        assert_eq!((desc[0] as u32 & bake::bits::SNAPSHOT, desc[2]), (bake::bits::SNAPSHOT, 1.0), "a copy, taken as a snapshot");
+        assert_eq!((desc[0] as u32 & bake::bits::SNAPSHOT, desc[26 + bake::REC_SCALES]), (bake::bits::SNAPSHOT, 1.0), "a copy, taken as a snapshot");
     }
 
     /// The markers in the frame's front-end whose descriptor is a snapshot, in draw order, with
@@ -353,6 +408,140 @@ mod tests {
         let frame_draws = p.passes.iter().filter_map(|p| match p { Pass::Frontend { draws } => Some(draws), _ => None }).next().unwrap();
         let halved = frame_draws.iter().filter(|d| matches!(d, DrawCmd::Shapes { transform, .. } if transform.as_coeffs()[0] == 0.5)).count();
         assert_eq!(halved, 1, "the root is drawn once at half resolution");
+    }
+
+    #[test]
+    fn a_pointwise_read_of_a_lowered_halo_is_demanded_in_the_halos_texels() {
+        let mut g = halo_graph(0.5);
+        let glass = g.nodes.pop().unwrap();
+        g.nodes.push(GNode { op: Op::MaskMix(vec![0.0; 24]), inputs: vec![15, 11], label: "mix".into() });
+        g.nodes.push(GNode { inputs: vec![glass.inputs[0], 17, glass.inputs[2]], ..glass });
+        let g = FrameGraph::new(g.frame, Color::WHITE, g.nodes);
+        g.validate().unwrap_or_else(|e| panic!("{e}"));
+        let s = Resolved::of(&g, 640, 480, 8192, 4.0);
+        assert_eq!((s.res.k[17], s.res.k[11]), (1.0, 0.5), "the mix runs at the frame's k and reads the halo at B's");
+        let halo = s.dem.out[11];
+        assert!(halo.x1 <= 400.0, "the mix's frame-texel demand lands on the halo halved, inside the page's 800 px at k 0.5: {halo:?}");
+    }
+
+    #[test]
+    fn a_fill_of_a_compose_with_nothing_on_screen_still_snapshots_the_frame_tiles() {
+        let mut g = nested_gathers();
+        let Op::Draw(items) = &mut g.nodes[3].op else { unreachable!() };
+        items[0].bounds = Rect::new(100.0, -300.0, 300.0, -100.0);
+        let p = plan(&g, 640, 480, 8192, 4.0, &mut HashMap::new());
+        p.validate().unwrap_or_else(|e| panic!("{e}"));
+        let in_frame: Vec<_> = snapshot_markers(&p).into_iter().filter(|&(_, r, _)| r.y1 <= 480.0).collect();
+        assert_eq!(in_frame.len(), 1, "glass A lands nothing on screen, yet B's halo is filled from the frame's rows at A's place in z: {in_frame:?}");
+    }
+
+    #[test]
+    fn a_copy_of_a_halo_with_no_fill_is_born_in_round_zero() {
+        let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let page = Rect::new(0.0, 0.0, 1200.0, 480.0);
+        let rb = Rect::new(520.0, 150.0, 700.0, 360.0);
+        let key = 0x77;
+        let mut lens = vec![0.0; 24];
+        lens[2] = 1000.0;
+        lens[3] = 240.0;
+        lens[15] = 4.0;
+        let g = FrameGraph::new(frame, Color::WHITE, vec![
+            GNode { op: Op::Draw(vec![body(1, page)]), inputs: vec![], label: "ground".into() },
+            GNode { op: Op::Resample { target: 1.0, key }, inputs: vec![0], label: "down".into() },
+            GNode { op: Op::Warp(lens), inputs: vec![1], label: "warp".into() },
+            GNode { op: Op::Resample { target: 1.0, key }, inputs: vec![2], label: "up".into() },
+            GNode { op: Op::Draw(vec![cov(3, rb)]), inputs: vec![], label: "mask".into() },
+            GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![0, 3, 4], label: "glass".into() },
+        ]);
+        g.validate().expect("valid");
+        let x = expanded(&g, 640, 480, 8192, 4.0).expect("the magnifier reads wholly past the right edge");
+        assert!(halos(&x).iter().all(|&(_, of)| x.nodes[of].label == "ground"), "a halo of the ground: {:?}", halos(&x));
+        let p = plan(&g, 640, 480, 8192, 4.0, &mut HashMap::new());
+        p.validate().unwrap_or_else(|e| panic!("{e}"));
+        let snaps = snapshot_markers(&p);
+        assert!(snaps.iter().any(|&(_, r, round)| r.y0 >= 480.0 && round == 0), "the copy runs in round 0, after the halo's root draw in its tiles: {snaps:?}");
+    }
+
+    /// The showcase frame that overflowed the store: a sharp glass whose mix reads the spine past
+    /// the right edge of a 1868-wide frame (its tiles end at 1872), over a background blur lowered
+    /// to 1/16 that crosses the same edge. No resample reads the halo, so it starts at the frame's
+    /// resolution, and the blur's clone reads a whole 1/16 ring of it there.
+    fn glass_over_a_blur_past_the_edge() -> FrameGraph {
+        let frame = Rect::new(0.0, 0.0, 1868.0, 1066.0);
+        let blur = |axis, input| GNode { op: Op::Blur { sigma: 54.5, axis, linear: true, edge_clamp_style: EdgeClampStyle::Extend, taps: BLUR_TAPS }, inputs: vec![input], label: "blur".into() };
+        let mix = |below, value, mask, label: &str| GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![below, value, mask], label: label.into() };
+        FrameGraph::new(frame, Color::WHITE, vec![
+            GNode { op: Op::Draw(vec![body(1, Rect::new(-2566.0, -2467.0, 3434.0, 1533.0))]), inputs: vec![], label: "ground".into() },
+            GNode { op: Op::Resample { target: 0.0625, key: 0x31 }, inputs: vec![0], label: "down".into() },
+            blur(BlurAxis::X, 1),
+            blur(BlurAxis::Y, 2),
+            GNode { op: Op::Resample { target: 1.0, key: 0x31 }, inputs: vec![3], label: "up".into() },
+            GNode { op: Op::Draw(vec![cov(2, Rect::new(934.0, -367.0, 2434.0, 933.0))]), inputs: vec![], label: "maskB".into() },
+            mix(0, 4, 5, "background blur"),
+            GNode { op: Op::Draw(vec![body(2, Rect::new(934.0, -367.0, 2434.0, 933.0))]), inputs: vec![6], label: "rect".into() },
+            GNode { op: Op::Resample { target: 1.0, key: 0x41 }, inputs: vec![7], label: "down".into() },
+            GNode { op: Op::Warp(vec![0.0; 24]), inputs: vec![8], label: "warp".into() },
+            GNode { op: Op::Resample { target: 1.0, key: 0x41 }, inputs: vec![9], label: "up".into() },
+            GNode { op: Op::Shade(vec![0.0; 24]), inputs: vec![10], label: "shade".into() },
+            GNode { op: Op::MaskMix(vec![0.0; 24]), inputs: vec![11, 7], label: "mix".into() },
+            GNode { op: Op::Draw(vec![cov(3, Rect::new(-476.0, -27.0, 2725.0, 987.0))]), inputs: vec![], label: "maskG".into() },
+            mix(7, 12, 13, "glass"),
+        ])
+    }
+
+    /// The top halo pointwise op `reader` of `x` reads, when one does.
+    fn halo_read_by(x: &FrameGraph, reader: fn(&Op) -> bool) -> Option<NodeId> {
+        halos(x).into_iter().map(|(h, _)| h).find(|&h| x.nodes.iter().any(|n| reader(&n.op) && n.inputs.contains(&h)))
+    }
+
+    #[test]
+    fn a_halo_no_resample_reads_is_lowered_in_the_one_decision_until_its_rows_fit() {
+        let g = glass_over_a_blur_past_the_edge();
+        g.validate().unwrap_or_else(|e| panic!("{e}"));
+        let x = expanded(&g, 1868, 1066, 8192, 4.0).expect("the mix reads past the right edge");
+        let h = halo_read_by(&x, |op| matches!(op, Op::MaskMix(_))).expect("the mix reads a halo");
+        let mut cx = Resolved::of(&x, 1868, 1066, 8192, 4.0);
+        assert_eq!(cx.res.k[h], 1.0, "at the targets the halo runs at the frame's resolution");
+        cx.resolve(&mut HashMap::new());
+        assert!(cx.res.k[h] < 1.0, "the decision lowers the halo: k {}", cx.res.k[h]);
+        let w = Work::of(&cx);
+        for v in &w.values {
+            assert!(v.rect.width() <= cx.store.width, "every value fits the store: {} is {} wide of {}", cx.g.nodes[v.node].label, v.rect.width(), cx.store.width);
+        }
+        plan(&g, 1868, 1066, 8192, 4.0, &mut HashMap::new()).validate().unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    #[test]
+    fn a_pointwise_read_of_a_halo_at_another_resolution_is_read_at_the_halos() {
+        let frame = Rect::new(0.0, 0.0, 632.0, 480.0);
+        let page = Rect::new(0.0, 0.0, 800.0, 480.0);
+        let rb = Rect::new(520.0, 150.0, 700.0, 360.0);
+        let key = 0x51;
+        let g = FrameGraph::new(frame, Color::WHITE, vec![
+            GNode { op: Op::Draw(vec![body(1, page)]), inputs: vec![], label: "ground".into() },
+            GNode { op: Op::Draw(vec![body(2, Rect::new(100.0, 100.0, 300.0, 300.0))]), inputs: vec![0], label: "rect".into() },
+            GNode { op: Op::Resample { target: 0.5, key }, inputs: vec![1], label: "down".into() },
+            GNode { op: Op::Warp(vec![0.0; 24]), inputs: vec![2], label: "warp".into() },
+            GNode { op: Op::Shade(vec![0.0; 24]), inputs: vec![3], label: "shade".into() },
+            GNode { op: Op::MaskMix(vec![0.0; 24]), inputs: vec![4, 0], label: "mix".into() },
+            GNode { op: Op::Resample { target: 1.0, key }, inputs: vec![5], label: "up".into() },
+            GNode { op: Op::Draw(vec![cov(3, rb)]), inputs: vec![], label: "mask".into() },
+            GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![1, 6, 7], label: "glass".into() },
+        ]);
+        g.validate().unwrap_or_else(|e| panic!("{e}"));
+        let x = expanded(&g, 632, 480, 8192, 4.0).expect("the mix's tiles reach past the 632-wide frame");
+        let h = halo_read_by(&x, |op| matches!(op, Op::MaskMix(_))).expect("the mix reads a halo of the ground");
+        let mut cx = Resolved::of(&x, 632, 480, 8192, 4.0);
+        cx.resolve(&mut HashMap::new());
+        let mix = (0..x.nodes.len()).find(|&i| matches!(x.nodes[i].op, Op::MaskMix(_))).unwrap();
+        assert_eq!((cx.res.k[mix], cx.res.k[h]), (0.5, 1.0), "the mix runs at its pair's half, the halo it alone reads at the frame's");
+        let w = Work::of(&cx);
+        let sc = Schedule::fit(&cx, &w);
+        let ps = Params::bake(&cx, &w, &sc);
+        let arm = &ps.arms[w.arm_of[mix].expect("the mix rides an arm")];
+        assert_eq!(arm.reference, Operand::Value { v: w.value_of[h].unwrap(), shift: Vec2::ZERO }, "the mix lands no compose, so it reads the halo's rows");
+        assert_eq!(ps.floats[arm.off as usize + 26 + bake::REC_SCALES + 1], 2.0, "two halo texels per mix texel: read at the halo's resolution, not texel for texel");
+        plan(&g, 632, 480, 8192, 4.0, &mut HashMap::new()).validate().unwrap_or_else(|e| panic!("{e}"));
     }
 
     /// The plan of `g` as it is: no expansion.
@@ -485,8 +674,8 @@ mod tests {
         let by = w.values.iter().position(|v| v.node == 4).unwrap();
         assert_eq!(w.values[sil].rect, Rect::new(48.0, 48.0, 160.0, 144.0), "the silhouette at half, with its AA, in tiles");
         assert_eq!(w.values[by].rect, Rect::new(16.0, 16.0, 192.0, 160.0), "the blur at half, padded twice by the half-resolution pad");
-        let desc = |a: usize| &params[ps.arms[a].off as usize..][..4];
-        let at = |a: usize| (desc(a)[0] as u32 & bake::bits::RESAMPLE != 0, desc(a)[2], desc(a)[3]);
+        let desc = |a: usize| &params[ps.arms[a].off as usize..];
+        let at = |a: usize| (desc(a)[0] as u32 & bake::bits::RESAMPLE != 0, desc(a)[26 + bake::REC_SCALES], desc(a)[3]);
         assert_eq!(at(2), (true, 0.5, bake::RESAMPLE_TRANSPARENT), "up from a transparent chain");
         assert_eq!(at(3), (true, 2.0, bake::RESAMPLE_CLAMP), "down from the spine, inside the frame");
         assert_eq!(at(5), (true, 0.5, bake::RESAMPLE_CLAMP), "up from the backdrop chain");

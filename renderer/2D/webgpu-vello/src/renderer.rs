@@ -110,6 +110,18 @@ pub fn frame_requested() -> bool {
     render_core::vello::abi::take_needs_frame()
 }
 
+/// Capture the next planned frame's graph, expansion, schedule and passes as text.
+#[wasm_bindgen]
+pub fn debug_plan_capture() {
+    render_core::vello::scheduler::plan_capture::set(true);
+}
+
+/// The captured plan text, or empty when no frame was planned since [`debug_plan_capture`].
+#[wasm_bindgen]
+pub fn debug_plan_text() -> String {
+    render_core::vello::scheduler::plan_capture::take()
+}
+
 /// Wire panics + `log` to the browser console once, mirroring render-vello's `ensure_logging`.
 fn ensure_logging() {
     use std::sync::Once;

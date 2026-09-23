@@ -13,6 +13,9 @@ use crate::vello::scheduler::{TILE_H, TILE_W};
 /// How far past the next rung the rule that lowered a pair must rise before the pair climbs back.
 const CLIMB_MARGIN: f32 = 1.25;
 
+/// The mark a halo's hysteresis key carries over its reader's pair key (see `Res::halo_key`).
+const HALO_KEY: u128 = 1 << 127;
+
 /// A rect no demand reaches the edge of.
 pub(crate) fn everything() -> Rect {
     Rect::new(-1e9, -1e9, 1e9, 1e9)
@@ -319,6 +322,11 @@ impl Res {
         if !matches!(g.nodes[h].op, Op::Halo { .. }) || g.stood_on(h) {
             return None;
         }
+        self.spine_rows(g, dem, spines, h)
+    }
+
+    /// The rows of the spine under top halo `h`: its live nodes' outputs, joined, in its texels.
+    fn spine_rows(&self, g: &FrameGraph, dem: &Demand, spines: &Spines, h: NodeId) -> Option<Rect> {
         let root = spines.root[h];
         (0..g.nodes.len())
             .filter(|&s| g.is_spine(s) && spines.root[s] == root && dem.live(self, s))
@@ -326,14 +334,35 @@ impl Res {
             .reduce(|a, b| a.union(b))
     }
 
+    /// The key a top halo no resample reads keeps its resolution under from frame to frame: the
+    /// key of the pair its reader's chain opens with, marked as the halo's; `None` when that chain
+    /// has no pair.
+    fn halo_key(g: &FrameGraph, r: NodeId) -> Option<u128> {
+        let mut j = r;
+        loop {
+            if let Op::Resample { key, .. } = g.nodes[j].op {
+                if Self::is_down(g, j) {
+                    return Some(key ^ HALO_KEY);
+                }
+            }
+            let &next = g.nodes[j].inputs.first()?;
+            if g.is_spine(next) {
+                return None;
+            }
+            j = next;
+        }
+    }
+
     /// The capacity decision, made once, from the demand at the pairs' targets: each pair no
     /// higher than its target, lowered only by the size rules — the run between it no wider nor
     /// taller than the store's rows, no two adjacent links of it together larger than them — with
     /// hysteresis from `memory`, which is updated. A pair opening on the top halo of a spine
     /// counts that spine's rows among its run: the top halo's reader sets the spine's resolution,
-    /// so lowering the pair is what shrinks them. Never looks at what runs beside what: that is
-    /// the packer's, in rounds. Returns the lowered resolutions, or `None` when every pair keeps
-    /// its target.
+    /// so lowering the pair is what shrinks them. A top halo no resample reads is decided the same
+    /// way, from the frame's resolution: its spine's rows no wider nor taller than the store's, and
+    /// with its reader's output no larger than them — its reader reads it at whatever resolution it
+    /// is given. Never looks at what runs beside what: that is the packer's, in rounds. Returns the
+    /// lowered resolutions, or `None` when every pair and halo keeps its target.
     pub fn decide(&self, g: &FrameGraph, dem: &Demand, spines: &Spines, store: &Store, memory: &mut HashMap<u128, f32>) -> Option<Res> {
         let pool = store.rows * store.width;
         let mut lowered: HashMap<NodeId, f32> = HashMap::new();
@@ -384,6 +413,28 @@ impl Res {
                 lowered.insert(d, k);
             }
         }
+        for h in 0..g.nodes.len() {
+            if !matches!(g.nodes[h].op, Op::Halo { .. }) || g.stood_on(h) {
+                continue;
+            }
+            let Some(r) = (0..g.nodes.len()).find(|&r| g.nodes[r].inputs.contains(&h)) else { continue };
+            if matches!(g.nodes[r].op, Op::Resample { .. }) {
+                continue;
+            }
+            let Some(rows) = self.spine_rows(g, dem, spines, h) else { continue };
+            let t = self.k[h];
+            let peak = rows.area() + dem.out[r].area();
+            let bound = f64::from(t) * (store.width / rows.width()).min(store.rows / rows.height()).min((pool / peak).sqrt());
+            let key = Self::halo_key(g, r);
+            let k = settle(t, bound as f32, key.and_then(|key| memory.get(&key).copied()));
+            if let Some(key) = key {
+                seen.push(key);
+                memory.insert(key, k);
+            }
+            if k < t {
+                lowered.insert(h, k);
+            }
+        }
         memory.retain(|key, _| seen.contains(key));
         (!lowered.is_empty()).then(|| Self::at(g, &lowered))
     }
@@ -392,7 +443,7 @@ impl Res {
 /// One backward pass at a resolution: what each node must produce, and which items each draw
 /// keeps. A compose owes its demand to the state below and, less its offset, to its value; a
 /// neighbourhood op owes its input its own demand grown by its pad (a `Transparent` blur grows
-/// nothing — the clamp supplies zeros); a pointwise op passes its demand through; a resample owes
+/// nothing — the clamp supplies zeros); a pointwise op passes its demand through, in each input's texels; a resample owes
 /// its input its demand in the input's texels; a halo owes its spine what lies past the rows it
 /// is filled from and owes `of` those rows. A node's output rect is its demand clipped to its
 /// extent, tile-rounded, and for a spine node to the rows its spine writes.
@@ -465,7 +516,7 @@ impl Demand {
                 }
                 Op::Shade(_) | Op::MaskMix(_) | Op::ClipToSource(_) | Op::Colour(_) => {
                     for &j in &node.inputs {
-                        union_into(&mut wanted[j], o);
+                        union_into(&mut wanted[j], res.in_space_of(o, i, j));
                     }
                 }
                 Op::Compose { offset, .. } => {

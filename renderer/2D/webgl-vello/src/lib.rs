@@ -24,7 +24,7 @@ pub use render_core::vello::{editor, rich_editor};
 
 pub(crate) use render_core::vello::prof;
 #[cfg(target_arch = "wasm32")]
-pub(crate) use render_core::vello::{blend, glass, graph};
+pub(crate) use render_core::vello::{blend, graph};
 
 #[cfg(target_arch = "wasm32")]
 mod hybrid_backend;

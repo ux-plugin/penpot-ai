@@ -314,15 +314,18 @@ impl FrameGraph {
     /// value's resolution below a pair and at its reader's above one, so a resample closing a chain
     /// and the tail after it run at the compose's, and a chain with no pair does too; a leaf runs
     /// at its readers' (a leaf is drawn straight into the space that reads it); and a
-    /// [`Op::Halo`] with the spine under it runs at its reader's (the halo is drawn straight into
-    /// the resolution that reads it), which every clone on that spine follows by the rules above.
+    /// [`Op::Halo`] with the spine under it runs at its reader's when a resample reads it (the halo
+    /// is drawn straight into the resolution that reads it) and at the frame's otherwise (its
+    /// reader reads it at its own resolution), which every clone on that spine follows by the
+    /// rules above.
     #[must_use]
     pub fn resolutions(&self) -> Vec<f32> {
         self.resolutions_with(&|_, target| target)
     }
 
-    /// [`Self::resolutions`] with every resample's target passed through `decide(node, target)`, for
-    /// a scheduler that lowers some of them.
+    /// [`Self::resolutions`] with every resample's target, and the frame's resolution of every
+    /// halo no resample reads, passed through `decide(node, target)`, for a scheduler that lowers
+    /// some of them.
     #[must_use]
     pub fn resolutions_with(&self, decide: &dyn Fn(NodeId, f32) -> f32) -> Vec<f32> {
         let n = self.nodes.len();
@@ -349,7 +352,7 @@ impl FrameGraph {
                 .find(|(_, r)| r.inputs.contains(&i))
                 .map_or(1.0, |(r, rn)| match rn.op {
                     Op::Resample { target, .. } => decide(r, target),
-                    _ => 1.0,
+                    _ => decide(i, 1.0),
                 });
             spine[i] = kh;
             let mut s = node.inputs[0];
