@@ -8,7 +8,7 @@
  * resolve a slot target into a view-mirror preview.
  */
 import type { Point } from 'penpot-exporter/types'
-import { ROOT, children, getNode, type Node, type PageObjects } from '../../doc'
+import { ROOT, children, getNode, type Node } from '../../doc'
 import { findContainerAtPoint, findSlotAtPoint } from '../../components/LayersPanel/reparent'
 import { isFrameShape } from '../../worker/geometry/shapes'
 
@@ -258,14 +258,14 @@ export const SLOT_DROP_LABEL = 'Show here'
  */
 export function resolveSlotDropIntent(
   selectedIds: ReadonlySet<string>,
-  objects: PageObjects,
+  pageId: string,
   point: Point,
 ): DropIntent | null {
   if (selectedIds.size !== 1) return null
   const draggedId = selectedIds.values().next().value as string
   if (!isFrameShape(getNode(draggedId))) return null
 
-  const slotId = findSlotAtPoint(objects, point, [draggedId])
+  const slotId = findSlotAtPoint(pageId, point, [draggedId])
   if (!slotId) return null
   const sr = getNode(slotId)?.selrect
   if (!sr) return null
@@ -316,17 +316,17 @@ function provisionalFootprint(
 /**
  * Resolve the drop intent for a drag at `point` (the primary dragged shape's
  * projected center, in world coords). Returns null when the point isn't over a
- * droppable container. `objects` is the page view the container search scans;
+ * droppable container on `pageId`;
  * `selectedIds` only feeds the exclude set so a shape can't target
  * itself/its descendants.
  */
 export function resolveDropIntent(
   selectedIds: ReadonlySet<string>,
-  objects: PageObjects,
+  pageId: string,
   point: Point,
 ): DropIntent | null {
   if (selectedIds.size === 0) return null
-  const targetId = findContainerAtPoint(objects, point, Array.from(selectedIds))
+  const targetId = findContainerAtPoint(pageId, point, Array.from(selectedIds))
   // The page root is findContainerAtPoint's fallback when the cursor is over empty
   // canvas — dropping there is just "top level", not a container worth highlighting.
   if (!targetId || targetId === ROOT) return null

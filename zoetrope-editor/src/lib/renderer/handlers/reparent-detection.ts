@@ -13,7 +13,7 @@
  */
 
 import type { Point } from 'penpot-exporter/types'
-import { ROOT, children, getNode, type PageObjects } from '../../doc'
+import { ROOT, children, getNode } from '../../doc'
 import { findContainerAtPoint, findSlotAtPoint } from '../../components/LayersPanel/reparent'
 import { isFrameShape } from '../../worker/geometry/shapes'
 import { rectToCenter } from '../../worker/geometry/rect'
@@ -37,7 +37,7 @@ export interface PerShapeReparent {
  */
 export function detectSlotDropTargets(
   selectedIds: ReadonlySet<string>,
-  objects: PageObjects,
+  pageId: string,
   delta: Point,
 ): Map<string, string> {
   const result = new Map<string, string>()
@@ -50,7 +50,7 @@ export function detectSlotDropTargets(
     const baseCenter = rectToCenter(shape.selrect)
     if (!baseCenter) continue
     const projected: Point = { x: baseCenter.x + delta.x, y: baseCenter.y + delta.y }
-    const slotId = findSlotAtPoint(objects, projected, excludeIds)
+    const slotId = findSlotAtPoint(pageId, projected, excludeIds)
     if (slotId) result.set(id, slotId)
   }
   return result
@@ -83,7 +83,7 @@ export interface StructureModifierEntry {
  */
 export function detectReparentTargets(
   selectedIds: ReadonlySet<string>,
-  objects: PageObjects,
+  pageId: string,
   delta: Point,
   /**
    * Point used to pick the insertion index within a flex container. Pass the
@@ -108,7 +108,7 @@ export function detectReparentTargets(
     // this the container was picked at the shape's projected center — a different
     // point than the cursor — which is what made the placeholder and the actual
     // reparent disagree near borders. Falls back to the center when no cursor.
-    const hit = findContainerAtPoint(objects, indexPoint ?? projected, excludeIds)
+    const hit = findContainerAtPoint(pageId, indexPoint ?? projected, excludeIds)
     // Outside every container: escape to the top level.
     const newParent = hit && hit !== ROOT ? hit : undefined
     const parent = newParent ? getNode(newParent) : undefined

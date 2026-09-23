@@ -9,7 +9,9 @@ export type { Change, LocalChange, AddChange, DelChange, ModChange, ModsChange }
 export { commitChanges, onChangesApplied, registerEffect } from './commit'
 export type { CommitParams, ChangesAppliedEvent, Effect, EffectContext } from './commit'
 export type { Applied } from './apply'
-export { childrenOf, children, descendants } from './derived'
+export { childrenOf, children, descendants, readersOf, ownedBy, dangling, ofType, rowsOf, countUnder, derived } from './derived'
+export type { Row, Owned, Dangling, Derived } from './derived'
+export { refFields, refsOf, remap, idsIn } from './registry'
 export {
   addNode,
   addSubtree,

@@ -1,7 +1,7 @@
 /**
  * `commitChanges`: the only writer of the document.
  *
- *   expand bulk → cascade deletes → effects → apply → derived → undo frame → emit
+ *   expand bulk → effects → apply (cascading deletes) → derived → undo frame → emit
  *
  * Effects (component sync, aspects, …) see the document as it stands before
  * apply and return more changes for the same frame. They are skipped on
@@ -12,7 +12,7 @@
  */
 import { applyChange, touchedOf, inversesOf, type Applied } from './apply'
 import { expand, type Change, type LocalChange } from './changes'
-import { descendants, updateDerived } from './derived'
+import { ownedBy, updateDerived } from './derived'
 import { meta } from './meta'
 import type { Kind } from './schema'
 import { tables } from './store'
@@ -80,28 +80,22 @@ export function resetSubscribers(): void {
   handlers.length = 0
 }
 
-/**
- * What a delete takes with it as the document stands now: descendants, a
- * page's nodes. Deepest first. Effects read this before apply; the reducer
- * loop recomputes it at apply time, after the changes before it have landed.
- */
-function withCascade(changes: readonly Change[]): Change[] {
-  let out: Change[] | null = null
-  for (let i = 0; i < changes.length; i++) {
-    const c = changes[i]
-    const owned = c.op === 'del' ? descendants(c.id) : []
-    if (owned.length === 0) {
-      out?.push(c)
-      continue
-    }
-    if (!out) out = changes.slice(0, i)
-    for (let j = owned.length - 1; j >= 0; j--) out.push({ op: 'del', kind: 'node', id: owned[j] })
-    out.push(c)
-  }
-  return out ?? (changes as Change[])
+/** The deletes that `c` takes with it, deepest first, as the document stands now. */
+function cascadeOf(c: Change): Change[] {
+  if (c.op !== 'del') return []
+  return ownedBy(c.kind, c.id).map((o) => ({ op: 'del', kind: o.kind, id: o.id }) as Change)
 }
 
-/** Apply in order, cascading each delete against the state it meets, keeping derived state current. */
+/** `changes` with each delete preceded by what it takes with it, for effects to read before apply. */
+function withCascade(changes: readonly Change[]): Change[] {
+  if (!changes.some((c) => c.op === 'del')) return changes as Change[]
+  return changes.flatMap((c) => [...cascadeOf(c), c])
+}
+
+/**
+ * Apply in order, keeping derived state current after each change so a
+ * delete cascades against the state it meets, not the state before the batch.
+ */
 function applyWithCascade(changes: readonly Change[]): Applied[] {
   const applied: Applied[] = []
   const one = (c: Change): void => {
@@ -111,10 +105,7 @@ function applyWithCascade(changes: readonly Change[]): Applied[] {
     updateDerived([a])
   }
   for (const c of changes) {
-    if (c.op === 'del') {
-      const owned = descendants(c.id)
-      for (let j = owned.length - 1; j >= 0; j--) one({ op: 'del', kind: 'node', id: owned[j] })
-    }
+    for (const owned of cascadeOf(c)) one(owned)
     one(c)
   }
   return applied

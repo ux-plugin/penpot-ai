@@ -6,7 +6,7 @@
  */
 
 import type { PenpotNode, Point } from 'penpot-exporter/types'
-import { ancestors, getNode, siblingIndex, type PageObjects } from '../../doc'
+import { ancestors, descendants, getNode, ofType, siblingIndex } from '../../doc'
 import {
   isBoolShape,
   isComponentShape,
@@ -153,82 +153,49 @@ function isNoOpDrop(
   return true
 }
 
-/**
- * Innermost container whose selrect contains `point`, excluding `excludeIds` and
- * their descendants (so a shape can't be reparented into itself or another shape
- * being moved together). Returns the root frame as a fallback only when the
- * point lies inside it — never returns a non-container.
- */
-export function findContainerAtPoint(
-  objects: PageObjects,
-  point: Point,
-  excludeIds: readonly string[],
-): string | null {
-  const excluded = new Set<string>(excludeIds)
-  for (const id of excludeIds) {
-    collectDescendants(objects, id, excluded)
-  }
+/** Node types that hold children; slots are not among them. */
+export const CONTAINER_TYPES = ['frame', 'group', 'bool', 'component'] as const
 
-  let bestId: string | null = null
-  let bestArea = Infinity
-  for (const id of Object.keys(objects)) {
-    if (excluded.has(id)) continue
-    const node = objects[id]
-    if (!isContainer(node)) continue
-    if (!node.selrect) continue
-    if (!containsPoint(node.selrect, point)) continue
-    const area = (node.selrect.width ?? 0) * (node.selrect.height ?? 0)
-    if (area < bestArea) {
-      bestId = id
-      bestArea = area
-    }
-  }
-  return bestId
-}
-
-/**
- * Innermost slot whose selrect contains `point`, excluding `excludeIds`. Slots are
- * not containers (`findContainerAtPoint` skips them), so this is the parallel lookup
- * used to detect a "drop a view frame onto a slot" gesture on the canvas.
- */
-export function findSlotAtPoint(
-  objects: PageObjects,
+/** The smallest node of `types` on `pageId` whose selrect contains `point`, skipping `excluded`. */
+function innermostAt(
+  pageId: string,
+  types: readonly string[],
   point: Point,
-  excludeIds: readonly string[],
+  excluded: ReadonlySet<string>,
 ): string | null {
   let bestId: string | null = null
   let bestArea = Infinity
-  for (const id of Object.keys(objects)) {
-    if (excludeIds.includes(id)) continue
-    const node = objects[id]
-    if (!isSlotShape(node)) continue
-    if (!node.selrect) continue
-    if (!containsPoint(node.selrect, point)) continue
-    const area = (node.selrect.width ?? 0) * (node.selrect.height ?? 0)
-    if (area < bestArea) {
-      bestId = id
-      bestArea = area
-    }
-  }
-  return bestId
-}
-
-function collectDescendants(
-  objects: PageObjects,
-  rootId: string,
-  acc: Set<string>,
-): void {
-  const stack: string[] = [rootId]
-  while (stack.length > 0) {
-    const id = stack.pop()!
-    const node = objects[id]
-    const kids = node?.shapes
-    if (!kids) continue
-    for (const child of kids) {
-      if (!acc.has(child)) {
-        acc.add(child)
-        stack.push(child)
+  for (const type of types) {
+    for (const id of ofType(pageId, type)) {
+      if (excluded.has(id)) continue
+      const sr = getNode(id)?.selrect
+      if (!sr || !containsPoint(sr, point)) continue
+      const area = (sr.width ?? 0) * (sr.height ?? 0)
+      if (area < bestArea) {
+        bestId = id
+        bestArea = area
       }
     }
   }
+  return bestId
+}
+
+/**
+ * Innermost container on `pageId` whose selrect contains `point`, excluding
+ * `excludeIds` and their descendants (so a shape can't be reparented into
+ * itself or another shape being moved together). Scans containers only.
+ */
+export function findContainerAtPoint(pageId: string, point: Point, excludeIds: readonly string[]): string | null {
+  const excluded = new Set<string>(excludeIds)
+  for (const id of excludeIds) for (const d of descendants(id)) excluded.add(d)
+  return innermostAt(pageId, CONTAINER_TYPES, point, excluded)
+}
+
+/**
+ * Innermost slot on `pageId` whose selrect contains `point`, excluding
+ * `excludeIds`. Slots are not containers, so this is the parallel lookup for a
+ * "drop a view frame onto a slot" gesture. Scans slots only.
+ */
+export function findSlotAtPoint(pageId: string, point: Point, excludeIds: readonly string[]): string | null {
+  return innermostAt(pageId, ['slot'], point, new Set(excludeIds))
 }

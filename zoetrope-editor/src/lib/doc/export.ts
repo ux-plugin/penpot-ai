@@ -6,7 +6,7 @@
  * built on demand, never stored.
  */
 import type { PenpotDocument, PenpotNode, PenpotPage } from 'penpot-exporter/types'
-import { children } from './derived'
+import { children, descendants } from './derived'
 import { ROOT, type NodeId, type PageId, type ParentKey } from './ids'
 import { meta } from './meta'
 import type { Node, Page } from './schema'
@@ -83,9 +83,13 @@ export function treeOf(pageId: PageId): DepthNode[] {
   return out
 }
 
+/** Every node of `pageId`, parents before children. From the child index, no scan. */
 export function nodesOfPage(pageId: PageId): Node[] {
   const out: Node[] = []
-  for (const n of records('node')) if (n.page === pageId) out.push(n)
+  for (const id of descendants(pageId)) {
+    const n = get('node', id)
+    if (n) out.push(n)
+  }
   return out
 }
 

@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { PenpotNode } from 'penpot-exporter/types'
-import { pageObjects } from '../../../../src/lib/doc'
 import { makeBaseDocument, resetWorkspace, seedDocument } from '../../fixtures'
 import { resolveHoveredSlot } from '../../../../src/lib/renderer/slot/slot-hover'
 
@@ -29,7 +28,6 @@ function seedPage(): void {
   })
 }
 
-const objects = () => pageObjects(PAGE_ID)
 
 describe('empty-slot hover', () => {
   beforeEach(() => {
@@ -38,7 +36,7 @@ describe('empty-slot hover', () => {
   })
 
   it('reveals the slot under the cursor, with its box and name', () => {
-    const hovered = resolveHoveredSlot(objects(), { x: 300, y: 350 }, false)
+    const hovered = resolveHoveredSlot(PAGE_ID, { x: 300, y: 350 }, false)
     expect(hovered).toEqual({
       id: 'slot1',
       name: 'Body',
@@ -47,23 +45,23 @@ describe('empty-slot hover', () => {
   })
 
   it('prefers the innermost slot when they overlap', () => {
-    expect(resolveHoveredSlot(objects(), { x: 200, y: 200 }, false)?.id).toBe('small')
+    expect(resolveHoveredSlot(PAGE_ID, { x: 200, y: 200 }, false)?.id).toBe('small')
   })
 
   it('ignores frames — only slots need revealing', () => {
-    expect(resolveHoveredSlot(objects(), { x: 800, y: 200 }, false)).toBeNull()
+    expect(resolveHoveredSlot(PAGE_ID, { x: 800, y: 200 }, false)).toBeNull()
   })
 
   it('is silent off any slot', () => {
-    expect(resolveHoveredSlot(objects(), { x: 1000, y: 700 }, false)).toBeNull()
+    expect(resolveHoveredSlot(PAGE_ID, { x: 1000, y: 700 }, false)).toBeNull()
   })
 
   it('is silent while a drag is in flight — the drop overlay owns that box', () => {
-    expect(resolveHoveredSlot(objects(), { x: 300, y: 350 }, true)).toBeNull()
+    expect(resolveHoveredSlot(PAGE_ID, { x: 300, y: 350 }, true)).toBeNull()
   })
 
   it('is silent without a pointer or a page', () => {
-    expect(resolveHoveredSlot(objects(), null, false)).toBeNull()
+    expect(resolveHoveredSlot(PAGE_ID, null, false)).toBeNull()
     expect(resolveHoveredSlot(undefined, { x: 300, y: 350 }, false)).toBeNull()
   })
 })

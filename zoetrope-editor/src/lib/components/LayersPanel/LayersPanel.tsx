@@ -5,7 +5,7 @@
  */
 
 import { Fragment, useCallback, useMemo, useState } from 'react'
-import { computed } from '@preact/signals-core'
+import { computed, signal } from '@preact/signals-core'
 import type { PenpotPage } from 'penpot-exporter/types'
 import { useSnapshot } from 'valtio'
 import {
@@ -13,13 +13,14 @@ import {
   getNode,
   getPage,
   moveNodes,
+  countUnder,
   pagesInOrder,
-  treeOf,
+  rowsOf,
   useCurrentPageId,
   useMeta,
   useSignal,
-  type DepthNode,
   type Page,
+  type Row,
 } from '../../doc'
 import { getSelectedIdsSet, setSelectedIds, useSelectedIds } from '../../renderer/store/document-selection'
 import {
@@ -44,6 +45,7 @@ import { commitChanges } from '../../renderer/store/commit'
 import { resolveDropTarget, resolveSlotDrop, type DropSide } from './reparent'
 import { addViewsToSlot } from '../../renderer/slot/slot-edit'
 import { LayerRow, type DragOverState } from './layer-row'
+import { WithNode } from './with-node'
 import { TokensSections } from '../TokensPanel/TokensPanel'
 import { AssetsSections } from '../AssetsPanel/AssetsPanel'
 import { ChatPanel } from '../BuildMode/ChatPanel'
@@ -65,6 +67,15 @@ const TAB_TITLES: Record<LeftRailTab, string> = {
 }
 
 const pagesSignal = computed((): Page[] => pagesInOrder())
+
+/** Layers the panel shows folded. Ephemeral. */
+const collapsedIds = signal<ReadonlySet<string>>(new Set())
+
+function toggleCollapsed(id: string): void {
+  const next = new Set(collapsedIds.peek())
+  if (!next.delete(id)) next.add(id)
+  collapsedIds.value = next
+}
 
 export interface LayersPanelProps {
   className?: string
@@ -100,12 +111,10 @@ export function LayersPanel({ className }: LayersPanelProps) {
 
   const pages = useSignal(pagesSignal)
 
-  // A computed tracks every node and child list it reads.
-  const shapeLayers = useSignal(
-    useMemo(() => computed((): DepthNode[] => (pid ? treeOf(pid) : [])), [pid]),
+  const rows = useSignal(
+    useMemo(() => computed((): Row[] => (pid ? rowsOf(pid, (id) => collapsedIds.value.has(id)) : [])), [pid]),
   )
-
-  const layerCount = shapeLayers.length
+  const layerCount = useSignal(useMemo(() => computed(() => (pid ? countUnder(pid) : 0)), [pid]))
 
   const onSelectPage = useCallback((id: string) => {
     if (id === currentPageId.peek()) return
@@ -384,13 +393,15 @@ export function LayersPanel({ className }: LayersPanelProps) {
                 {!page && (
                   <p className="px-2 py-1 text-xs text-muted-foreground">Loading page…</p>
                 )}
-                {page && shapeLayers.length === 0 && (
+                {page && rows.length === 0 && (
                   <p className="px-2 py-1 text-xs text-muted-foreground">No layers yet</p>
                 )}
-                {page && shapeLayers.length > 0 && (
+                {page && rows.length > 0 && (
                   <div className="relative">
                     <ul className="list-none space-y-0.5 p-0">
-                      {shapeLayers.map(({ node, depth }) => {
+                      {rows.map(({ id, depth, hasChildren }) => (
+                        <WithNode key={id} id={id}>
+                          {(node) => {
                         const active = selectedIds.has(node.id)
                         // A 3D scene reveals its objects nested beneath it; clicking
                         // one selects the scene and enters edit mode focused on it.
@@ -401,6 +412,9 @@ export function LayersPanel({ className }: LayersPanelProps) {
                               <LayerRow
                                 node={node}
                                 depth={depth}
+                                hasChildren={hasChildren}
+                                collapsed={collapsedIds.value.has(node.id)}
+                                onToggle={toggleCollapsed}
                                 active={active}
                                 selectedIds={selectedIds}
                                 dragOver={dragOver}
@@ -489,7 +503,9 @@ export function LayersPanel({ className }: LayersPanelProps) {
                             ))}
                           </Fragment>
                         )
-                      })}
+                          }}
+                        </WithNode>
+                      ))}
                     </ul>
                     {draggingInPanel && (
                       <div

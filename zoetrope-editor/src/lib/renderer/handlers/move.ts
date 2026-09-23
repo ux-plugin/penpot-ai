@@ -26,7 +26,7 @@ import { getModifierKeys } from '../store/shortcuts-store'
 import { isSnapPixelGridEnabled } from '../store/workspace-settings'
 import { snapMoveDeltaToGrid } from './pixel-snap'
 import { getSelectedIdsSet } from '../store/document-selection'
-import { ROOT, children, getActiveOrSinglePageId, pageObjects } from '../../doc'
+import { ROOT, children, getActiveOrSinglePageId } from '../../doc'
 import { applyModifiersAndCommit } from './utils'
 import { motionAnimatedMatrix, recordDragKeyframe } from '../motion/motion-store'
 import { DRAG_RENDER_INTERVAL_MS } from './drag-render-interval'
@@ -73,9 +73,6 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
 
   if (!renderer || !vp || selectedIds.size === 0 || !pageId) return EMPTY
 
-  // Page view for the container hit-tests, built once per gesture (a drag
-  // commits nothing until release).
-  const objects = pageObjects(pageId)
   /** Document child list of a WASM parent id (`ROOT` = the page's top level). */
   const kidsOf = (parentId: string): readonly string[] => children(parentId === ROOT ? pageId : parentId)
 
@@ -194,7 +191,7 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
         // moved center only if the pointer isn't available.
         const cursor = worldPointerPos.value ?? undefined
         const point = cursor ?? { x: baselineRect.center.x + worldDelta.x, y: baselineRect.center.y + worldDelta.y }
-        const intent = resolveDropIntent(selectedIds, objects, point)
+        const intent = resolveDropIntent(selectedIds, pageId, point)
 
         // A slot is an ordinary drop target: cursor over it arms "fill this
         // slot", the same way the cursor over a container arms a reparent. No
@@ -207,7 +204,7 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
         // Everything below is left as it was — an armed slot simply presents an
         // empty reparent map, so the existing "not over any target" path runs
         // and the slot intent replaces the reparent one on the overlay.
-        const slotIntent = resolveSlotDropIntent(selectedIds, objects, cursor ?? point)
+        const slotIntent = resolveSlotDropIntent(selectedIds, pageId, cursor ?? point)
         slotDropRef.current = slotIntent?.targetId ?? null
 
         // Reparent detection (cursor-based) drives BOTH the faithful "held shape"
@@ -216,7 +213,7 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
         // reparenting, not a same-parent reorder.
         const probeTargets = slotIntent
           ? new Map<string, { parentId: string; index: number }>()
-          : detectReparentTargets(selectedIds, objects, worldDelta, cursor)
+          : detectReparentTargets(selectedIds, pageId, worldDelta, cursor)
         const firstTarget = probeTargets.values().next().value as
           | { parentId: string; index: number }
           | undefined
@@ -413,7 +410,7 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
       // geometry for. This bundles the reparent into the same commit call. The
       // insertion index follows the cursor (matches the drop-preview), so the drop
       // lands where the ghost showed instead of always appending.
-      const finalTargets = detectReparentTargets(selectedIds, objects, delta, worldPointerPos.value ?? undefined)
+      const finalTargets = detectReparentTargets(selectedIds, pageId, delta, worldPointerPos.value ?? undefined)
       // Land the drop where the preview gap was: reuse the exact index the last
       // preview frame showed. (detectReparentTargets already recomputes the same
       // wrap-aware index from resting positions, but reusing lastPreview guarantees

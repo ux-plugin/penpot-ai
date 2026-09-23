@@ -118,8 +118,6 @@ export async function redo(): Promise<void> {
   await commitChanges({ changes: frame.redo, docMeta: frame.docMetaRedo, fromHistory: true })
 }
 
-// ---- groups ----
-
 function clearTimer(b: Branch): void {
   if (b.group?.timer) clearTimeout(b.group.timer)
 }
@@ -149,8 +147,6 @@ export function endGroup(id?: string): void {
 export function markInteraction(id = 'interaction', idleMs = INTERACTION_IDLE_MS): void {
   beginGroup(id, idleMs)
 }
-
-// ---- scratch branches ----
 
 /** Open a scratch branch with its own empty stack. */
 export function fork(): void {

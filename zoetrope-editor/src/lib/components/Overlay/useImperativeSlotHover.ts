@@ -18,7 +18,7 @@ import { useLayoutEffect } from 'react'
 import { effect, untracked } from '@preact/signals-core'
 import { viewport as viewportSignal, worldPointerPos } from '../../renderer/signals/pointer'
 import { dropIntentSignal } from '../../renderer/signals/drop-intent'
-import { getActiveOrSinglePageId, getNode, pageObjects, type Node } from '../../doc'
+import { getActiveOrSinglePageId, getNode, type Node } from '../../doc'
 import { resolveHoveredSlot } from '../../renderer/slot/slot-hover'
 
 /** Same accent the slot chrome has always used. */
@@ -99,7 +99,7 @@ export function useImperativeSlotHover(
       // Untracked: the page is read per pointer move, not watched.
       const { hovered, node } = untracked(() => {
         const pageId = getActiveOrSinglePageId()
-        const hovered = resolveHoveredSlot(pageId ? pageObjects(pageId) : undefined, point, dragging)
+        const hovered = resolveHoveredSlot(pageId, point, dragging)
         return { hovered, node: hovered ? getNode(hovered.id) : undefined }
       })
 

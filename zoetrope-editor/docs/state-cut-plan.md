@@ -1,7 +1,7 @@
 # State cut — plan
 
-Status: steps a and b landed 2026-09-23 (`src/lib/doc/`). Builds `state-model.md`
-and `history-model.md`. Steps c–f open.
+Status: steps a, b and c landed 2026-09-23 (`src/lib/doc/`). Builds
+`state-model.md` and `history-model.md`. Steps d–f open.
 
 ## Rules
 
@@ -171,8 +171,8 @@ revision, applied through `commitChanges`.
 |---|---|---|---|
 | a | §2 §3 §4 §5 for page + node; readers move to `get` / `field` / `childrenOf` | doc-proxy, process-changes, penpot Change, flatten, `shapes[]`, valtio from document | ~110 files |
 | b | §7 | journal, versions, focus-pending, DevJournalPanel | ~25 |
-| c | §6 the rest; subscribers on `touched` | reconcile / referencedNodeIds / dropNodes, interactions-aspect | ~20 |
-| d | cell, binding, rule, timeline, store as kinds | `PageInteractions`, `upgrade.ts`, V1/V2, `normalize.ts` / `GraphNode`, `nl/interpret.ts`, motion-store hydrate / `setMotionShapes` / `scheduleCommit`; interactions tests rewritten | ~40 |
+| c | §6 the rest; subscribers on `touched` | node scans on hot paths (component sync, slot hover, container hit test, layers panel) | ~20 |
+| d | cell, binding, rule, timeline, store as kinds | reconcile / referencedNodeIds / dropNodes, interactions-aspect, `PageInteractions`, `upgrade.ts`, V1/V2, `normalize.ts` / `GraphNode`, `nl/interpret.ts`, motion-store hydrate / `setMotionShapes` / `scheduleCommit`; interactions tests rewritten | ~40 |
 | e | §8 | kv-indexeddb envelope | ~10 |
 | f | §9 | | |
 
@@ -186,6 +186,15 @@ the root WASM needs); effects (`registerEffect`) unify component sync,
 aspects and 3D crop-resize; the hit-index worker keeps its own page copy fed
 by the same three ops (`worker/page-store.ts`); `commitChanges` takes no undo
 vectors, `pageId` or `IndexedPage` anywhere.
+
+What c built: `derived()` registry; `readersOf(kind, field, id)`, a reverse
+index per reference field built on first use, with `childrenOf` answering
+`parentId` and `page`; delete cascade read from the `cascade` declarations
+(`ownedBy`), so a page delete takes its nodes; `remap` for copies; `dangling`;
+`ofType(page, type)` for hit tests; `rowsOf` for tree views, structure only,
+each row subscribed to its own node, collapsible. New references declared:
+`shapeRef`, `views`, `activeView`. The interactions deletions moved to d:
+they need cells, bindings and rules to be records first.
 
 ## Decide before a
 

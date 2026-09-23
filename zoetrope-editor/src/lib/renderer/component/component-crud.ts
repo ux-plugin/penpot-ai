@@ -26,6 +26,7 @@ import {
   mods,
   placeNode,
   records,
+  remap,
   type Change,
   type Node,
 } from '../../doc'
@@ -99,8 +100,9 @@ export async function createComponentFromFrame(frameId: string): Promise<string 
 /**
  * Place a copy of a component on the current page.
  *
- * The main's subtree is duplicated with fresh ids; every copied node records
- * `shapeRef` pointing at the node it was copied from, which is what lets P3 sync
+ * The main's subtree is duplicated with fresh ids and `remap` rewrites every
+ * reference inside it (parents, frames, a slot's views); every copied node
+ * records `shapeRef` pointing at the node it was copied from, which is what lets P3 sync
  * a main edit into this copy and P4 remember which attributes the user has
  * locally overridden. Shapes carry absolute coordinates, so the whole subtree is
  * translated by the same delta.
@@ -128,48 +130,31 @@ export async function instantiateComponent(
   const dy = (at?.y ?? mainY) - mainY
   const shift = translateMatrix(dx, dy)
 
-  // Parents before descendants, so each clone can read its parent's frame.
   const sourceIds = [main.id, ...descendants(main.id)]
   const idMap = new Map<string, string>(sourceIds.map((id) => [id, newShapeId()]))
-  const clones = new Map<string, Node>()
+  let root: Node | undefined
 
   const adds: Change[] = []
   for (const srcId of sourceIds) {
     const src = getNode(srcId)
     if (!src) continue
-    const id = idMap.get(srcId)!
     const isRoot = srcId === main.id
     const geometry = (applyTransformToNode(src, shift) ?? {}) as Partial<PenpotNode>
-
-    const values = {
-      ...src,
-      ...geometry,
-      id,
-      // Every node in a copy names its twin in the main.
-      shapeRef: srcId,
-      // Local overrides start empty — nothing has been touched yet.
-      touched: undefined,
-      // Only the root carries the component link; the main flag never travels.
-      componentId: isRoot ? componentId : undefined,
-      componentRoot: isRoot ? true : undefined,
-      mainInstance: undefined,
-    } as PenpotNode
-
-    let clone: Node
-    if (isRoot) {
-      clone = placeNode({ ...values, parentId: undefined }, { page: pageId })
-    } else {
-      const parent = clones.get(src.parentId!)!
-      clone = {
-        ...values,
-        page: pageId,
-        parentId: parent.id,
-        frameId: parent.type === 'frame' ? parent.id : parent.frameId,
-        order: src.order,
-      } as Node
-    }
-    clones.set(srcId, clone)
-    adds.push(add('node', clone))
+    const moved = { ...remap('node', src, idMap), ...geometry } as Node
+    const placed = isRoot
+      ? (root = placeNode({ ...moved, parentId: undefined } as PenpotNode, { page: pageId }))
+      : { ...moved, page: pageId, frameId: moved.frameId && idMap.has(src.frameId!) ? moved.frameId : root?.frameId }
+    adds.push(
+      add('node', {
+        ...placed,
+        id: idMap.get(srcId)!,
+        shapeRef: srcId,
+        touched: undefined,
+        componentId: isRoot ? componentId : undefined,
+        componentRoot: isRoot ? true : undefined,
+        mainInstance: undefined,
+      } as Node),
+    )
   }
   if (adds.length === 0) return null
 

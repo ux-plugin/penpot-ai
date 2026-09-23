@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PenpotNode } from 'penpot-exporter/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
 import { commitChanges } from '../../../../src/lib/renderer/store/commit'
-import { children, getNode, moveNodes, pageObjects, undo } from '../../../../src/lib/doc'
+import { children, getNode, moveNodes, undo } from '../../../../src/lib/doc'
 import { makeBaseDocument, resetWorkspace, seedDocument } from '../../fixtures'
 import {
   computeDropSide,
@@ -182,30 +182,29 @@ describe('findContainerAtPoint', () => {
     ])
   })
 
-  const objects = () => pageObjects(PAGE_ID)
 
   it('returns the innermost containing frame', () => {
-    expect(findContainerAtPoint(objects(), { x: 80, y: 80 }, [])).toBe('inner')
-    expect(findContainerAtPoint(objects(), { x: 5, y: 5 }, [])).toBe('outer')
+    expect(findContainerAtPoint(PAGE_ID, { x: 80, y: 80 }, [])).toBe('inner')
+    expect(findContainerAtPoint(PAGE_ID, { x: 5, y: 5 }, [])).toBe('outer')
   })
 
   it('returns null when point is outside all frames', () => {
-    expect(findContainerAtPoint(objects(), { x: 500, y: 500 }, [])).toBeNull()
+    expect(findContainerAtPoint(PAGE_ID, { x: 500, y: 500 }, [])).toBeNull()
   })
 
   it('excludes dragged shapes from being a target (self-drop)', () => {
     // Center of outer is (100,100) which also lies inside inner — excluding inner
     // forces the fallback to outer.
-    expect(findContainerAtPoint(objects(), { x: 100, y: 100 }, ['inner'])).toBe('outer')
+    expect(findContainerAtPoint(PAGE_ID, { x: 100, y: 100 }, ['inner'])).toBe('outer')
   })
 
   it('excludes descendants of dragged shapes', () => {
     // Excluding outer also excludes inner (descendant) — point (80,80) → null.
-    expect(findContainerAtPoint(objects(), { x: 80, y: 80 }, ['outer'])).toBeNull()
+    expect(findContainerAtPoint(PAGE_ID, { x: 80, y: 80 }, ['outer'])).toBeNull()
   })
 
   it('ignores non-containers', () => {
     // Point inside loose rect but rect isn't a container — fallback to outer.
-    expect(findContainerAtPoint(objects(), { x: 15, y: 15 }, [])).toBe('outer')
+    expect(findContainerAtPoint(PAGE_ID, { x: 15, y: 15 }, [])).toBe('outer')
   })
 })

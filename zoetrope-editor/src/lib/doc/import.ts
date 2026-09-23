@@ -49,11 +49,14 @@ function importNodes(
   })
 }
 
+/**
+ * One exporter page as records. A Penpot page lists the nil root first, with
+ * the top level as its siblings (flat) or its children (nested); a Figma
+ * export has no root at all. Either way the root is dropped.
+ */
 export function importPage(page: PenpotPage, order: string): { page: Page; nodes: Node[] } {
   const id = page.id ?? crypto.randomUUID()
   const kids = page.children ?? []
-  // A Penpot page lists the nil root first, with the top level as its siblings
-  // (flat) or its children (nested). A Figma export has no root at all.
   const first = kids[0]
   const hasRoot = first?.id === ROOT
   const rootChildren = hasRoot ? ((first as { children?: PenpotNode[] }).children ?? []) : []

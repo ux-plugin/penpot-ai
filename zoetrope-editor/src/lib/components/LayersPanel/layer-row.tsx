@@ -1,4 +1,5 @@
 import { useCallback, useRef } from 'react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Node } from '../../doc'
 import { ShapeIcon } from '../shape-icons'
@@ -20,6 +21,10 @@ export interface DragOverState {
 export interface LayerRowProps {
   node: Node
   depth: number
+  /** The node has children: show a disclosure toggle. */
+  hasChildren?: boolean
+  collapsed?: boolean
+  onToggle?: (id: string) => void
   active: boolean
   selectedIds: ReadonlySet<string>
   dragOver: DragOverState | null
@@ -49,6 +54,9 @@ function wouldBeInvalidCenter(targetId: string, draggedIds: readonly string[]): 
 export function LayerRow({
   node,
   depth,
+  hasChildren,
+  collapsed,
+  onToggle,
   active,
   selectedIds,
   dragOver,
@@ -153,6 +161,22 @@ export function LayerRow({
       data-selected={active ? 'true' : 'false'}
       aria-selected={active}
     >
+      {hasChildren ? (
+        <button
+          type="button"
+          aria-label={collapsed ? 'Expand' : 'Collapse'}
+          aria-expanded={!collapsed}
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggle?.(node.id)
+          }}
+          className="-ml-1 flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+        >
+          {collapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
+        </button>
+      ) : (
+        <span className="-ml-1 size-4 shrink-0" />
+      )}
       <ShapeIcon type={node.type} className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 truncate">{node.name ?? 'Shape'}</span>
       {selectedIds.has(node.id) && selectedIds.size > 1 && (

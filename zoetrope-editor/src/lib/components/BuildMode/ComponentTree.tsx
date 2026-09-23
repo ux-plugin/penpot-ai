@@ -2,7 +2,7 @@
  * Build-mode component tree — the document's shape hierarchy shown as the list
  * of buildable components.
  *
- * Reuses the same data path as the Design-mode LayersPanel (`treeOf`) and the
+ * Reuses the same data path as the Design-mode LayersPanel (`rowsOf`) and the
  * same shared selection store, so selecting a component here and a layer there
  * stay in sync — one document, two views.
  *
@@ -14,19 +14,17 @@ import { useCallback, useMemo } from 'react'
 import { computed } from '@preact/signals-core'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { getPage, treeOf, useCurrentPageId, useSignal, type DepthNode } from '../../doc'
+import { getPage, rowsOf, useCurrentPageId, useSignal, type Row } from '../../doc'
 import { setSelectedIds, useSelectedIds } from '../../renderer/store/document-selection'
 import { ShapeIcon } from '../shape-icons'
+import { WithNode } from '../LayersPanel/with-node'
 
 export function ComponentTree() {
   const selectedIds = useSelectedIds()
   const pid = useCurrentPageId()
   const page = pid ? getPage(pid) : undefined
 
-  // A computed tracks every node and child list it reads.
-  const components = useSignal(
-    useMemo(() => computed((): DepthNode[] => (pid ? treeOf(pid) : [])), [pid]),
-  )
+  const components = useSignal(useMemo(() => computed((): Row[] => (pid ? rowsOf(pid) : [])), [pid]))
 
   const onSelect = useCallback((id: string) => {
     setSelectedIds(new Set([id]))
@@ -47,10 +45,12 @@ export function ComponentTree() {
           )}
           {components.length > 0 && (
             <ul className="list-none space-y-0.5 p-0">
-              {components.map(({ node, depth }) => {
+              {components.map(({ id, depth }) => (
+                <WithNode key={id} id={id}>
+                  {(node) => {
                 const active = selectedIds.has(node.id)
                 return (
-                  <li key={node.id}>
+                  <li>
                     <button
                       type="button"
                       onClick={() => onSelect(node.id)}
@@ -67,7 +67,9 @@ export function ComponentTree() {
                     </button>
                   </li>
                 )
-              })}
+                  }}
+                </WithNode>
+              ))}
             </ul>
           )}
         </div>

@@ -12,7 +12,7 @@
  */
 import type { PenpotNode } from 'penpot-exporter/types'
 import type { Change, Effect, LocalChange, Node } from '../../doc'
-import { get, meta, modsByValue, records } from '../../doc'
+import { get, meta, modsByValue, readersOf } from '../../doc'
 import {
   APPLIED_TOKENS_ATTR,
   appliedTokenGroup,
@@ -115,17 +115,14 @@ function enclosingMainRoot(nodeId: string): string | null {
   return null
 }
 
-/** Every copied node in the document, by the main node it mirrors. */
-function indexCopiesByRef(): Map<string, Node[]> {
-  const index = new Map<string, Node[]>()
-  for (const node of records('node')) {
-    const ref = node.shapeRef
-    if (ref == null) continue
-    const list = index.get(ref)
-    if (list) list.push(node)
-    else index.set(ref, [node])
+/** The copied nodes that mirror `mainId`. */
+function copiesOf(mainId: string): Node[] {
+  const out: Node[] = []
+  for (const id of readersOf('node', 'shapeRef', mainId)) {
+    const n = get('node', id)
+    if (n) out.push(n)
   }
-  return index
+  return out
 }
 
 export const componentSyncEffect: Effect = (changes) => {
@@ -145,10 +142,8 @@ export const componentSyncEffect: Effect = (changes) => {
 
   const fanOut: Array<{ id: string; set: Partial<Node> }> = []
   if (mainNodes.length > 0) {
-    const copiesByRef = indexCopiesByRef()
     for (const main of mainNodes) {
-      const targets = copiesByRef.get(main.id)
-      if (!targets) continue
+      const targets = copiesOf(main.id)
       const mainBefore = get('node', main.id)
       for (const node of targets) {
         const touched = new Set<string>((node.touched as string[] | undefined) ?? [])

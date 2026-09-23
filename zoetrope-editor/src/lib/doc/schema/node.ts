@@ -2,7 +2,7 @@ import { z } from 'zod'
 import type { PenpotNode } from 'penpot-exporter/types'
 import type { Scene3DDocument } from '../../renderer/three/scene3d-store'
 import type { NodeId, PageId } from '../ids'
-import { ref } from './ref'
+import { ref, refs } from './ref'
 
 /**
  * A node: the exporter's shape fields (values, no identity inside) plus the
@@ -13,6 +13,8 @@ import { ref } from './ref'
  *   deletes the node.
  * - `frameId`: nearest frame ancestor, or absent when that is the page. Read
  *   by the renderer and the hit index; maintained by the tree builder.
+ * - `shapeRef`: in a component copy, the node of the main it mirrors.
+ * - `views`, `activeView`: a slot's candidate view frames and the one shown.
  */
 export const NodeSchema = z
   .object({
@@ -20,6 +22,9 @@ export const NodeSchema = z
     page: ref('page', 'cascade'),
     parentId: ref('node', 'cascade').optional(),
     frameId: ref('node').optional(),
+    shapeRef: ref('node').optional(),
+    views: refs('node').optional(),
+    activeView: ref('node').optional(),
     order: z.string(),
     type: z.string(),
   })

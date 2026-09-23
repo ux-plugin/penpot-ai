@@ -18,6 +18,11 @@ export interface RefMeta {
   onDelete: OnDelete
 }
 
+export interface RefShape extends RefMeta {
+  /** The field holds a list of ids. */
+  many: boolean
+}
+
 export const refMeta = z.registry<RefMeta>()
 
 export function ref(kind: Kind, onDelete: OnDelete = 'keep'): z.ZodString {
@@ -26,14 +31,25 @@ export function ref(kind: Kind, onDelete: OnDelete = 'keep'): z.ZodString {
   return schema
 }
 
-/** The registered schema under optional/nullable/default wrappers, if any. */
-export function refMetaOf(schema: z.ZodType): RefMeta | undefined {
+/** A list of references to `kind`. */
+export function refs(kind: Kind, onDelete: OnDelete = 'keep'): z.ZodArray<z.ZodString> {
+  return z.array(ref(kind, onDelete))
+}
+
+type Def = { innerType?: z.ZodType; element?: z.ZodType; type?: string }
+
+/** The reference a field declares, through optional/nullable/default wrappers and one array. */
+export function refMetaOf(schema: z.ZodType): RefShape | undefined {
   let s: z.ZodType | undefined = schema
+  let many = false
   while (s) {
     const meta = refMeta.get(s)
-    if (meta) return meta
-    const def: { innerType?: z.ZodType } | undefined = (s as { _zod?: { def?: { innerType?: z.ZodType } } })._zod?.def
-    s = def?.innerType
+    if (meta) return { ...meta, many }
+    const def: Def | undefined = (s as { _zod?: { def?: Def } })._zod?.def
+    if (def?.type === 'array' && !many) {
+      many = true
+      s = def.element
+    } else s = def?.innerType
   }
   return undefined
 }
