@@ -243,22 +243,22 @@ importers:
     dependencies:
       '@ai-sdk/anthropic':
         specifier: ^4.0.14
-        version: 4.0.14(zod@4.3.6)
+        version: 4.0.14(zod@4.6.5)
       '@ai-sdk/google':
         specifier: ^4.0.14
-        version: 4.0.14(zod@4.3.6)
+        version: 4.0.14(zod@4.6.5)
       '@ai-sdk/openai':
         specifier: ^4.0.13
-        version: 4.0.13(zod@4.3.6)
+        version: 4.0.13(zod@4.6.5)
       '@zed-industries/agent-client-protocol':
         specifier: ^0.4.5
         version: 0.4.5
       '@zed-industries/claude-code-acp':
         specifier: ^0.16.2
-        version: 0.16.2(zod@4.3.6)
+        version: 0.16.2(zod@4.6.5)
       ai:
         specifier: ^7.0.22
-        version: 7.0.22(zod@4.3.6)
+        version: 7.0.22(zod@4.6.5)
       node-pty:
         specifier: ^1.1.0
         version: 1.1.0
@@ -289,7 +289,7 @@ importers:
     dependencies:
       '@ai-sdk/openai-compatible':
         specifier: ^3.0.0
-        version: 3.0.7(zod@4.3.6)
+        version: 3.0.7(zod@4.6.5)
       '@codemirror/autocomplete':
         specifier: ^6.20.3
         version: 6.20.3
@@ -311,6 +311,9 @@ importers:
       '@preact/signals-core':
         specifier: ^1.14.0
         version: 1.14.1
+      '@sqlite.org/sqlite-wasm':
+        specifier: 3.53.4-build1
+        version: 3.53.4-build1
       '@tokens-studio/sd-transforms':
         specifier: 1.2.11
         version: 1.2.11(style-dictionary@5.0.0-rc.1(tslib@2.8.1))
@@ -331,13 +334,16 @@ importers:
         version: 12.11.2(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       ai:
         specifier: ^7.0.2
-        version: 7.0.22(zod@4.3.6)
+        version: 7.0.22(zod@4.6.5)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      fractional-indexing:
+        specifier: ^4.0.0
+        version: 4.0.0
       lucide-react:
         specifier: ^0.555.0
         version: 0.555.0(react@19.2.6)
@@ -377,6 +383,9 @@ importers:
       xstate:
         specifier: ^5.29.0
         version: 5.31.0
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
     devDependencies:
       '@eslint/js':
         specifier: ^9.39.1
@@ -3238,6 +3247,10 @@ packages:
     resolution: {integrity: sha512-tlqY9xq5ukxTUZBmoOp+m61cqwQD5pHJtFY3Mn8CA8ps6yghLH/Hw8UPdqg4OLmFW3IFlcXnQNmo/dh8HzXYIQ==}
     engines: {node: '>=18'}
 
+  '@sqlite.org/sqlite-wasm@3.53.4-build1':
+    resolution: {integrity: sha512-U8pvL0patYHMgieD8JxxYJTlh9m1LUX8+BDYb7MiKQzBI89f2qbdmdcG/PvnPaLm9wsBbv4VlVG453ixnxBOnA==}
+    engines: {node: '>=22'}
+
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
@@ -5469,6 +5482,10 @@ packages:
 
   fraction.js@5.3.4:
     resolution: {integrity: sha512-1X1NTtiJphryn/uLQz3whtY6jK3fTqoE3ohKs0tT+Ujr1W59oopxmoEh7Lu5p6vBaPbgoM0bzveAW4Qi5RyWDQ==}
+
+  fractional-indexing@4.0.0:
+    resolution: {integrity: sha512-Nr2P1Yyaj2sy1Qdt/wI3GcByxrUdbSKg5+cGvw8f18hT2SkQt6V72iOjBpk7IO3UkzBsdlGRs2a4z6dLrJprgw==}
+    engines: {node: ^14.13.1 || >=16.0.0}
 
   fresh@2.0.0:
     resolution: {integrity: sha512-Rx/WycZ60HOaqLKAi6cHRKKI7zxWbJ31MhntmtwMoaTeF7XFH9hhBp8vITaMidfljRQ6eYWCKkaTK+ykVJHP2A==}
@@ -9031,6 +9048,9 @@ packages:
   zod@4.3.6:
     resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
 
+  zod@4.6.5:
+    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
+
   zustand@4.5.7:
     resolution: {integrity: sha512-CHOUy7mu3lbD6o6LJLfllpjkzhHXSBlX8B9+qPddUsIfeF5S/UZ5q0kmCsnRqT1UHFQZchNFDDzMbQsuesHWlw==}
     engines: {node: '>=12.7.0'}
@@ -9068,56 +9088,56 @@ snapshots:
 
   7zip-bin@5.2.0: {}
 
-  '@agentclientprotocol/sdk@0.14.1(zod@4.3.6)':
+  '@agentclientprotocol/sdk@0.14.1(zod@4.6.5)':
     dependencies:
-      zod: 4.3.6
+      zod: 4.6.5
 
-  '@ai-sdk/anthropic@4.0.14(zod@4.3.6)':
+  '@ai-sdk/anthropic@4.0.14(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 4.0.3
-      '@ai-sdk/provider-utils': 5.0.9(zod@4.3.6)
-      zod: 4.3.6
+      '@ai-sdk/provider-utils': 5.0.9(zod@4.6.5)
+      zod: 4.6.5
 
-  '@ai-sdk/gateway@4.0.16(zod@4.3.6)':
+  '@ai-sdk/gateway@4.0.16(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 4.0.3
-      '@ai-sdk/provider-utils': 5.0.7(zod@4.3.6)
+      '@ai-sdk/provider-utils': 5.0.7(zod@4.6.5)
       '@vercel/oidc': 3.2.0
-      zod: 4.3.6
+      zod: 4.6.5
 
-  '@ai-sdk/google@4.0.14(zod@4.3.6)':
+  '@ai-sdk/google@4.0.14(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 4.0.3
-      '@ai-sdk/provider-utils': 5.0.9(zod@4.3.6)
-      zod: 4.3.6
+      '@ai-sdk/provider-utils': 5.0.9(zod@4.6.5)
+      zod: 4.6.5
 
-  '@ai-sdk/openai-compatible@3.0.7(zod@4.3.6)':
+  '@ai-sdk/openai-compatible@3.0.7(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 4.0.3
-      '@ai-sdk/provider-utils': 5.0.7(zod@4.3.6)
-      zod: 4.3.6
+      '@ai-sdk/provider-utils': 5.0.7(zod@4.6.5)
+      zod: 4.6.5
 
-  '@ai-sdk/openai@4.0.13(zod@4.3.6)':
+  '@ai-sdk/openai@4.0.13(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 4.0.3
-      '@ai-sdk/provider-utils': 5.0.9(zod@4.3.6)
-      zod: 4.3.6
+      '@ai-sdk/provider-utils': 5.0.9(zod@4.6.5)
+      zod: 4.6.5
 
-  '@ai-sdk/provider-utils@5.0.7(zod@4.3.6)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.3
-      '@standard-schema/spec': 1.1.0
-      '@workflow/serde': 4.1.0
-      eventsource-parser: 3.1.0
-      zod: 4.3.6
-
-  '@ai-sdk/provider-utils@5.0.9(zod@4.3.6)':
+  '@ai-sdk/provider-utils@5.0.7(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 4.0.3
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.0
-      zod: 4.3.6
+      zod: 4.6.5
+
+  '@ai-sdk/provider-utils@5.0.9(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.3
+      '@standard-schema/spec': 1.1.0
+      '@workflow/serde': 4.1.0
+      eventsource-parser: 3.1.0
+      zod: 4.6.5
 
   '@ai-sdk/provider@4.0.3':
     dependencies:
@@ -9127,9 +9147,9 @@ snapshots:
 
   '@antfu/ni@23.3.1': {}
 
-  '@anthropic-ai/claude-agent-sdk@0.2.44(zod@4.3.6)':
+  '@anthropic-ai/claude-agent-sdk@0.2.44(zod@4.6.5)':
     dependencies:
-      zod: 4.3.6
+      zod: 4.6.5
     optionalDependencies:
       '@img/sharp-darwin-arm64': 0.33.5
       '@img/sharp-darwin-x64': 0.33.5
@@ -10504,7 +10524,7 @@ snapshots:
 
   '@marijn/find-cluster-break@1.0.3': {}
 
-  '@modelcontextprotocol/sdk@1.26.0(zod@4.3.6)':
+  '@modelcontextprotocol/sdk@1.26.0(zod@4.6.5)':
     dependencies:
       '@hono/node-server': 1.19.10(hono@4.12.5)
       ajv: 8.18.0
@@ -10521,8 +10541,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.3.6
-      zod-to-json-schema: 3.25.1(zod@4.3.6)
+      zod: 4.6.5
+      zod-to-json-schema: 3.25.1(zod@4.6.5)
     transitivePeerDependencies:
       - supports-color
 
@@ -11914,6 +11934,8 @@ snapshots:
 
   '@sindresorhus/merge-streams@4.0.0': {}
 
+  '@sqlite.org/sqlite-wasm@3.53.4-build1': {}
+
   '@standard-schema/spec@1.1.0': {}
 
   '@standard-schema/utils@0.3.0': {}
@@ -12918,11 +12940,11 @@ snapshots:
     dependencies:
       zod: 3.25.76
 
-  '@zed-industries/claude-code-acp@0.16.2(zod@4.3.6)':
+  '@zed-industries/claude-code-acp@0.16.2(zod@4.6.5)':
     dependencies:
-      '@agentclientprotocol/sdk': 0.14.1(zod@4.3.6)
-      '@anthropic-ai/claude-agent-sdk': 0.2.44(zod@4.3.6)
-      '@modelcontextprotocol/sdk': 1.26.0(zod@4.3.6)
+      '@agentclientprotocol/sdk': 0.14.1(zod@4.6.5)
+      '@anthropic-ai/claude-agent-sdk': 0.2.44(zod@4.6.5)
+      '@modelcontextprotocol/sdk': 1.26.0(zod@4.6.5)
       diff: 8.0.3
       minimatch: 10.2.1
     transitivePeerDependencies:
@@ -12964,12 +12986,12 @@ snapshots:
       clean-stack: 2.2.0
       indent-string: 4.0.0
 
-  ai@7.0.22(zod@4.3.6):
+  ai@7.0.22(zod@4.6.5):
     dependencies:
-      '@ai-sdk/gateway': 4.0.16(zod@4.3.6)
+      '@ai-sdk/gateway': 4.0.16(zod@4.6.5)
       '@ai-sdk/provider': 4.0.3
-      '@ai-sdk/provider-utils': 5.0.7(zod@4.3.6)
-      zod: 4.3.6
+      '@ai-sdk/provider-utils': 5.0.7(zod@4.6.5)
+      zod: 4.6.5
 
   ajv-formats@3.0.1(ajv@8.18.0):
     optionalDependencies:
@@ -14738,6 +14760,8 @@ snapshots:
   forwarded@0.2.0: {}
 
   fraction.js@5.3.4: {}
+
+  fractional-indexing@4.0.0: {}
 
   fresh@2.0.0: {}
 
@@ -18538,9 +18562,9 @@ snapshots:
     dependencies:
       zod: 3.25.76
 
-  zod-to-json-schema@3.25.1(zod@4.3.6):
+  zod-to-json-schema@3.25.1(zod@4.6.5):
     dependencies:
-      zod: 4.3.6
+      zod: 4.6.5
 
   zod-validation-error@4.0.2(zod@4.3.6):
     dependencies:
@@ -18549,6 +18573,8 @@ snapshots:
   zod@3.25.76: {}
 
   zod@4.3.6: {}
+
+  zod@4.6.5: {}
 
   zustand@4.5.7(@types/react@19.2.14)(react@19.2.6):
     dependencies:
