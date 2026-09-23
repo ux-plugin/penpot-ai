@@ -9,13 +9,8 @@
  */
 
 import { signal } from '@preact/signals-core'
-import type { PenpotNode } from 'penpot-exporter/types'
-import { getActiveOrSinglePageId } from '../store/doc-proxy'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-  rectLayoutPartial,
-} from '../properties/commit-node-properties'
+import { getNode } from '../../doc'
+import { commitNodePartialUpdate, rectLayoutPartial } from '../properties/commit-node-properties'
 
 export type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
 
@@ -62,16 +57,10 @@ export function applyResize(handle: ResizeHandle, start: Bounds, dx: number, dy:
 }
 
 /** Commit a scene container's new bounds (selrect + points + w/h) as one undoable
- *  `mod-obj`, preserving its rotation. No-op without a committed node / page. */
+ *  `mod`, preserving its rotation. No-op without a committed node. */
 export async function commitSceneBounds(sceneId: string, b: Bounds): Promise<void> {
-  const before = getCommittedNodeOnActivePage(sceneId)
-  const pid = getActiveOrSinglePageId()
-  if (!before || !pid) return
+  const before = getNode(sceneId)
+  if (!before) return
   const rot = (before as { rotation?: number }).rotation ?? 0
-  await commitNodePartialUpdate(
-    sceneId,
-    before as PenpotNode,
-    rectLayoutPartial(b.x, b.y, b.w, b.h, rot),
-    pid,
-  )
+  await commitNodePartialUpdate(sceneId, before, rectLayoutPartial(b.x, b.y, b.w, b.h, rot))
 }

@@ -10,19 +10,11 @@
  * node union, so the slot is fetched/narrowed via `isSlotShape` and the partial is
  * cast at the commit boundary; the commit pipeline treats objects structurally.
  */
-import { snapshot } from 'valtio'
-import { docProxy } from '../store/doc-proxy'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '../properties/commit-node-properties'
+import { getNode } from '../../doc'
+import { commitNodePartialUpdate } from '../properties/commit-node-properties'
 import { isSlotShape } from '../../worker/geometry/shapes'
 import type { SlotShape } from '../../common/slot-shape'
 import type { PenpotNode } from 'penpot-exporter/types'
-
-function currentPageId(): string | undefined {
-  return snapshot(docProxy).currentPageId ?? undefined
-}
 
 /** Commit a views/activeView change on the slot (one history frame). No-op if unchanged. */
 async function commitSlot(
@@ -37,7 +29,6 @@ async function commitSlot(
     slot.id,
     slot as unknown as PenpotNode,
     { views, activeView } as Partial<PenpotNode>,
-    currentPageId(),
   )
 }
 
@@ -48,7 +39,7 @@ async function commitSlot(
  * what an already-configured slot shows. Idempotent.
  */
 export async function addViewsToSlot(slotId: string, viewIds: string[]): Promise<void> {
-  const slot = getCommittedNodeOnActivePage(slotId)
+  const slot = getNode(slotId)
   if (!isSlotShape(slot)) return
   const toAdd = viewIds.filter((v) => v && !slot.views.includes(v))
   if (toAdd.length === 0 && slot.activeView != null) return
@@ -68,7 +59,7 @@ export async function addViewToSlot(slotId: string, viewId: string): Promise<voi
  * candidate first if needed.
  */
 export async function setActiveView(slotId: string, viewId: string): Promise<void> {
-  const slot = getCommittedNodeOnActivePage(slotId)
+  const slot = getNode(slotId)
   if (!isSlotShape(slot)) return
   const views = slot.views.includes(viewId) ? slot.views : [...slot.views, viewId]
   await commitSlot(slot, views, viewId)
@@ -79,7 +70,7 @@ export async function setActiveView(slotId: string, viewId: string): Promise<voi
  * the first remaining candidate (or none).
  */
 export async function removeViewFromSlot(slotId: string, viewId: string): Promise<void> {
-  const slot = getCommittedNodeOnActivePage(slotId)
+  const slot = getNode(slotId)
   if (!isSlotShape(slot)) return
   if (!slot.views.includes(viewId)) return
   const views = slot.views.filter((v) => v !== viewId)
@@ -93,7 +84,7 @@ export async function removeViewFromSlot(slotId: string, viewId: string): Promis
  * on ⇒ `showContent: false`. One history frame; no-op if unchanged.
  */
 export async function setSlotClip(slotId: string, clip: boolean): Promise<void> {
-  const slot = getCommittedNodeOnActivePage(slotId)
+  const slot = getNode(slotId)
   if (!isSlotShape(slot)) return
   const showContent = !clip
   if (slot.showContent === showContent) return
@@ -101,6 +92,5 @@ export async function setSlotClip(slotId: string, clip: boolean): Promise<void> 
     slot.id,
     slot as unknown as PenpotNode,
     { showContent } as Partial<PenpotNode>,
-    currentPageId(),
   )
 }

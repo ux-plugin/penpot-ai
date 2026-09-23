@@ -4,22 +4,13 @@
  * The link lives at `node.appliedTokens[attr] = token-name` (Penpot's token
  * model), and the *resolved* concrete value is written into the normal shape
  * prop so the renderer — which never sees a token name — still has something to
- * draw. Both ride a single page change, so the value write and the appliedTokens
+ * draw. Both ride a single change, so the value write and the appliedTokens
  * link undo/redo together as one frame. The concrete-prop writers live in
  * `./materialize` and are shared with propagation (P2.5).
- *
- * Undo note: `appliedTokens` is a top-level key that is usually *absent* before
- * the first apply. Page-change `assign` is a merge (it can't delete a key) and
- * the generic undo-snapshot omits absent keys — so we build the commit here with
- * an explicit `undoAssign` that resets `appliedTokens` to `{}` (and absent
- * scalar/array props to `undefined`) on undo.
  */
 
-import { snapshot } from 'valtio'
 import type { PenpotNode } from 'penpot-exporter/types'
-import { docProxy, getActiveOrSinglePageId } from '../renderer/store/doc-proxy'
-import { getCommittedNodeOnActivePage } from '../renderer/properties/commit-node-properties'
-import { appendModObjPair, emptyChangesBuilder, toCommitBundle } from '../changes/changes-builder'
+import { getNode, meta, mod, type Node } from '../doc'
 import { commitChangesPublic } from '../page-crud'
 import { materializeAttrWrites } from './materialize'
 import { resolveTokens, type ResolvedToken } from './resolve'
@@ -52,46 +43,17 @@ export function defaultApplyAttrs(token: Token): TokenProperties[] {
 }
 
 function currentLib(): TokensLib {
-  return (snapshot(docProxy).meta?.tokens as TokensLib | undefined) ?? emptyTokensLib()
+  return meta.peek()?.tokens ?? emptyTokensLib()
 }
 
-/**
- * Commit a token-driven node update as one undoable page change. `undoAssign`
- * is computed so that keys absent on `before` are cleared on undo (merge-based
- * assign can't delete a key): `appliedTokens` → `{}`, others → `undefined`.
- */
-async function commitTokenNodeUpdate(
-  nodeId: string,
-  before: PenpotNode,
-  partial: Partial<PenpotNode>,
-): Promise<void> {
-  const redoAssign: Record<string, unknown> = {}
+/** Commit a token-driven node update as one undoable change. */
+async function commitTokenNodeUpdate(nodeId: string, partial: Partial<PenpotNode>): Promise<void> {
+  const set: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(partial)) {
-    if (v !== undefined) redoAssign[k] = v
+    if (v !== undefined) set[k] = v
   }
-  const keys = Object.keys(redoAssign)
-  if (keys.length === 0) return
-
-  const rec = before as Record<string, unknown>
-  const undoAssign: Record<string, unknown> = {}
-  for (const k of keys) {
-    const prior = rec[k]
-    if (prior !== undefined) {
-      undoAssign[k] = prior !== null && typeof prior === 'object' ? structuredClone(prior) : prior
-    } else {
-      undoAssign[k] = k === 'appliedTokens' ? {} : undefined
-    }
-  }
-
-  const pid = getActiveOrSinglePageId() ?? undefined
-  let builder = emptyChangesBuilder({ pageId: pid })
-  builder = appendModObjPair(builder, pid, nodeId, { redoAssign, undoAssign })
-  const bundle = toCommitBundle(builder)
-  await commitChangesPublic({
-    redoChanges: bundle.redoChanges,
-    undoChanges: bundle.undoChanges,
-    pageId: pid,
-  })
+  if (Object.keys(set).length === 0) return
+  await commitChangesPublic({ changes: [mod('node', nodeId, set as Partial<Node>)] })
 }
 
 /** Build the partial node update for applying `tokenName` to `attrs`, or null if nothing applies. */
@@ -131,13 +93,13 @@ export async function applyToken(
   const resolved = (await resolveTokens(lib)).get(tokenName)
   if (!resolved || resolved.errors?.length || resolved.resolvedValue == null) return
 
-  const before = getCommittedNodeOnActivePage(nodeId)
+  const before = getNode(nodeId)
   if (!before) return
 
   const partial = buildApplyPartial(before, token.type, tokenName, attrs, resolved)
   if (!partial) return
 
-  await commitTokenNodeUpdate(nodeId, before, partial)
+  await commitTokenNodeUpdate(nodeId, partial)
 }
 
 /**
@@ -146,7 +108,7 @@ export async function applyToken(
  * removed links.
  */
 export async function detachToken(nodeId: string, attrs: TokenProperties[]): Promise<void> {
-  const before = getCommittedNodeOnActivePage(nodeId)
+  const before = getNode(nodeId)
   if (!before) return
   const current = before.appliedTokens
   if (!current) return
@@ -161,5 +123,5 @@ export async function detachToken(nodeId: string, attrs: TokenProperties[]): Pro
   }
   if (!changed) return
 
-  await commitTokenNodeUpdate(nodeId, before, { appliedTokens: applied } as Partial<PenpotNode>)
+  await commitTokenNodeUpdate(nodeId, { appliedTokens: applied } as Partial<PenpotNode>)
 }

@@ -1,19 +1,19 @@
 /**
- * Main worker entry point
- * Translated from frontend/src/app/worker/index.cljs
+ * Main worker entry point: the hit-test index. Holds its own copy of each
+ * page (`page-store.ts`) fed by the document's change ops.
  */
 
 import type {
   WorkerState,
-  IndexedPage,
+  WorkerPage,
   QueryParams,
   WorkerMessage,
   SerializedMessage,
   WorkerUpdateTextRectPayload,
+  WorkerIndexApplyPayload,
 } from './types'
 import type { Point, Matrix } from 'penpot-exporter/types'
-import type { Change } from 'penpot-exporter/types'
-import { processChanges } from './process-changes'
+import { applyToPage } from './page-store'
 import { handler, registerHandler } from './impl'
 import { encode, decode } from './messages'
 import * as selection from './selection'
@@ -21,44 +21,35 @@ import { makeRect, rectToPoints, pointsToRect } from './geometry/rect'
 import { shapeToCenter } from './geometry/shapes'
 import { point } from './geometry/point'
 
-// Worker state
 const state: WorkerState = {
-  pagesIndex: {},
+  pages: {},
   selection: {},
   textRect: {},
   hitIds: {},
 }
 
-// Helper: Create identity transform matrix
 function identityTransform(): Matrix {
   return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
 }
 
-// Helper: Transform a point using a transform matrix
 function transformPoint(pt: Point, transform: Matrix): Point {
   const { a, b, c, d, e, f } = transform
   return point(a * pt.x + c * pt.y + e, b * pt.x + d * pt.y + f)
 }
 
-
-// Register index handlers
 registerHandler('index/clear', () => {
-  state.pagesIndex = {}
+  state.pages = {}
   state.selection = {}
   state.textRect = {}
   return null
 })
 
 registerHandler('index/initialize', (message: WorkerMessage) => {
-  const indexed = (message.payload as { page?: IndexedPage } | undefined)?.page
-  if (!indexed) {
-    return null
-  }
-
+  const page = (message.payload as { page?: WorkerPage } | undefined)?.page
+  if (!page) return null
   try {
-    state.pagesIndex[indexed.id] = indexed
-    state.selection = selection.addPage(state.selection, indexed)
-
+    state.pages[page.id] = page
+    state.selection = selection.addPage(state.selection, page.id, page.objects)
     return null
   } catch (error) {
     console.error('Error initializing page index:', error)
@@ -66,36 +57,15 @@ registerHandler('index/initialize', (message: WorkerMessage) => {
   }
 })
 
-registerHandler('index/update', (message: WorkerMessage) => {
-  const payload = message.payload as { pageId?: string; changes?: Change[]; page?: IndexedPage } | undefined
-  const pageId = payload?.pageId
-  const changes = payload?.changes
-  const newPage = payload?.page
-
-  if (!pageId) {
-    return null
-  }
-
+registerHandler('index/apply', (message: WorkerMessage) => {
+  const payload = message.payload as WorkerIndexApplyPayload | undefined
+  if (!payload?.pageId || !payload.changes?.length) return null
   try {
-    const oldPage = state.pagesIndex[pageId]
-    if (!oldPage) {
-      return null
-    }
-
-    let indexedNew: IndexedPage
-
-    if (changes && changes.length > 0) {
-      indexedNew = processChanges(structuredClone(oldPage), changes)
-      state.pagesIndex[pageId] = indexedNew
-      state.selection = selection.updatePage(state.selection, oldPage, indexedNew)
-    } else if (newPage) {
-      indexedNew = newPage
-      state.pagesIndex[pageId] = indexedNew
-      state.selection = selection.updatePage(state.selection, oldPage, indexedNew)
-    } else {
-      return null
-    }
-
+    const page = state.pages[payload.pageId]
+    if (!page) return null
+    const objects = applyToPage(page, payload.changes)
+    state.pages[payload.pageId] = { id: page.id, objects }
+    state.selection = selection.updatePage(state.selection, page.id, page.objects, objects)
     return null
   } catch (error) {
     console.error('Error updating page index:', error)
@@ -105,13 +75,9 @@ registerHandler('index/update', (message: WorkerMessage) => {
 
 registerHandler('index/query-selection', (message: WorkerMessage) => {
   const params = message.payload as QueryParams
-  if (!params) {
-    return []
-  }
-
+  if (!params) return []
   try {
-    const result = selection.query(state.selection, params)
-    return Array.from(result)
+    return Array.from(selection.query(state.selection, params))
   } catch (error) {
     console.error('Error querying selection:', error)
     return []
@@ -121,100 +87,38 @@ registerHandler('index/query-selection', (message: WorkerMessage) => {
 registerHandler('index/update-text-rect', (message: WorkerMessage) => {
   const payload = message.payload as WorkerUpdateTextRectPayload | undefined
   const { pageId, shapeId, dimensions } = payload ?? {}
-
-  if (!pageId || !shapeId || !dimensions) {
-    return null
-  }
+  if (!pageId || !shapeId || !dimensions) return null
 
   try {
-    const page = state.pagesIndex[pageId]
-    if (!page) {
-      return null
-    }
+    const page = state.pages[pageId]
+    const shape = page?.objects[shapeId]
+    if (!page || !shape) return null
 
-    const objects = page.objects
-    const shape = objects[shapeId]
-    if (!shape) {
-      return null
-    }
-
-    // Get shape center
     const center = shapeToCenter(shape)
-    if (!center) {
-      return null
-    }
-
-    // Get transform or use identity
+    if (!center) return null
     const transform = shape.transform || identityTransform()
-
-    // Create rect from dimensions (dimensions might be {width, height} or full Rect)
-    // If dimensions has x/y, use them; otherwise create at origin
-    const rect = makeRect(
-      dimensions.x ?? 0,
-      dimensions.y ?? 0,
-      dimensions.width ?? 0,
-      dimensions.height ?? 0
-    )
+    const rect = makeRect(dimensions.x ?? 0, dimensions.y ?? 0, dimensions.width ?? 0, dimensions.height ?? 0)
     const rectPoints = rectToPoints(rect)
-    if (!rectPoints) {
-      return null
-    }
-
-    // Transform points: apply transform matrix, then translate by center
-    // This matches ClojureScript's transform-points behavior
-    const points = rectPoints.map(pt => {
-      // Apply transform matrix (includes rotation, scale, and translation)
-      const transformed = transformPoint(pt, transform)
-      // Translate by center
-      return point(transformed.x + center.x, transformed.y + center.y)
+    if (!rectPoints) return null
+    const points = rectPoints.map((pt) => {
+      const t = transformPoint(pt, transform)
+      return point(t.x + center.x, t.y + center.y)
     })
-
-    // Calculate selrect from transformed points
     const selrect = pointsToRect(points)
-    if (!selrect) {
-      return null
-    }
+    if (!selrect) return null
 
-    // Update shape with new data (text rect update clears position-data)
-    const updatedShape = {
-      ...shape,
-      positionData: undefined,
-      points,
-      selrect,
-    }
+    const updatedShape = { ...shape, positionData: undefined, points, selrect }
+    const objects = { ...page.objects, [shapeId]: updatedShape }
+    state.pages[pageId] = { id: pageId, objects }
 
-    // Update objects
-    const updatedObjects = {
-      ...objects,
-      [shapeId]: updatedShape,
-    }
+    state.textRect ??= {}
+    state.textRect[pageId] ??= {}
+    state.textRect[pageId][shapeId] = { positionData: undefined, points, selrect }
 
-    // Update page
-    const updatedPage: IndexedPage = {
-      ...page,
-      objects: updatedObjects,
-    }
-    state.pagesIndex[pageId] = updatedPage
-
-    // Update text-rect cache
-    if (!state.textRect) {
-      state.textRect = {}
-    }
-    if (!state.textRect[pageId]) {
-      state.textRect[pageId] = {}
-    }
-    state.textRect[pageId][shapeId] = {
-      positionData: undefined,
-      points,
-      selrect,
-    }
-
-    // Update selection index for this single shape
     const pageSelection = state.selection[pageId]
     if (pageSelection) {
-      state.selection[pageId] = selection.updateIndexSingle(pageSelection, updatedObjects, updatedShape)
+      state.selection[pageId] = selection.updateIndexSingle(pageSelection, objects, updatedShape)
     }
-
     return null
   } catch (error) {
     console.error('Error updating text rect:', error)
@@ -228,7 +132,7 @@ registerHandler('index/hit-transforms', (message: WorkerMessage) => {
   const transforms = payload?.transforms
   if (!pageId || !transforms) return null
 
-  const page = state.pagesIndex[pageId]
+  const page = state.pages[pageId]
   let pageSel = state.selection[pageId]
   if (!page || !pageSel) return null
   const objects = page.objects
@@ -236,22 +140,17 @@ registerHandler('index/hit-transforms', (message: WorkerMessage) => {
   const prev = state.hitIds?.[pageId] ?? new Set<string>()
   const nextIds = new Set<string>(transforms.map(([id]) => id).filter((id) => objects[id]))
 
-  // Restore any shape that dropped out of the overlay to its rest geometry.
   for (const id of prev) {
-    if (!nextIds.has(id) && objects[id]) {
-      pageSel = selection.updateIndexSingle(pageSel, objects, objects[id])
-    }
+    if (!nextIds.has(id) && objects[id]) pageSel = selection.updateIndexSingle(pageSel, objects, objects[id])
   }
-  // Apply / refresh the overlay: re-insert each shape with its animated bounds + hitTransform.
   for (const [id, matrix] of transforms) {
     const base = objects[id]
     if (!base) continue
-    const withHit = { ...base, hitTransform: matrix }
-    pageSel = selection.updateIndexSingle(pageSel, objects, withHit)
+    pageSel = selection.updateIndexSingle(pageSel, objects, { ...base, hitTransform: matrix })
   }
 
   state.selection[pageId] = pageSel
-  if (!state.hitIds) state.hitIds = {}
+  state.hitIds ??= {}
   state.hitIds[pageId] = nextIds
   return null
 })
@@ -260,7 +159,7 @@ registerHandler('index/clear-hit-transforms', (message: WorkerMessage) => {
   const pageId = (message.payload as { pageId?: string } | undefined)?.pageId
   if (!pageId) return null
   const prev = state.hitIds?.[pageId]
-  const page = state.pagesIndex[pageId]
+  const page = state.pages[pageId]
   let pageSel = state.selection[pageId]
   if (prev && page && pageSel) {
     for (const id of prev) {
@@ -272,22 +171,14 @@ registerHandler('index/clear-hit-transforms', (message: WorkerMessage) => {
   return null
 })
 
-// Main worker message handler
 self.addEventListener('message', (event: MessageEvent) => {
   const raw = event.data as SerializedMessage
   const replyTo = raw?.replyTo
   try {
     const message = decode(raw)
     const result = handler(message)
-
-    // Always send response when client expects one (replyTo present)
     if (replyTo) {
-      const response = encode({
-        cmd: message.cmd,
-        replyTo,
-        payload: result ?? null,
-      })
-      self.postMessage(response)
+      self.postMessage(encode({ cmd: message.cmd, replyTo, payload: result ?? null }))
     }
   } catch (error) {
     console.error('Error handling worker message:', error)
@@ -299,6 +190,4 @@ self.addEventListener('message', (event: MessageEvent) => {
   }
 })
 
-// Export for testing
 export { state, handler }
-

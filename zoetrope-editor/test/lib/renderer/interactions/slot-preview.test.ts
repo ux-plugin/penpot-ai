@@ -1,29 +1,56 @@
-import { describe, it, expect } from 'vitest'
-import type { IndexedPage } from '../../../../src/lib/worker/types'
+import { beforeEach, describe, it, expect } from 'vitest'
+import type { PenpotDocument, PenpotPage } from 'penpot-exporter/types'
 import { nodesToPresentation } from '../../../../src/lib/renderer/interactions/document/nodes-to-presentation'
 import { initRuntime, applyAction, activeSlotView } from '../../../../src/lib/renderer/interactions/preview/runtime'
 import { emptyPageInteractions, LIT } from '../../../../src/lib/renderer/interactions/ir'
 import type { Action } from '../../../../src/lib/renderer/interactions/ir'
 import type { PNode } from '../../../../src/lib/renderer/interactions/compile/emit-react'
-
-const ZERO = '00000000-0000-0000-0000-000000000000'
+import { resetWorkspace, seedDocument } from '../../fixtures'
 
 /** Root → shell → slot(outlet) referencing two top-level view frames. */
-function slotPage(activeView?: string): IndexedPage {
-  const objects: Record<string, unknown> = {
-    [ZERO]: { id: ZERO, type: 'frame', name: 'Root', parentId: null, shapes: ['shell', 'home', 'about'] },
-    shell: { id: 'shell', type: 'frame', name: 'Shell', parentId: ZERO, shapes: ['outlet'] },
-    outlet: { id: 'outlet', type: 'slot', name: 'Outlet', parentId: 'shell', views: ['home', 'about'], activeView },
-    home: { id: 'home', type: 'frame', name: 'Home', parentId: ZERO, shapes: ['homeTxt'] },
-    homeTxt: { id: 'homeTxt', type: 'text', name: 'HomeText', parentId: 'home', content: 'Home view' },
-    about: { id: 'about', type: 'frame', name: 'About', parentId: ZERO, shapes: ['aboutTxt'] },
-    aboutTxt: { id: 'aboutTxt', type: 'text', name: 'AboutText', parentId: 'about', content: 'About view' },
+function slotDoc(activeView?: string): PenpotDocument {
+  const page = {
+    id: 'p',
+    name: 'P',
+    children: [
+      {
+        id: 'shell',
+        type: 'frame',
+        name: 'Shell',
+        children: [{ id: 'outlet', type: 'slot', name: 'Outlet', views: ['home', 'about'], activeView }],
+      },
+      {
+        id: 'home',
+        type: 'frame',
+        name: 'Home',
+        children: [{ id: 'homeTxt', type: 'text', name: 'HomeText', content: 'Home view' }],
+      },
+      {
+        id: 'about',
+        type: 'frame',
+        name: 'About',
+        children: [{ id: 'aboutTxt', type: 'text', name: 'AboutText', content: 'About view' }],
+      },
+    ],
+  } as unknown as PenpotPage
+  return {
+    name: 'Test',
+    children: [page],
+    components: {},
+    images: {},
+    paintStyles: {},
+    textStyles: {},
+    componentProperties: {},
+    externalLibraries: {},
+    missingFonts: [],
+    isShared: false,
   }
-  return { id: 'p', name: 'P', objects } as unknown as IndexedPage
 }
 
-function outletOf(page: IndexedPage): PNode {
-  const slot = nodesToPresentation(page)
+/** Seed the slot page and project its outlet. */
+function outletOf(activeView?: string): PNode {
+  seedDocument(slotDoc(activeView))
+  const slot = nodesToPresentation('p')
     ?.children?.find((c) => c.nodeId === 'shell')
     ?.children?.find((c) => c.nodeId === 'outlet')
   if (!slot?.slot) throw new Error('expected a projected slot')
@@ -36,15 +63,17 @@ function shownView(slot: PNode, slotViews: Record<string, string>): PNode | unde
   return id ? slot.slot?.views[id] : undefined
 }
 
+beforeEach(resetWorkspace)
+
 describe('slot preview — document → projection → runtime resolution', () => {
   it('renders the design-time default view before any interaction fires', () => {
-    const slot = outletOf(slotPage('home'))
+    const slot = outletOf('home')
     const rt = initRuntime(emptyPageInteractions())
     expect(shownView(slot, rt.slotViews)?.children?.[0]?.text).toBe('Home view')
   })
 
   it('a fired show-in-slot swaps the shown view to the targeted one', () => {
-    const slot = outletOf(slotPage('home'))
+    const slot = outletOf('home')
     const show: Action = { type: 'show-in-slot', target: { kind: 'node', node: 'outlet' }, value: LIT('about') }
     const rt = applyAction(show, {}, initRuntime(emptyPageInteractions()), emptyPageInteractions())
 
@@ -54,7 +83,7 @@ describe('slot preview — document → projection → runtime resolution', () =
   })
 
   it('an empty slot (no default, no override) shows nothing', () => {
-    const slot = outletOf(slotPage(undefined))
+    const slot = outletOf(undefined)
     const rt = initRuntime(emptyPageInteractions())
     expect(shownView(slot, rt.slotViews)).toBeUndefined()
   })

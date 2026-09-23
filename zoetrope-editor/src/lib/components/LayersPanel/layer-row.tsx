@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react'
 import { cn } from '@/lib/utils'
-import type { IndexedNode, IndexedShape } from '../../worker/types'
+import type { Node } from '../../doc'
 import { ShapeIcon } from '../shape-icons'
 import {
   computeDropSide,
@@ -18,11 +18,10 @@ export interface DragOverState {
 }
 
 export interface LayerRowProps {
-  node: IndexedNode
+  node: Node
   depth: number
   active: boolean
-  selectedIds: Set<string>
-  objects: Record<string, IndexedShape>
+  selectedIds: ReadonlySet<string>
   dragOver: DragOverState | null
   onSelect: (id: string) => void
   onDragStart: (id: string) => string[]
@@ -42,17 +41,9 @@ function readDraggedIds(e: React.DragEvent): string[] {
   }
 }
 
-function wouldBeInvalidCenter(
-  targetId: string,
-  draggedIds: readonly string[],
-  objects: Record<string, IndexedShape>,
-): boolean {
+function wouldBeInvalidCenter(targetId: string, draggedIds: readonly string[]): boolean {
   if (draggedIds.length === 0) return true
-  for (const id of draggedIds) {
-    if (id === targetId) return true
-    if (isAncestor(objects, id, targetId)) return true
-  }
-  return false
+  return draggedIds.some((id) => isAncestor(id, targetId))
 }
 
 export function LayerRow({
@@ -60,7 +51,6 @@ export function LayerRow({
   depth,
   active,
   selectedIds,
-  objects,
   dragOver,
   onSelect,
   onDragStart,
@@ -92,7 +82,7 @@ export function LayerRow({
       const rect = el.getBoundingClientRect()
       const offsetY = e.clientY - rect.top
       const draggedIds = readDraggedIds(e)
-      const invalidCenter = wouldBeInvalidCenter(node.id, draggedIds, objects)
+      const invalidCenter = wouldBeInvalidCenter(node.id, draggedIds)
       let side = computeDropSide(offsetY, rect.height, container && !invalidCenter)
       if (side === 'center' && invalidCenter) {
         side = offsetY < rect.height / 2 ? 'top' : 'bot'
@@ -101,7 +91,7 @@ export function LayerRow({
         onDragOver({ id: node.id, side })
       }
     },
-    [container, dragOver, node.id, objects, onDragOver],
+    [container, dragOver, node.id, onDragOver],
   )
 
   const handleDragLeave = useCallback(
@@ -124,17 +114,17 @@ export function LayerRow({
       const offsetY = e.clientY - rect.top
       const draggedIds = readDraggedIds(e)
       if (draggedIds.length === 0) return
-      const invalidCenter = wouldBeInvalidCenter(node.id, draggedIds, objects)
+      const invalidCenter = wouldBeInvalidCenter(node.id, draggedIds)
       let side = computeDropSide(offsetY, rect.height, container && !invalidCenter)
       if (side === 'center' && invalidCenter) {
         side = offsetY < rect.height / 2 ? 'top' : 'bot'
       }
       onDrop(node.id, side, draggedIds)
     },
-    [container, node.id, objects, onDrop],
+    [container, node.id, onDrop],
   )
 
-  const side = dragOver?.id === node.id ? dragOver.side : null
+  const side = dragOver && dragOver.id === node.id ? dragOver.side : null
 
   return (
     <div

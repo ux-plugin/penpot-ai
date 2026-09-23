@@ -12,8 +12,8 @@
  * - Per-frame, when the projected drop target changes, the structure modifiers
  *   (layout-detach entries) are passed to `renderer.setWasmModifiers` via its
  *   options bag, so propagate_modifiers reflows flex/grid containers live.
- * - On pointer-up, fold mov-objects into the same commitChanges bundle as the
- *   move's mod-obj changes — single undo frame per gesture.
+ * - On pointer-up, fold the reparent into the same commit as the move's
+ *   geometry — single undo frame per gesture.
  */
 
 import { Observable, EMPTY, merge } from 'rxjs'
@@ -26,7 +26,7 @@ import { getModifierKeys } from '../store/shortcuts-store'
 import { isSnapPixelGridEnabled } from '../store/workspace-settings'
 import { snapMoveDeltaToGrid } from './pixel-snap'
 import { getSelectedIdsSet } from '../store/document-selection'
-import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
+import { ROOT, children, getActiveOrSinglePageId, pageObjects } from '../../doc'
 import { applyModifiersAndCommit } from './utils'
 import { motionAnimatedMatrix, recordDragKeyframe } from '../motion/motion-store'
 import { DRAG_RENDER_INTERVAL_MS } from './drag-render-interval'
@@ -73,8 +73,11 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
 
   if (!renderer || !vp || selectedIds.size === 0 || !pageId) return EMPTY
 
-  const page = getPage(pageId)
-  if (!page) return EMPTY
+  // Page view for the container hit-tests, built once per gesture (a drag
+  // commits nothing until release).
+  const objects = pageObjects(pageId)
+  /** Document child list of a WASM parent id (`ROOT` = the page's top level). */
+  const kidsOf = (parentId: string): readonly string[] => children(parentId === ROOT ? pageId : parentId)
 
   movePreviewWorldDelta.value = { x: 0, y: 0 }
 
@@ -125,9 +128,9 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
   // build them once and re-emit each frame after cleanModifiers wipes them.
   // Without these, propagate's parent flex reflow re-pins the dragged shape
   // to its layout slot every frame and the cursor-following preview is dead.
-  const layoutDetachEntries = buildLayoutDetachEntries(selectedIds, page)
+  const layoutDetachEntries = buildLayoutDetachEntries(selectedIds)
 
-  // Transient Figma-style drop placeholder (WASM-only, never in docProxy/undo).
+  // Transient Figma-style drop placeholder (WASM-only, never in the document/undo).
   // Created on the first hover over a flex target, moved if the target changes,
   // and destroyed on release/cancel. See handlers/drop-placeholder.ts.
   let placeholder: DropPlaceholder | null = null
@@ -141,8 +144,7 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
   const destroyPlaceholder = (): void => {
     if (!placeholder) return
     try {
-      const docKids = (page.objects[placeholder.targetId] as { shapes?: string[] } | undefined)?.shapes ?? []
-      destroyDropPlaceholder(renderer, placeholder, docKids)
+      destroyDropPlaceholder(renderer, placeholder, kidsOf(placeholder.targetId))
     } catch {
       /* ignore */
     }
@@ -192,7 +194,7 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
         // moved center only if the pointer isn't available.
         const cursor = worldPointerPos.value ?? undefined
         const point = cursor ?? { x: baselineRect.center.x + worldDelta.x, y: baselineRect.center.y + worldDelta.y }
-        const intent = resolveDropIntent(selectedIds, page, point)
+        const intent = resolveDropIntent(selectedIds, objects, point)
 
         // A slot is an ordinary drop target: cursor over it arms "fill this
         // slot", the same way the cursor over a container arms a reparent. No
@@ -205,7 +207,7 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
         // Everything below is left as it was — an armed slot simply presents an
         // empty reparent map, so the existing "not over any target" path runs
         // and the slot intent replaces the reparent one on the overlay.
-        const slotIntent = resolveSlotDropIntent(selectedIds, page, cursor ?? point)
+        const slotIntent = resolveSlotDropIntent(selectedIds, objects, cursor ?? point)
         slotDropRef.current = slotIntent?.targetId ?? null
 
         // Reparent detection (cursor-based) drives BOTH the faithful "held shape"
@@ -214,7 +216,7 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
         // reparenting, not a same-parent reorder.
         const probeTargets = slotIntent
           ? new Map<string, { parentId: string; index: number }>()
-          : detectReparentTargets(selectedIds, page, worldDelta, cursor)
+          : detectReparentTargets(selectedIds, objects, worldDelta, cursor)
         const firstTarget = probeTargets.values().next().value as
           | { parentId: string; index: number }
           | undefined
@@ -231,13 +233,12 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
         if (firstTarget) {
           try {
             if (intent?.hasLayout) {
-              const objsAll = page.objects as Record<string, { shapes?: string[] }>
               // Normalize to sibling-space: exclude the dragged shapes so the
               // placeholder splices among clean siblings — identical to a drag from
               // outside. A dragged shape that IS a child here (same-parent reorder)
               // is appended so WASM keeps it (dropping it from set_children would
               // delete it); the lift then moves it to the front, out of flow.
-              const rawKids = objsAll[firstTarget.parentId]?.shapes ?? []
+              const rawKids = kidsOf(firstTarget.parentId)
               const siblings = rawKids.filter((id) => !selectedIds.has(id))
               const draggedHere = rawKids.filter((id) => selectedIds.has(id))
               const targetDocKids = draggedHere.length > 0 ? [...siblings, ...draggedHere] : siblings
@@ -266,17 +267,16 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
                   renderer,
                   firstTarget.parentId,
                   targetDocKids,
-                  { objects: page.objects, selectedIds, fallbackSelrect },
+                  { selectedIds, fallbackSelrect },
                   dropIndex,
                 )
               } else if (placeholder.targetId !== firstTarget.parentId) {
                 // Restore the old target to its full document list (keep the dragged
                 // shape referenced so WASM doesn't delete it while it's lifted).
-                const oldDocKids = objsAll[placeholder.targetId]?.shapes ?? []
                 placeholder = reattachDropPlaceholder(
                   renderer,
                   placeholder,
-                  oldDocKids,
+                  kidsOf(placeholder.targetId),
                   firstTarget.parentId,
                   targetDocKids,
                   dropIndex,
@@ -299,8 +299,8 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
             // Reflow the target (identity) so a layout placeholder opens its gap.
             // All transient — `cleanModifiers` reverts it on release, and the real
             // reparent commits at the calculated index.
-            const previewStructure = buildReparentPreviewEntries(selectedIds, page, firstTarget.parentId)
-            const probeReflow = collectReflowParents(selectedIds, page, probeTargets)
+            const previewStructure = buildReparentPreviewEntries(selectedIds, firstTarget.parentId)
+            const probeReflow = collectReflowParents(selectedIds, probeTargets)
             const probeEntries: Array<[string, Matrix]> = [
               ...Array.from(selectedIds, (id) => [id, previewMatrix(worldDelta.x, worldDelta.y)] as [string, Matrix]),
               ...Array.from(probeReflow, (id) => [id, identityMatrix()] as [string, Matrix]),
@@ -410,10 +410,10 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
       }
 
       // Compute the final reparent intent against the same delta we'll commit
-      // geometry for. This bundles `mov-objects` into the same commit call. The
+      // geometry for. This bundles the reparent into the same commit call. The
       // insertion index follows the cursor (matches the drop-preview), so the drop
       // lands where the ghost showed instead of always appending.
-      const finalTargets = detectReparentTargets(selectedIds, page, delta, worldPointerPos.value ?? undefined)
+      const finalTargets = detectReparentTargets(selectedIds, objects, delta, worldPointerPos.value ?? undefined)
       // Land the drop where the preview gap was: reuse the exact index the last
       // preview frame showed. (detectReparentTargets already recomputes the same
       // wrap-aware index from resting positions, but reusing lastPreview guarantees
@@ -423,13 +423,12 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
           t.index = lastPreview.index
         }
       }
-      const structureModifiers =
-        finalTargets.size > 0 ? buildCommitStructureEntries(finalTargets, page) : undefined
-      const textGrowTypes = collectTextGrowTypes(selectedIds, page)
+      const structureModifiers = finalTargets.size > 0 ? buildCommitStructureEntries(finalTargets) : undefined
+      const textGrowTypes = collectTextGrowTypes(selectedIds)
 
       // Same identity-reflow trick as the per-frame path so the new target
       // parent (and the source parent) reflow during the final propagate.
-      const reflowParents = collectReflowParents(selectedIds, page, finalTargets)
+      const reflowParents = collectReflowParents(selectedIds, finalTargets)
       const moveEntries: Array<[string, Matrix]> = [
         ...Array.from(selectedIds).map((id) => [id, translateMatrix(delta.x, delta.y)] as [string, Matrix]),
         ...Array.from(reflowParents, (id) => [id, identityMatrix()] as [string, Matrix]),

@@ -3,39 +3,31 @@
  * document nodes (as opposed to slot-edit.ts, which only mutates a slot's view
  * references). Kept separate so slot-edit stays a thin, side-effect-light
  * write-path and this module owns the node-creation plumbing (createFrame +
- * add-obj commit) it composes with.
+ * addNode commit) it composes with.
  */
-import { snapshot } from 'valtio'
-import { docProxy, getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
+import {
+  addNode,
+  beginGroup,
+  children,
+  descendants,
+  endGroup,
+  getActiveOrSinglePageId,
+  getNode,
+  mod,
+  moveNodes,
+  type Change,
+  type Node,
+} from '../../doc'
 import { setSelectedIds } from '../store/document-selection'
 import { applyChanges } from '../../page-crud'
 import { createFrame } from '../node-factory'
-import { getCommittedNodeOnActivePage } from '../properties/commit-node-properties'
 import { isSlotShape } from '../../worker/geometry/shapes'
-import { buildReparentChanges } from '../../components/LayersPanel/reparent'
-import { buildTransformModObjPair } from '../../changes/changes-builder'
-import { subtreeOf } from '../../common/subtree'
 import { applyTransformToNode } from '../geom/apply-transform-to-node'
 import { translateMatrix } from '../geom/matrix'
 import { setActiveView } from './slot-edit'
-import type { IndexedShape } from '../../worker/types'
-import type {
-  AddObjChange,
-  Change,
-  DelObjChange,
-  ModObjChange,
-  PenpotNode,
-} from 'penpot-exporter/types'
-
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
 /** Gap between a slot and the view frame extracted from / created for it. */
 const VIEW_GAP = 40
-
-/** A `mod-obj` that merges `assign` into the node (the pipeline's 'assign' op). */
-function modObj(pageId: string, id: string, assign: Record<string, unknown>): ModObjChange {
-  return { type: 'mod-obj', id, pageId, operations: [{ type: 'assign', value: assign }] }
-}
 
 /** Ordinal for the default name of the Nth view created for a slot. */
 function nextViewName(existing: number): string {
@@ -45,25 +37,21 @@ function nextViewName(existing: number): string {
 /**
  * Create a fresh, pre-sized view frame and register it as the slot's active view.
  *
- * The new frame is a top-level sibling (parented to the page root, like any
- * board): a view has stable identity and lives outside the slot, which merely
- * references it. It is sized to the slot's box and offset to sit just to the
- * slot's right so it is visible on canvas rather than hidden under the outlet.
+ * The new frame is a top-level sibling (like any board): a view has stable
+ * identity and lives outside the slot, which merely references it. It is sized
+ * to the slot's box and offset to sit just to the slot's right so it is visible
+ * on canvas rather than hidden under the outlet.
  *
- * Two history frames (add-obj, then the slot's mod-obj) — creating the frame is
+ * Two history frames (add, then the slot's mod) — creating the frame is
  * independently undoable from wiring it up. Returns the new view id, or null if
  * there is no active page or the target is not a slot.
  */
 export async function addNewViewToSlot(slotId: string): Promise<string | null> {
-  const slot = getCommittedNodeOnActivePage(slotId)
+  const slot = getNode(slotId)
   if (!isSlotShape(slot)) return null
 
   const pageId = getActiveOrSinglePageId()
   if (!pageId) return null
-  const page = getPage(pageId)
-  if (!page) return null
-  const root = Object.values(page.objects).find((o) => o.parentId == null)
-  const rootId = root?.id ?? ROOT_UUID
 
   const width = slot.selrect?.width ?? slot.width ?? 400
   const height = slot.selrect?.height ?? slot.height ?? 300
@@ -76,22 +64,11 @@ export async function addNewViewToSlot(slotId: string): Promise<string | null> {
     y,
     width,
     height,
-    parentId: rootId,
     fillColor: '#FFFFFF',
     fillOpacity: 1,
   })
 
-  const addChange: AddObjChange = {
-    type: 'add-obj',
-    id: view.id,
-    obj: view,
-    frameId: rootId,
-    parentId: rootId,
-    index: root?.shapes?.length ?? 0,
-    pageId,
-  }
-  const undoChange: DelObjChange = { type: 'del-obj', id: view.id, pageId }
-  await applyChanges([addChange], { undoChanges: [undoChange] })
+  await applyChanges([addNode(view, { page: pageId })])
 
   // Register + make it the active view (defaults it if the slot was empty).
   await setActiveView(slotId, view.id)
@@ -119,37 +96,14 @@ export async function addNewViewToSlot(slotId: string): Promise<string | null> {
 export async function convertFrameToSlot(frameId: string): Promise<string | null> {
   const pageId = getActiveOrSinglePageId()
   if (!pageId) return null
-  // Read through a valtio snapshot, not the live proxy: the undo vector deep-
-  // clones geometry via structuredClone, which rejects a proxy (DataCloneError).
-  const objects = snapshot(docProxy).pageMap.get(pageId)?.objects as
-    | Record<string, IndexedShape>
-    | undefined
-  if (!objects) return null
-  const frame = objects[frameId]
+  const frame = getNode(frameId)
   if (!frame || frame.type !== 'frame') return null
 
-  const root = Object.values(objects).find((o) => o.parentId == null)
-  const rootId = root?.id ?? ROOT_UUID
-  // The page root is the canvas itself, never an outlet.
-  if (frameId === rootId) return null
-
-  const children = [...(frame.shapes ?? [])]
+  const kids = [...children(frameId)]
 
   // Empty frame: a plain type swap, nothing to extract.
-  if (children.length === 0) {
-    const redo = modObj(pageId, frameId, {
-      type: 'slot',
-      views: [],
-      activeView: undefined,
-      shapes: undefined,
-    })
-    const undo = modObj(pageId, frameId, {
-      type: 'frame',
-      shapes: [],
-      views: undefined,
-      activeView: undefined,
-    })
-    await applyChanges([redo], { pageId, undoChanges: [undo] })
+  if (kids.length === 0) {
+    await applyChanges([mod('node', frameId, { type: 'slot', views: [], activeView: undefined } as Partial<Node>)])
     return null
   }
 
@@ -165,69 +119,35 @@ export async function convertFrameToSlot(frameId: string): Promise<string | null
     y: fy,
     width,
     height,
-    parentId: rootId,
     fillColor: '#FFFFFF',
     fillOpacity: 1,
   })
 
   // Collected before any change is applied, so it reflects the original tree.
-  const moved = subtreeOf(objects, frameId)
-
-  const addView: AddObjChange = {
-    type: 'add-obj',
-    id: view.id,
-    obj: view,
-    frameId: rootId,
-    parentId: rootId,
-    index: root?.shapes?.length ?? 0,
-    pageId,
-  }
-  const delView: DelObjChange = { type: 'del-obj', id: view.id, pageId }
-
-  const reparent = buildReparentChanges({
-    pageId,
-    parentId: view.id,
-    index: 0,
-    shapeIds: children,
-    objects,
-  })
+  const moved = descendants(frameId)
 
   // Shift the extracted content by the same delta as the new frame.
   const shift = translateMatrix(dx, 0)
-  const shiftRedo: Change[] = []
-  const shiftUndo: Change[] = []
+  const shifts: Change[] = []
   for (const id of moved) {
-    const node = objects[id] as PenpotNode | undefined
+    const node = getNode(id)
     if (!node) continue
     const partial = applyTransformToNode(node, shift)
-    if (!partial) continue
-    const pair = buildTransformModObjPair(pageId, id, node, partial as Record<string, unknown>)
-    shiftRedo.push(pair.redo)
-    shiftUndo.unshift(pair.undo)
+    if (partial) shifts.push(mod('node', id, partial as Partial<Node>))
   }
 
-  const toSlot = modObj(pageId, frameId, {
-    type: 'slot',
-    views: [view.id],
-    activeView: view.id,
-    shapes: undefined,
-  })
-  const toFrame = modObj(pageId, frameId, {
-    type: 'frame',
-    shapes: [],
-    views: undefined,
-    activeView: undefined,
-  })
+  const toSlot = mod('node', frameId, { type: 'slot', views: [view.id], activeView: view.id } as Partial<Node>)
 
-  // Undo replays in array order, so it mirrors redo backwards: become a frame
-  // again, un-shift the content, move it home, then drop the now-empty view.
-  await applyChanges(
-    [addView, ...reparent.redoChanges, ...shiftRedo, toSlot],
-    {
-      pageId,
-      undoChanges: [toFrame, ...shiftUndo, ...reparent.undoChanges, delView],
-    },
-  )
+  // The view must be a record before `moveNodes` can frame the children under
+  // it, so it lands in its own commit; the group folds both into one frame.
+  const group = `convert-frame-to-slot:${frameId}`
+  beginGroup(group)
+  try {
+    await applyChanges([addNode(view, { page: pageId })])
+    await applyChanges([...moveNodes(kids, { page: pageId, parentId: view.id, index: 0 }), ...shifts, toSlot])
+  } finally {
+    endGroup(group)
+  }
   return view.id
 }
 
@@ -240,34 +160,16 @@ export async function convertFrameToSlot(frameId: string): Promise<string | null
  * frame. The result is an empty frame with the slot's box.
  */
 export async function convertSlotToFrame(slotId: string): Promise<boolean> {
-  const pageId = getActiveOrSinglePageId()
-  if (!pageId) return false
-  const slot = getCommittedNodeOnActivePage(slotId)
+  const slot = getNode(slotId)
   if (!isSlotShape(slot)) return false
 
-  const redo = modObj(pageId, slotId, {
-    type: 'frame',
-    shapes: [],
-    views: undefined,
-    activeView: undefined,
-  })
-  const undo = modObj(pageId, slotId, {
-    type: 'slot',
-    views: [...slot.views],
-    activeView: slot.activeView,
-    shapes: undefined,
-  })
-  await applyChanges([redo], { pageId, undoChanges: [undo] })
+  await applyChanges([mod('node', slotId, { type: 'frame', views: undefined, activeView: undefined } as Partial<Node>)])
   return true
 }
 
 /** Layer name for a view id, for display in the slot panel. Falls back to the id. */
 export function viewName(viewId: string): string {
-  const objects = snapshot(docProxy).currentPageId
-    ? getPage(snapshot(docProxy).currentPageId as string)?.objects
-    : undefined
-  const node = objects?.[viewId] as PenpotNode | undefined
-  return node?.name ?? viewId.slice(0, 8)
+  return getNode(viewId)?.name ?? viewId.slice(0, 8)
 }
 
 /** Select the underlying view frame on canvas (double-click-into affordance). */

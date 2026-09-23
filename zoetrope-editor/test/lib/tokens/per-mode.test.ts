@@ -11,8 +11,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest'
-import { setDocument, undo } from '../../../src/lib/page-crud'
-import { docProxy } from '../../../src/lib/renderer/store/doc-proxy'
+import { meta, undo } from '../../../src/lib/doc'
 import {
   createToken,
   createTokenSet,
@@ -30,7 +29,7 @@ import {
   modifyToken,
   setActiveThemes,
 } from '../../../src/lib/tokens/crud'
-import { makeBaseDocument, resetWorkspace } from '../fixtures'
+import { makeBaseDocument, resetWorkspace, seedDocument } from '../fixtures'
 
 const BASE = 'set-base'
 const DARK = 'set-dark'
@@ -40,7 +39,7 @@ const DARK_THEME = 'th-dark'
 beforeEach(resetWorkspace)
 
 function lib(): TokensLib {
-  return docProxy.meta!.tokens as TokensLib
+  return meta.peek()!.tokens as TokensLib
 }
 function theme(id: string) {
   return lib().themes.find((t) => t.id === id)!
@@ -55,7 +54,7 @@ function resolvedBg(): unknown {
 
 /** base(color.bg #FFFFFF) then an empty dark set; Light=[base], Dark=[base,dark]. */
 async function setup(): Promise<void> {
-  await setDocument(makeBaseDocument())
+  seedDocument(makeBaseDocument())
   await addTokenSet(createTokenSet({ id: BASE, name: 'base' }))
   await addToken(BASE, createToken({ id: 't-bg', name: 'color.bg', type: 'color', value: '#FFFFFF' }))
   await addTokenSet(createTokenSet({ id: DARK, name: 'dark' }))

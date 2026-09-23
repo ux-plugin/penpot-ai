@@ -3,18 +3,15 @@
  *
  * The serializable `Scene3DDocument` lives on the scene container node as
  * `node.scene3d`. Every edit — scene-level (camera/env) or object-level
- * (transform/material/add/remove) — replaces that blob through the same `mod-obj`
+ * (transform/material/add/remove) — replaces that blob through the same `mod`
  * pipeline the 2D inspector uses (`commitNodePartialUpdate`), so each edit is one
  * undo frame with a paired inverse. `scene3d` is opaque to WASM. `scene3dProxy`
  * is reconciled from the document by scene3d-sync; callers here don't touch it.
  */
 
 import type { PenpotNode } from 'penpot-exporter/types'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '../properties/commit-node-properties'
-import { getActiveOrSinglePageId } from '../store/doc-proxy'
+import { commitNodePartialUpdate } from '../properties/commit-node-properties'
+import { getNode } from '../../doc'
 import { sceneCameras } from './scene3d-store'
 import type {
   Camera3DEntry,
@@ -26,24 +23,22 @@ import type {
 import { sceneWindow, windowFittedToBox, type BoxRect } from './scene3d-viewframe'
 import { nodeBoxRect } from './scene3d-crop-resize'
 
-/** The committed scene document on the node (plain clone, detached from the proxy). */
+/** The committed scene document on the node (a mutable clone; records are frozen). */
 function currentScene(sceneId: string): Scene3DDocument | null {
-  const node = getCommittedNodeOnActivePage(sceneId) as { scene3d?: Scene3DDocument } | null
-  const doc = node?.scene3d
+  const doc = getNode(sceneId)?.scene3d
   return doc ? (structuredClone(doc) as Scene3DDocument) : null
 }
 
-/** Commit a full Scene3DDocument onto the node as one undoable `mod-obj`. */
+/** Commit a full Scene3DDocument onto the node as one undoable `mod`. */
 export async function commitScene3d(sceneId: string, next: Scene3DDocument): Promise<void> {
-  const before = getCommittedNodeOnActivePage(sceneId)
-  const pid = getActiveOrSinglePageId()
-  if (!before || !pid) return
-  await commitNodePartialUpdate(sceneId, before, { scene3d: next } as Partial<PenpotNode>, pid)
+  const before = getNode(sceneId)
+  if (!before) return
+  await commitNodePartialUpdate(sceneId, before, { scene3d: next } as Partial<PenpotNode>)
 }
 
 /** The scene container's current box, for sizing a view frame. */
 function sceneBox(sceneId: string): BoxRect | null {
-  return nodeBoxRect(getCommittedNodeOnActivePage(sceneId))
+  return nodeBoxRect(getNode(sceneId))
 }
 
 /**

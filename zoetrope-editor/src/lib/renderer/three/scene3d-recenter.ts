@@ -10,7 +10,7 @@
 import { Viewport } from '../viewport'
 import { viewport } from '../signals/pointer'
 import { useWorkspaceStore } from '../store/workspace-store'
-import { getNode } from '../store/doc-proxy'
+import { getNode } from '../../doc'
 
 export interface WorldRect {
   cx: number

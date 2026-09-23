@@ -8,7 +8,7 @@
  * resolve a slot target into a view-mirror preview.
  */
 import type { Point } from 'penpot-exporter/types'
-import type { IndexedPage, IndexedShape } from '../../worker/types'
+import { ROOT, children, getNode, type Node, type PageObjects } from '../../doc'
 import { findContainerAtPoint, findSlotAtPoint } from '../../components/LayersPanel/reparent'
 import { isFrameShape } from '../../worker/geometry/shapes'
 
@@ -20,14 +20,14 @@ interface FlexInfo {
 }
 
 /** Flex main axis + direction, or null when the node isn't a flex container. */
-function flexAxis(node: IndexedShape): FlexInfo | null {
+function flexAxis(node: Node): FlexInfo | null {
   const dir = (node as { layoutFlexDir?: string }).layoutFlexDir
   if (!dir) return null
   return { axis: dir.startsWith('row') ? 'x' : 'y', reverse: dir.endsWith('reverse') }
 }
 
 /** Any layout (flex OR grid) — used for the target highlight even when we don't draw a line. */
-export function hasAnyLayout(node: IndexedShape): boolean {
+export function hasAnyLayout(node: Node): boolean {
   const n = node as { layoutFlexDir?: unknown; layoutGridDir?: unknown }
   return Boolean(n.layoutFlexDir || n.layoutGridDir)
 }
@@ -41,17 +41,12 @@ interface ChildRect {
   cy: number
 }
 
-/** Immediate children (in `shapes` order) that have a selrect, with centers precomputed. */
-function orderedChildRects(
-  target: IndexedShape,
-  objects: Record<string, IndexedShape>,
-  excludeIds?: ReadonlySet<string>,
-): ChildRect[] {
-  const ids = (target as { shapes?: string[] }).shapes ?? []
+/** Immediate children (in sibling order) that have a selrect, with centers precomputed. */
+function orderedChildRects(target: Node, excludeIds?: ReadonlySet<string>): ChildRect[] {
   const out: ChildRect[] = []
-  for (const id of ids) {
+  for (const id of children(target.id)) {
     if (excludeIds?.has(id)) continue
-    const sr = objects[id]?.selrect
+    const sr = getNode(id)?.selrect
     if (!sr) continue
     const width = sr.width ?? 0
     const height = sr.height ?? 0
@@ -74,10 +69,10 @@ interface DropItem {
 /**
  * Insertion index for `point` among a flex container's children — a wrap-aware
  * port of the frontend's `get-drop-index` (drop_area.cljc), computed on the
- * container's RESTING child positions (each child's `selrect` in `objects`).
+ * container's RESTING child positions (each child's committed `selrect`).
  *
  * Resting is the whole point: the drag preview's placeholder is a WASM-only shape
- * that never enters `objects`, so here the children sit where they rest — a stable
+ * that never enters the document, so here the children sit where they rest — a stable
  * reference. (Measuring against the live, gapped layout is what made earlier
  * versions unstable.) Because we read the real laid-out rects, all spacing —
  * padding, gaps, margins, differing sizes, justify/align — is already baked in; we
@@ -89,14 +84,9 @@ interface DropItem {
  * the cursor on the main axis. Map that visual position back to a document index
  * (reverse flips visual↔document order on the main axis). Non-flex: append.
  */
-export function computeDropIndex(
-  target: IndexedShape,
-  objects: Record<string, IndexedShape>,
-  point: Point,
-  excludeIds?: ReadonlySet<string>,
-): number {
+export function computeDropIndex(target: Node, point: Point, excludeIds?: ReadonlySet<string>): number {
   const flex = flexAxis(target)
-  const rawIds = (target as { shapes?: string[] }).shapes ?? []
+  const rawIds = children(target.id)
   // Normalize to sibling-space: drop the dragged shapes from the child list so
   // the index is measured AND returned against the remaining siblings only
   // (slots 0..siblings.length). For a drag from outside nothing is excluded, so
@@ -111,7 +101,7 @@ export function computeDropIndex(
   // Resting geometry per sibling, keyed by its position in the sibling list.
   const items: DropItem[] = []
   for (let i = 0; i < siblings.length; i++) {
-    const sr = objects[siblings[i]]?.selrect
+    const sr = getNode(siblings[i])?.selrect
     if (!sr) continue
     const w = sr.width ?? 0
     const h = sr.height ?? 0
@@ -173,7 +163,7 @@ export function computeDropIndex(
   const p = before + local
 
   const vis = lines.flat()
-  // Map the visual insertion position `p` to a `shapes`-array index. Penpot stores
+  // Map the visual insertion position `p` to a sibling index. Penpot stores
   // children in the OPPOSITE order to their visual layout for NON-reverse containers
   // (the engine iterates children reversed when not reverse; the frontend does
   // `(cond->> (enumerate children) (not reverse?) reverse)`). So for a non-reverse
@@ -189,12 +179,11 @@ export function computeDropIndex(
  * The insertion line in WORLD coords (authored in world space; the overlay's parent
  * applies the viewport transform). Perpendicular to the main axis, at the boundary
  * before child `index`, spanning the container's cross-axis extent. Null when the
- * target isn't a flex container. Assumes visual order matches `shapes` order
+ * target isn't a flex container. Assumes visual order matches sibling order
  * (exact for non-reverse; reverse is approximate).
  */
 export function insertionLineWorld(
-  target: IndexedShape,
-  objects: Record<string, IndexedShape>,
+  target: Node,
   index: number,
   excludeIds?: ReadonlySet<string>,
 ): { x1: number; y1: number; x2: number; y2: number } | null {
@@ -208,7 +197,7 @@ export function insertionLineWorld(
   const pad = 4
   // The line sits at sibling boundary `index` — measure the same sibling list the
   // index was computed against (dragged excluded), so `kids[index]` lines up.
-  const kids = orderedChildRects(target, objects, excludeIds)
+  const kids = orderedChildRects(target, excludeIds)
 
   if (flex.axis === 'x') {
     let x: number
@@ -269,17 +258,16 @@ export const SLOT_DROP_LABEL = 'Show here'
  */
 export function resolveSlotDropIntent(
   selectedIds: ReadonlySet<string>,
-  page: IndexedPage,
+  objects: PageObjects,
   point: Point,
 ): DropIntent | null {
   if (selectedIds.size !== 1) return null
-  const objects = page.objects as Record<string, IndexedShape>
   const draggedId = selectedIds.values().next().value as string
-  if (!isFrameShape(objects[draggedId])) return null
+  if (!isFrameShape(getNode(draggedId))) return null
 
   const slotId = findSlotAtPoint(objects, point, [draggedId])
   if (!slotId) return null
-  const sr = objects[slotId]?.selrect
+  const sr = getNode(slotId)?.selrect
   if (!sr) return null
 
   return {
@@ -294,12 +282,9 @@ export function resolveSlotDropIntent(
 }
 
 /** First selected shape that has a selrect — used to size the ghost footprint. */
-function primarySize(
-  selectedIds: ReadonlySet<string>,
-  objects: Record<string, IndexedShape>,
-): { width: number; height: number } | null {
+function primarySize(selectedIds: ReadonlySet<string>): { width: number; height: number } | null {
   for (const id of selectedIds) {
-    const sr = objects[id]?.selrect
+    const sr = getNode(id)?.selrect
     if (sr) return { width: sr.width ?? 0, height: sr.height ?? 0 }
   }
   return null
@@ -312,7 +297,7 @@ function primarySize(
  * and replaces this with the engine's exact reflowed rect.
  */
 function provisionalFootprint(
-  target: IndexedShape,
+  target: Node,
   line: { x1: number; y1: number; x2: number; y2: number },
   size: { width: number; height: number },
 ): { x: number; y: number; width: number; height: number } {
@@ -331,32 +316,29 @@ function provisionalFootprint(
 /**
  * Resolve the drop intent for a drag at `point` (the primary dragged shape's
  * projected center, in world coords). Returns null when the point isn't over a
- * droppable container. `selectedIds` only feeds the exclude set so a shape can't
- * target itself/its descendants.
+ * droppable container. `objects` is the page view the container search scans;
+ * `selectedIds` only feeds the exclude set so a shape can't target
+ * itself/its descendants.
  */
 export function resolveDropIntent(
   selectedIds: ReadonlySet<string>,
-  page: IndexedPage,
+  objects: PageObjects,
   point: Point,
 ): DropIntent | null {
   if (selectedIds.size === 0) return null
-  const objects = page.objects as Record<string, IndexedShape>
   const targetId = findContainerAtPoint(objects, point, Array.from(selectedIds))
-  if (!targetId) return null
-  const target = objects[targetId]
-  if (!target?.selrect) return null
-
   // The page root is findContainerAtPoint's fallback when the cursor is over empty
   // canvas — dropping there is just "top level", not a container worth highlighting.
-  // (root is the node with no parent.)
-  if (target.parentId == null) return null
+  if (!targetId || targetId === ROOT) return null
+  const target = getNode(targetId)
+  if (!target?.selrect) return null
 
   // A drop over the shapes' own current parent is an in-place reorder — supported
   // only when that parent has a layout (flex/grid); a non-layout parent has no
   // meaningful index, so suppress the indicator there. Cross-container drops show.
   let allSameParent = true
   for (const id of selectedIds) {
-    if (objects[id]?.parentId !== targetId) {
+    if (getNode(id)?.parentId !== targetId) {
       allSameParent = false
       break
     }
@@ -365,9 +347,9 @@ export function resolveDropIntent(
   // Same-parent reorder: measure the drop index against the siblings only (the
   // dragged shapes are lifted out of the flow during the drag).
   const excludeIds = allSameParent ? selectedIds : undefined
-  const index = computeDropIndex(target, objects, point, excludeIds)
-  const line = flexAxis(target) ? insertionLineWorld(target, objects, index, excludeIds) : null
-  const size = primarySize(selectedIds, objects)
+  const index = computeDropIndex(target, point, excludeIds)
+  const line = flexAxis(target) ? insertionLineWorld(target, index, excludeIds) : null
+  const size = primarySize(selectedIds)
   const footprint = line && size ? provisionalFootprint(target, line, size) : null
   return {
     targetId,

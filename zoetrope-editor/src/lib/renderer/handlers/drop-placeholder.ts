@@ -13,7 +13,7 @@
  * detached and is translated to the cursor.
  *
  * The placeholder lives ONLY in the WASM shape store — it is never written to
- * docProxy, never enters undo history, and never reaches the layers panel. It is
+ * the document, never enters undo history, and never reaches the layers panel. It is
  * created on first hover over a flex target and destroyed on release/cancel via
  * `updateParentChildren` (WASM `set_children` deletes ids dropped from the list).
  */
@@ -21,6 +21,7 @@ import type { PenpotNode, Selrect } from 'penpot-exporter/types'
 import { setObject } from '../api/orchestration'
 import { createRect } from '../node-factory'
 import { newShapeId } from '../../common/shape-id'
+import { getNode } from '../../doc'
 
 interface RendererLike {
   getModule(): unknown
@@ -28,12 +29,11 @@ interface RendererLike {
 }
 
 /**
- * Inputs for building the placeholder: the page objects, the current selection,
- * and a bounding rect to fall back to when the selection can't be mirrored as a
- * single self-contained shape.
+ * Inputs for building the placeholder: the current selection and a bounding
+ * rect to fall back to when the selection can't be mirrored as a single
+ * self-contained shape.
  */
 export interface PlaceholderSpec {
-  objects: Record<string, unknown>
   selectedIds: ReadonlySet<string>
   fallbackSelrect: Selrect
 }
@@ -81,12 +81,10 @@ const GHOST_STROKE = { strokeColor: ACCENT, strokeWidth: 2 }
  * the selection bounds.
  */
 function buildPlaceholderNode(spec: PlaceholderSpec, id: string, targetId: string): PenpotNode {
-  const { objects, selectedIds, fallbackSelrect } = spec
+  const { selectedIds, fallbackSelrect } = spec
   if (selectedIds.size === 1) {
     const srcId = selectedIds.values().next().value as string
-    const src = objects[srcId] as
-      | (Record<string, unknown> & { type?: string; shapes?: string[]; opacity?: number })
-      | undefined
+    const src = getNode(srcId) as (Record<string, unknown> & { type?: string; opacity?: number }) | undefined
     if (src && src.type && CLONE_TYPES.has(src.type)) {
       const clone = JSON.parse(JSON.stringify(src)) as Record<string, unknown>
       clone.id = id

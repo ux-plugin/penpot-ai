@@ -1,16 +1,23 @@
 /**
- * Enriches a page's text shapes with position-data computed by the WASM layout engine.
- * Must run after initPage (or equivalent) so shapes are loaded into WASM.
+ * Position data for text nodes, computed by the WASM layout engine. Returns
+ * the `mod`s that store it. Shapes must already be loaded into WASM.
  */
-
 import type { WasmModule } from '../wasm-types'
-import type { PenpotNode, PenpotPage } from 'penpot-exporter/types'
 import type { PositionDataEntry } from 'penpot-exporter/types'
+import { mod, type Change, type Node } from '../../doc'
 import { calculatePositionData } from '../api/text'
 
-function mapToCamelCase(
-  entry: { paragraph: number; span: number; 'start-pos': number; 'end-pos': number; x: number; y: number; width: number; height: number; direction: number }
-): PositionDataEntry {
+function mapToCamelCase(entry: {
+  paragraph: number
+  span: number
+  'start-pos': number
+  'end-pos': number
+  x: number
+  y: number
+  width: number
+  height: number
+  direction: number
+}): PositionDataEntry {
   return {
     paragraph: entry.paragraph,
     span: entry.span,
@@ -24,41 +31,16 @@ function mapToCamelCase(
   }
 }
 
-function enrichNode(module: WasmModule, node: PenpotNode): PenpotNode {
-  const childList = (node as { children?: PenpotNode[] }).children
-  const enrichedChildren = childList?.length
-    ? childList.map((child) => enrichNode(module, child))
-    : undefined
-
-  if (node.type === 'text' && node.id) {
+export function positionDataChanges(module: WasmModule, nodes: Iterable<Node>): Change[] {
+  const out: Change[] = []
+  for (const node of nodes) {
+    if (node.type !== 'text') continue
     try {
-      const rawEntries = calculatePositionData(module, node)
-      const positionData =
-        rawEntries.length > 0 ? rawEntries.map(mapToCamelCase) : undefined
-      return {
-        ...node,
-        ...(enrichedChildren ? { children: enrichedChildren } : {}),
-        ...(positionData ? { positionData } : {}),
-      } as PenpotNode
+      const raw = calculatePositionData(module, node)
+      if (raw.length > 0) out.push(mod('node', node.id, { positionData: raw.map(mapToCamelCase) } as Partial<Node>))
     } catch {
-      return (enrichedChildren ? { ...node, children: enrichedChildren } : { ...node }) as PenpotNode
+      // layout unavailable for this node; leave it
     }
   }
-
-  return (enrichedChildren ? { ...node, children: enrichedChildren } : { ...node }) as PenpotNode
-}
-
-/**
- * Walks the page tree and attaches position-data to each text shape.
- * Returns a new page (clone-on-write). Shapes must already be loaded into WASM.
- */
-export function enrichPageWithPositionData(
-  module: WasmModule,
-  page: PenpotPage
-): PenpotPage {
-  if (!page.children?.length) return page
-  return {
-    ...page,
-    children: page.children.map((node: PenpotNode) => enrichNode(module, node)),
-  }
+  return out
 }

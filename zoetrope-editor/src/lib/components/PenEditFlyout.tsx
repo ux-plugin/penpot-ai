@@ -38,8 +38,7 @@ import {
   eraseMode,
 } from '../renderer/signals/selection'
 import { useSignalCoalesced } from '../renderer/signals/use-signal-coalesced'
-import { docProxy } from '../renderer/store/doc-proxy'
-import { getCommittedNodeOnActivePage } from '../renderer/properties/commit-node-properties'
+import { useField } from '../doc'
 import type { StrokeWithSettings } from '../renderer/stroke-settings'
 import { effectiveSubTool } from './Overlay/path-interaction'
 import {
@@ -69,10 +68,7 @@ export function PenEditFlyout() {
   // Variable width is a stroke property any stroke can hold — enable Width whenever
   // there's a stroke.
   const shapeId = useSelector(actor, (s) => s.context.pathEditingShapeId)
-  useSnapshot(docProxy)
-  const stroke0 = shapeId
-    ? (getCommittedNodeOnActivePage(shapeId) as { strokes?: StrokeWithSettings[] } | null)?.strokes?.[0]
-    : undefined
+  const stroke0 = (useField('node', shapeId, 'strokes') as StrokeWithSettings[] | undefined)?.[0]
   const widthCapable = !!stroke0
   // Alt is the bend shortcut: while held in Move it bends, so the lit tool follows
   // it (and snaps back to Move on release). The resolver owns that rule.

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useSelector } from '@xstate/react'
-import { useSnapshot } from 'valtio'
 import type { PenpotNode } from 'penpot-exporter/types'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -18,10 +17,9 @@ import {
   commitNodePartialUpdate,
   commitNodeGeometry,
   commitTextGrowType,
-  getCommittedNodeOnActivePage,
 } from '@/lib/renderer/properties/commit-node-properties'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
-import { docProxy, getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
+import { getNode, useNode } from '@/lib/doc'
 import { getLayoutMode, type LayoutMode } from './layout-mode'
 import { isTextNode, pinGrowAxis } from './text-typography'
 import { NumericField } from '../NumericField'
@@ -178,10 +176,9 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   const commitGrow = useCallback(
     async (next: string) => {
       if (readOnly || next === mode) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
-      await commitTextGrowType(nodeId, before, next as GrowType, pid)
+      const before = getNode(nodeId)
+      if (!before) return
+      await commitTextGrowType(nodeId, before, next as GrowType)
     },
     [nodeId, readOnly, mode],
   )
@@ -189,15 +186,14 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   const commitSizeAxis = useCallback(
     async (axis: 'w' | 'h', value: number) => {
       if (readOnly) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(nodeId)
+      if (!before) return
       const target = axis === 'w' ? { width: value } : { height: value }
       // Typing a dimension pins that text axis — it's no longer content-driven.
       const extra = isText
         ? ({ growType: pinGrowAxis((before as { growType?: string }).growType, axis) } as Partial<PenpotNode>)
         : undefined
-      await commitNodeGeometry(nodeId, before, target, pid, extra)
+      await commitNodeGeometry(nodeId, before, target, extra)
     },
     [readOnly, nodeId, isText],
   )
@@ -205,14 +201,12 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   const commitCorners = useCallback(
     async (next: Corners) => {
       if (readOnly) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(nodeId)
+      if (!before) return
       await commitNodePartialUpdate(
         nodeId,
         before,
         next as Partial<PenpotNode>,
-        pid,
       )
     },
     [readOnly, nodeId],
@@ -229,15 +223,13 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   const commitPathCornerRadius = useCallback(
     async (n: number) => {
       if (readOnly) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(nodeId)
+      if (!before) return
       const prevContent = (before as { content?: Record<string, unknown> }).content ?? {}
       await commitNodePartialUpdate(
         nodeId,
         before,
         { content: { ...prevContent, cornerRadius: Math.max(0, n) } } as Partial<PenpotNode>,
-        pid,
       )
     },
     [readOnly, nodeId],
@@ -263,14 +255,12 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   const commitOpacity = useCallback(
     async (pct: number) => {
       if (readOnly) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(nodeId)
+      if (!before) return
       await commitNodePartialUpdate(
         nodeId,
         before,
         { opacity: pct / 100 } as Partial<PenpotNode>,
-        pid,
       )
     },
     [readOnly, nodeId],
@@ -281,26 +271,20 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   const commitBlendMode = useCallback(
     async (next: string) => {
       if (readOnly) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(nodeId)
+      if (!before) return
       await commitNodePartialUpdate(
         nodeId,
         before,
         { blendMode: next } as Partial<PenpotNode>,
-        pid,
       )
     },
     [readOnly, nodeId],
   )
 
   // Margin — gated on parent layout.
-  const doc = useSnapshot(docProxy)
   const parentId = (initialNode as { parentId?: string }).parentId
-  const parentNode =
-    parentId && doc.currentPageId
-      ? (doc.pageMap.get(doc.currentPageId)?.objects[parentId] as PenpotNode | undefined)
-      : undefined
+  const parentNode = useNode(parentId) as PenpotNode | undefined
   const parentMode: LayoutMode | null = parentNode
     ? getLayoutMode(parentNode as RectLikeNode)
     : null
@@ -309,14 +293,12 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   const commitMargin = useCallback(
     async (next: Margin) => {
       if (readOnly) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(nodeId)
+      if (!before) return
       await commitNodePartialUpdate(
         nodeId,
         before,
         { layoutItemMargin: next } as Partial<PenpotNode>,
-        pid,
       )
     },
     [readOnly, nodeId],

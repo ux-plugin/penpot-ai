@@ -21,7 +21,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import { beginJournalTransaction, commitJournalTransaction } from '@/lib/history/journal/journal-store'
+import { beginGroup, endGroup } from '@/lib/doc'
 import { clampRound, formatNumber, parseNumericInput, stepValue } from './numeric-field-logic'
 
 let nextInteractionId = 0
@@ -69,8 +69,8 @@ export function NumericField({
   const lastCommittedRef = useRef<number | null>(null)
   const [draft, setDraft] = useState<string | null>(null)
 
-  // Stable per-instance id for the focus-scoped undo transaction.
-  const txIdRef = useRef<string>()
+  // Stable per-instance id for the focus-scoped undo group.
+  const txIdRef = useRef<string | undefined>(undefined)
   if (txIdRef.current === undefined) {
     txIdRef.current = `numfield-${nextInteractionId++}`
   }
@@ -131,12 +131,12 @@ export function NumericField({
     return () => node.removeEventListener('wheel', onWheel)
   }, [])
 
-  // Selection changes can unmount a focused field without firing blur; commit
-  // the open transaction on unmount so the frame lands and it doesn't leak open.
+  // Selection changes can unmount a focused field without firing blur; close
+  // the open group on unmount so it doesn't leak open.
   useEffect(() => {
     const txId = txIdRef.current!
     return () => {
-      if (focusedRef.current) commitJournalTransaction(txId)
+      if (focusedRef.current) endGroup(txId)
     }
   }, [])
 
@@ -155,18 +155,15 @@ export function NumericField({
       onChange={(e) => setDraft(e.target.value)}
       onFocus={(e) => {
         focusedRef.current = true
-        // Open the undo transaction for this focus session; every edit until
-        // blur lands in one frame.
-        beginJournalTransaction(txIdRef.current!)
+        // One undo frame per focus session.
+        beginGroup(txIdRef.current!)
         e.currentTarget.select()
       }}
       onBlur={() => {
         focusedRef.current = false
         commitDraft()
-        // Close the transaction synchronously — the frame is already recorded
-        // (commit pipeline records before its await), so there's no race and
-        // the next field's focus can't merge into this one.
-        commitJournalTransaction(txIdRef.current!)
+        // Close synchronously so the next field's focus can't merge into this one.
+        endGroup(txIdRef.current!)
       }}
       onKeyDown={(e) => {
         if (e.key === 'Enter') {

@@ -1,40 +1,49 @@
 /**
- * Document selection lives on docProxy; this module syncs WASM selection overlay when selection changes.
+ * The selection: ephemeral, one signal holding a frozen set. Setting it
+ * re-queries the WASM selection rect.
  */
-
+import { signal } from '@preact/signals-core'
 import { movePreviewWorldDelta, rotatePreviewDeltaDeg } from '../signals/pointer'
 import { querySelectionRect, selectionRect, wasmSelectionRect } from '../signals/selection'
-import { docProxy } from './doc-proxy'
 import { useWorkspaceStore } from './workspace-store'
+import { useSignal } from '../../doc/react'
+
+const EMPTY: ReadonlySet<string> = new Set()
+
+export const selectedIds = signal<ReadonlySet<string>>(EMPTY)
 
 function syncSelectionDerived(): void {
-  const ids = docProxy.selectedIds
+  const ids = selectedIds.peek()
   const renderer = useWorkspaceStore.getState().renderer
-  let nextRect: ReturnType<typeof querySelectionRect> = null
   if (ids.size === 0 || !renderer) {
     wasmSelectionRect.value = null
   } else {
-    nextRect = querySelectionRect(renderer, ids)
-    wasmSelectionRect.value = nextRect
+    wasmSelectionRect.value = querySelectionRect(renderer, ids)
   }
 }
 
-export function setSelectedIds(ids: Set<string>): void {
-  docProxy.selectedIds.clear()
-  for (const id of ids) {
-    docProxy.selectedIds.add(id)
-  }
+export function setSelectedIds(ids: Iterable<string>): void {
+  selectedIds.value = new Set(ids)
   syncSelectionDerived()
 }
 
 export function clearSelection(): void {
-  docProxy.selectedIds.clear()
+  selectedIds.value = EMPTY
   rotatePreviewDeltaDeg.value = 0
   movePreviewWorldDelta.value = { x: 0, y: 0 }
   wasmSelectionRect.value = null
   selectionRect.value = null
 }
 
+/** A mutable copy. */
 export function getSelectedIdsSet(): Set<string> {
-  return new Set(docProxy.selectedIds)
+  return new Set(selectedIds.peek())
+}
+
+export function isSelected(id: string): boolean {
+  return selectedIds.peek().has(id)
+}
+
+export function useSelectedIds(): ReadonlySet<string> {
+  return useSignal(selectedIds)
 }

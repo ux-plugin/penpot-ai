@@ -1,24 +1,21 @@
 /**
  * Token CRUD — create / modify / delete tokens, token sets, and themes on
- * `docProxy.meta.tokens`, plus active-theme (mode) switching.
+ * `meta.tokens`, plus active-theme (mode) switching.
  *
- * Every helper commits a redo change together with its exact inverse as the undo
- * change, through the Phase-1 doc-meta arm of `commitChanges` (which records the
- * pair in the unified history frame). So a single Cmd+Z reverts the edit and
- * Cmd+Shift+Z re-applies it.
+ * Every helper commits a doc-meta change together with its exact inverse
+ * (meta keeps caller-built inverses); `commitChanges` records the pair in one
+ * history frame. So a single Cmd+Z reverts the edit and Cmd+Shift+Z re-applies it.
  *
  * Value-changing ops (a token value/rename edit, a mode switch, set/theme
  * changes that alter what resolves) additionally fold **propagation** (P2.5)
- * into the SAME frame: re-resolve the lib-after (via the pure reducer, no proxy
- * mutation) and fan the new concrete values into every shape that references an
- * affected token. So one undo reverts the token edit AND every shape it touched.
+ * into the SAME frame: re-resolve the lib-after (via the pure reducer) and fan
+ * the new concrete values into every shape that references an affected token.
+ * So one undo reverts the token edit AND every shape it touched.
  *
  * Resolution of values is P2.2; the concrete-prop writers are in ./materialize.
  */
 
-import { snapshot } from 'valtio'
-import type { Change } from 'penpot-exporter/types'
-import { docProxy, type DocumentMeta } from '../renderer/store/doc-proxy'
+import { meta, type LocalChange } from '../doc'
 import { commitChanges } from '../renderer/store/commit'
 import { processDocMetaChanges, type DocMetaChange } from '../changes/doc-meta-change'
 import { collectTokenPropagation } from './propagation'
@@ -42,38 +39,29 @@ interface CommitOpts {
 /**
  * Commit a doc-meta token change, optionally folding propagation into the same
  * frame. Propagation resolves against the lib *after* the change (computed with
- * the pure reducer, without mutating the proxy), so the token change and the
- * shape rewrites land — and undo — atomically.
+ * the pure reducer), so the token change and the shape rewrites land — and
+ * undo — atomically.
  */
 async function commitTokenChange(
   redo: DocMetaChange[],
   undo: DocMetaChange[],
   opts?: CommitOpts,
 ): Promise<void> {
-  let pageRedo: Change[] = []
-  let pageUndo: Change[] = []
+  let pageRedo: LocalChange[] = []
 
   if (opts?.propagate) {
-    const metaNow = snapshot(docProxy).meta as DocumentMeta | undefined
+    const metaNow = meta.peek()
     if (metaNow) {
-      const metaAfter = processDocMetaChanges(metaNow as DocumentMeta, redo)
-      const out = await collectTokenPropagation(metaAfter.tokens ?? emptyTokensLib(), opts.renames)
-      pageRedo = out.redoChanges
-      pageUndo = out.undoChanges
+      const metaAfter = processDocMetaChanges(metaNow, redo)
+      pageRedo = await collectTokenPropagation(metaAfter.tokens ?? emptyTokensLib(), opts.renames)
     }
   }
 
-  await commitChanges({
-    redoChanges: pageRedo,
-    undoChanges: pageUndo,
-    docMetaRedoChanges: redo,
-    docMetaUndoChanges: undo,
-  })
+  await commitChanges({ changes: pageRedo, docMeta: redo, docMetaUndo: undo })
 }
 
-/** Current tokens lib off the live proxy (stable readonly snapshot). */
 function currentLib(): TokensLib {
-  return (snapshot(docProxy).meta?.tokens as TokensLib | undefined) ?? emptyTokensLib()
+  return meta.peek()?.tokens ?? emptyTokensLib()
 }
 
 function findSet(setId: Uuid): TokenSet | undefined {

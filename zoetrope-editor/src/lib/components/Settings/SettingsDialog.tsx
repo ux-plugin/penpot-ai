@@ -18,7 +18,6 @@ import { AiAgentsPanel } from './AiAgentsPanel'
 import type { ShortcutsConfig, ViewportPanModifier } from '../../renderer/types'
 import { TOOL_BINDINGS, type ToolKeyField } from '../../renderer/input/key-bindings'
 import { formatKeyCode, shortcutRows, toolKeyConflict } from './shortcut-display'
-import { useCapturePolicyStore } from '../../history/versions/capture-policy'
 
 const SELECT_CLASS =
   'h-8 rounded-md border border-border bg-white px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50'
@@ -106,7 +105,6 @@ const TAB_TRIGGER_CLASS =
   'justify-start gap-2 px-3 data-[state=active]:bg-muted data-[state=active]:shadow-none'
 
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const capture = useCapturePolicyStore()
   const cfg = useViewportShortcutsStore((s) => s.viewportShortcuts)
   const setCfg = useViewportShortcutsStore((s) => s.setViewportShortcuts)
   const hasTerminal = getAgent() != null
@@ -250,56 +248,6 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                 </div>
                 <PaneReset label="Reset pan &amp; zoom" onReset={resetGeneral} />
 
-                <h3 className="mb-1 mt-6 text-sm font-medium text-muted-foreground">
-                  Version history
-                </h3>
-                <p className="mb-3 text-xs text-muted-foreground">
-                  Versions are what a shape&rsquo;s history panel goes back to. Undo is unaffected.
-                </p>
-                <div className="space-y-3">
-                  <Field label="Capture every N changes">
-                    <input
-                      type="number"
-                      min={0}
-                      className={`${SELECT_CLASS} w-20 text-right`}
-                      value={capture.everyNChanges}
-                      onChange={(e) =>
-                        capture.set({ everyNChanges: Math.max(0, Number(e.target.value) || 0) })
-                      }
-                    />
-                  </Field>
-                  <Field label="Capture on leaving focus mode">
-                    <input
-                      type="checkbox"
-                      checked={capture.onExitFocus}
-                      onChange={(e) => capture.set({ onExitFocus: e.target.checked })}
-                    />
-                  </Field>
-                  <Field label="Require a minimum change">
-                    <input
-                      type="checkbox"
-                      checked={capture.minChangeEnabled}
-                      onChange={(e) => capture.set({ minChangeEnabled: e.target.checked })}
-                    />
-                  </Field>
-                  <Field label="Minimum change to keep a version">
-                    <input
-                      type="number"
-                      min={1}
-                      disabled={!capture.minChangeEnabled}
-                      className={`${SELECT_CLASS} w-20 text-right disabled:opacity-50`}
-                      value={capture.minChange}
-                      onChange={(e) =>
-                        capture.set({ minChange: Math.max(1, Number(e.target.value) || 1) })
-                      }
-                    />
-                  </Field>
-                </div>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Measured in characters of edited text, or one per changed setting. Zero changes
-                  never capture, and a shape&rsquo;s first version always does.
-                </p>
-                <PaneReset label="Reset version history" onReset={capture.reset} />
               </TabsContent>
 
               <TabsContent value="ai" className="mt-0">

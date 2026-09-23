@@ -9,33 +9,32 @@
  * virtual, so selection, hit-test, layout and the layers panel need no knowledge
  * of components.
  *
- * Each operation is ONE history frame spanning both commit arms: the page
- * `Change[]` that edits shapes and the `DocMetaChange[]` that edits the library
- * on `docProxy.meta`. `commitChanges` records the pair together, so a single
- * Cmd+Z reverts the shape edit and the library edit atomically — the same
- * arrangement token CRUD uses (see tokens/crud.ts).
+ * Each operation is ONE history frame spanning both commit arms: the node
+ * changes and the `DocMetaChange[]` that edits the library on `meta`. A single
+ * Cmd+Z reverts both — the same arrangement token CRUD uses (see tokens/crud.ts).
  *
  * Sync (main edits fanning out into copies) is NOT here — that is P3.
  */
-import { snapshot } from 'valtio'
-import { docProxy, getActiveOrSinglePageId } from '../store/doc-proxy'
 import { commitChanges } from '../store/commit'
+import {
+  add,
+  descendants,
+  getActiveOrSinglePageId,
+  getNode,
+  meta,
+  mod,
+  mods,
+  placeNode,
+  records,
+  type Change,
+  type Node,
+} from '../../doc'
 import { newShapeId } from '../../common/shape-id'
-import { subtreeWithRoot } from '../../common/subtree'
 import { isUsableComponent, type LocalComponent } from '../../common/component'
 import { isComponentCopyRoot, isComponentMain } from '../../worker/geometry/shapes'
 import { applyTransformToNode } from '../geom/apply-transform-to-node'
 import { translateMatrix } from '../geom/matrix'
-import type { IndexedShape } from '../../worker/types'
-import type {
-  AddObjChange,
-  Change,
-  DelObjChange,
-  ModObjChange,
-  PenpotNode,
-} from 'penpot-exporter/types'
-
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
+import type { PenpotNode } from 'penpot-exporter/types'
 
 /** Gap between a main instance and a copy placed beside it. */
 const COPY_GAP = 40
@@ -51,35 +50,15 @@ const COMPONENT_FIELDS = [
   'remoteSynced',
 ] as const
 
-/** A `mod-obj` that merges `assign` into the node (the pipeline's 'assign' op). */
-function modObj(pageId: string, id: string, assign: Record<string, unknown>): ModObjChange {
-  return { type: 'mod-obj', id, pageId, operations: [{ type: 'assign', value: assign }] }
-}
-
-/**
- * Read the page's objects through a valtio *snapshot*, never the live proxy: the
- * undo vector deep-clones geometry with `structuredClone`, which rejects a proxy
- * with DataCloneError.
- */
-function readObjects(pageId: string): Record<string, IndexedShape> | undefined {
-  return snapshot(docProxy).pageMap.get(pageId)?.objects as
-    | Record<string, IndexedShape>
-    | undefined
-}
+const CLEARED: Partial<Node> = Object.fromEntries(COMPONENT_FIELDS.map((f) => [f, undefined]))
 
 /** Components in the library that are ours and actionable. */
 export function listComponents(): LocalComponent[] {
-  const components = snapshot(docProxy).meta?.components as
-    | Record<string, LocalComponent>
-    | undefined
-  return Object.values(components ?? {}).filter(isUsableComponent)
+  return Object.values(meta.peek()?.components ?? {}).filter(isUsableComponent)
 }
 
 export function getComponent(componentId: string): LocalComponent | undefined {
-  const components = snapshot(docProxy).meta?.components as
-    | Record<string, LocalComponent>
-    | undefined
-  const found = components?.[componentId]
+  const found = meta.peek()?.components?.[componentId]
   return isUsableComponent(found) ? found : undefined
 }
 
@@ -91,18 +70,11 @@ export function getComponent(componentId: string): LocalComponent | undefined {
  * component fields and a library record naming it.
  *
  * Returns the new component id, or null when the target is not a promotable
- * frame (the page root, a frame that is already a main, or a node inside a copy).
+ * frame (a frame that is already a main, or a node inside a copy).
  */
 export async function createComponentFromFrame(frameId: string): Promise<string | null> {
-  const pageId = getActiveOrSinglePageId()
-  if (!pageId) return null
-  const objects = readObjects(pageId)
-  if (!objects) return null
-
-  const frame = objects[frameId] as PenpotNode | undefined
+  const frame = getNode(frameId)
   if (!frame || frame.type !== 'frame') return null
-  // The page root is the canvas itself, never a component.
-  if (frame.parentId == null || frameId === ROOT_UUID) return null
   // Already a main, or living inside a copy — neither is promotable.
   if (isComponentMain(frame) || frame.componentId != null || frame.shapeRef != null) return null
 
@@ -112,24 +84,14 @@ export async function createComponentFromFrame(frameId: string): Promise<string 
     name: frame.name ?? 'Component',
     path: '',
     mainInstanceId: frameId,
-    mainInstancePage: pageId,
+    mainInstancePage: frame.page,
     props: [],
   }
 
   await commitChanges({
-    pageId,
-    redoChanges: [
-      modObj(pageId, frameId, { componentId, componentRoot: true, mainInstance: true }),
-    ],
-    undoChanges: [
-      modObj(pageId, frameId, {
-        componentId: undefined,
-        componentRoot: undefined,
-        mainInstance: undefined,
-      }),
-    ],
-    docMetaRedoChanges: [{ type: 'add-component', component }],
-    docMetaUndoChanges: [{ type: 'del-component', id: componentId }],
+    changes: [mod('node', frameId, { componentId, componentRoot: true, mainInstance: true })],
+    docMeta: [{ type: 'add-component', component }],
+    docMetaUndo: [{ type: 'del-component', id: componentId }],
   })
   return componentId
 }
@@ -143,11 +105,8 @@ export async function createComponentFromFrame(frameId: string): Promise<string 
  * locally overridden. Shapes carry absolute coordinates, so the whole subtree is
  * translated by the same delta.
  *
- * One history frame: undo is a single `del-obj` on the copy root, which cascades
- * to the descendants and detaches it from its parent.
- *
- * Returns the copy's root id, or null when the component is unknown or its main
- * has gone missing.
+ * One history frame. Returns the copy's root id, or null when the component is
+ * unknown or its main has gone missing.
  */
 export async function instantiateComponent(
   componentId: string,
@@ -158,21 +117,9 @@ export async function instantiateComponent(
 
   const pageId = getActiveOrSinglePageId()
   if (!pageId) return null
-  const objects = readObjects(pageId)
-  if (!objects) return null
-  // The main may live on another page; copies are placed on the current one, but
-  // the tree has to be read from wherever the main actually is.
-  const mainObjects =
-    component.mainInstancePage === pageId
-      ? objects
-      : (snapshot(docProxy).pageMap.get(component.mainInstancePage)?.objects as
-          | Record<string, IndexedShape>
-          | undefined)
-  const main = mainObjects?.[component.mainInstanceId] as PenpotNode | undefined
-  if (!mainObjects || !main) return null
-
-  const root = Object.values(objects).find((o) => o.parentId == null)
-  const rootId = root?.id ?? ROOT_UUID
+  // The main may live on another page; the copy lands on the current one.
+  const main = getNode(component.mainInstanceId)
+  if (!main) return null
 
   const mainX = main.selrect?.x ?? main.x ?? 0
   const mainY = main.selrect?.y ?? main.y ?? 0
@@ -181,59 +128,53 @@ export async function instantiateComponent(
   const dy = (at?.y ?? mainY) - mainY
   const shift = translateMatrix(dx, dy)
 
-  // Root-first, parents always before their descendants — `processAddObj`
-  // resolves each node's parent as it lands, so the order matters.
-  const sourceIds = subtreeWithRoot(mainObjects, component.mainInstanceId)
+  // Parents before descendants, so each clone can read its parent's frame.
+  const sourceIds = [main.id, ...descendants(main.id)]
   const idMap = new Map<string, string>(sourceIds.map((id) => [id, newShapeId()]))
+  const clones = new Map<string, Node>()
 
-  const adds: AddObjChange[] = []
+  const adds: Change[] = []
   for (const srcId of sourceIds) {
-    const src = mainObjects[srcId] as PenpotNode | undefined
+    const src = getNode(srcId)
     if (!src) continue
     const id = idMap.get(srcId)!
-    const isRoot = srcId === component.mainInstanceId
-    const parentId = isRoot ? rootId : (idMap.get(src.parentId ?? '') ?? rootId)
+    const isRoot = srcId === main.id
     const geometry = (applyTransformToNode(src, shift) ?? {}) as Partial<PenpotNode>
-    const children = (src as { shapes?: string[] }).shapes
-      ?.map((cid) => idMap.get(cid))
-      .filter((cid): cid is string => cid != null)
 
-    const clone = {
-      ...(src as Record<string, unknown>),
+    const values = {
+      ...src,
       ...geometry,
       id,
-      parentId,
-      // A frame is its own frame; anything else belongs to the nearest frame,
-      // which `processAddObj` resolves from `frameId` below.
-      frameId: src.type === 'frame' ? id : parentId,
-      shapes: children,
       // Every node in a copy names its twin in the main.
       shapeRef: srcId,
       // Local overrides start empty — nothing has been touched yet.
       touched: undefined,
-      // Only the root carries the component link; a copy has exactly one root,
-      // and the main flag never travels with a copy.
+      // Only the root carries the component link; the main flag never travels.
       componentId: isRoot ? componentId : undefined,
       componentRoot: isRoot ? true : undefined,
       mainInstance: undefined,
-    } as unknown as PenpotNode
+    } as PenpotNode
 
-    adds.push({
-      type: 'add-obj',
-      id,
-      obj: clone,
-      frameId: parentId,
-      parentId,
-      index: isRoot ? (root?.shapes?.length ?? 0) : undefined,
-      pageId,
-    })
+    let clone: Node
+    if (isRoot) {
+      clone = placeNode({ ...values, parentId: undefined }, { page: pageId })
+    } else {
+      const parent = clones.get(src.parentId!)!
+      clone = {
+        ...values,
+        page: pageId,
+        parentId: parent.id,
+        frameId: parent.type === 'frame' ? parent.id : parent.frameId,
+        order: src.order,
+      } as Node
+    }
+    clones.set(srcId, clone)
+    adds.push(add('node', clone))
   }
   if (adds.length === 0) return null
 
-  const copyRootId = idMap.get(component.mainInstanceId)!
-  const del: DelObjChange = { type: 'del-obj', id: copyRootId, pageId }
-  await commitChanges({ pageId, redoChanges: adds, undoChanges: [del] })
-  return copyRootId
+  await commitChanges({ changes: adds })
+  return idMap.get(main.id)!
 }
 
 /**
@@ -245,32 +186,9 @@ export async function instantiateComponent(
  * where the intent would be to delete the component instead.
  */
 export async function detachCopy(copyRootId: string): Promise<boolean> {
-  const pageId = getActiveOrSinglePageId()
-  if (!pageId) return false
-  const objects = readObjects(pageId)
-  if (!objects) return false
-
-  const rootNode = objects[copyRootId] as PenpotNode | undefined
-  if (!isComponentCopyRoot(rootNode)) return false
-
-  const cleared: Record<string, unknown> = {}
-  for (const field of COMPONENT_FIELDS) cleared[field] = undefined
-
-  const redo: Change[] = []
-  const undo: Change[] = []
-  for (const id of subtreeWithRoot(objects, copyRootId)) {
-    const node = objects[id] as PenpotNode | undefined
-    if (!node) continue
-    // Restore exactly what each node had — the root and its descendants carry
-    // different subsets of the fields.
-    const previous: Record<string, unknown> = {}
-    for (const field of COMPONENT_FIELDS) previous[field] = node[field]
-    redo.push(modObj(pageId, id, cleared))
-    undo.unshift(modObj(pageId, id, previous))
-  }
-  if (redo.length === 0) return false
-
-  await commitChanges({ pageId, redoChanges: redo, undoChanges: undo })
+  if (!isComponentCopyRoot(getNode(copyRootId))) return false
+  const ids = [copyRootId, ...descendants(copyRootId)]
+  await commitChanges({ changes: [mods('node', ids, CLEARED)] })
   return true
 }
 
@@ -283,51 +201,30 @@ export async function deleteComponent(componentId: string): Promise<boolean> {
   const component = getComponent(componentId)
   if (!component) return false
 
-  const pageId = getActiveOrSinglePageId()
-  if (!pageId) return false
-  const objects = readObjects(pageId)
-  if (!objects) return false
-
-  const cleared: Record<string, unknown> = {}
-  for (const field of COMPONENT_FIELDS) cleared[field] = undefined
-
-  const redo: Change[] = []
-  const undo: Change[] = []
-  for (const [id, node] of Object.entries(objects)) {
-    const shape = node as PenpotNode
+  const ids: string[] = []
+  for (const node of records('node')) {
     const inThisComponent =
-      shape.componentId === componentId ||
-      (shape.shapeRef != null && isPartOfComponent(objects, shape, componentId))
-    if (!inThisComponent) continue
-    const previous: Record<string, unknown> = {}
-    for (const field of COMPONENT_FIELDS) previous[field] = shape[field]
-    redo.push(modObj(pageId, id, cleared))
-    undo.unshift(modObj(pageId, id, previous))
+      node.componentId === componentId ||
+      (node.shapeRef != null && isPartOfComponent(node, componentId))
+    if (inThisComponent) ids.push(node.id)
   }
 
   await commitChanges({
-    pageId,
-    redoChanges: redo,
-    undoChanges: undo,
-    docMetaRedoChanges: [{ type: 'del-component', id: componentId }],
-    docMetaUndoChanges: [{ type: 'add-component', component }],
+    changes: ids.length ? [mods('node', ids, CLEARED)] : [],
+    docMeta: [{ type: 'del-component', id: componentId }],
+    docMetaUndo: [{ type: 'add-component', component }],
   })
   return true
 }
 
 /** Walk up to the copy root to decide whether a `shapeRef`-bearing node belongs to `componentId`. */
-function isPartOfComponent(
-  objects: Record<string, IndexedShape>,
-  shape: PenpotNode,
-  componentId: string,
-): boolean {
-  let current: PenpotNode | undefined = shape
+function isPartOfComponent(node: Node, componentId: string): boolean {
+  let current: Node | undefined = node
   const seen = new Set<string>()
   while (current && !seen.has(current.id)) {
     seen.add(current.id)
     if (current.componentId != null) return current.componentId === componentId
-    const parentId: string | undefined = current.parentId
-    current = parentId ? (objects[parentId] as PenpotNode | undefined) : undefined
+    current = getNode(current.parentId)
   }
   return false
 }

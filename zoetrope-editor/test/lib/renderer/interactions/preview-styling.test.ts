@@ -1,17 +1,32 @@
-import { describe, it, expect } from 'vitest'
-import type { PenpotPage } from 'penpot-exporter/types'
-import { flattenPageToIndexed } from '../../../../src/lib/worker/flatten'
+import { beforeEach, describe, it, expect } from 'vitest'
+import type { PenpotDocument, PenpotPage } from 'penpot-exporter/types'
 import { emptyPageInteractions } from '../../../../src/lib/renderer/interactions/ir'
 import { nodesToPresentation } from '../../../../src/lib/renderer/interactions/document/nodes-to-presentation'
 import { emitReactComponent, type PNode } from '../../../../src/lib/renderer/interactions/compile/emit-react'
 import { initRuntime } from '../../../../src/lib/renderer/interactions/preview/runtime'
+import { resetWorkspace, seedDocument } from '../../fixtures'
 import { pageCell, up } from './todo-ir'
 
-const ZERO = '00000000-0000-0000-0000-000000000000'
+function docOf(page: PenpotPage): PenpotDocument {
+  return {
+    name: 'Test',
+    children: [page],
+    components: {},
+    images: {},
+    paintStyles: {},
+    textStyles: {},
+    componentProperties: {},
+    externalLibraries: {},
+    missingFonts: [],
+    isShared: false,
+  }
+}
+
+beforeEach(resetWorkspace)
 
 describe('runtime clone — proxy-safe (DataCloneError regression)', () => {
   it('clones a Proxy-wrapped cell initial without throwing', () => {
-    // useSnapshot wraps the IR in a tracking Proxy that structuredClone rejects.
+    // A tracking Proxy around the IR is something structuredClone rejects.
     const ir = emptyPageInteractions()
     ir.cells.push({
       uid: 'items',
@@ -31,13 +46,13 @@ describe('nodesToPresentation — shape fill → inline style', () => {
       id: 'p',
       name: 'P',
       children: [
-        { id: ZERO, type: 'frame', name: 'Root' },
         { id: 'btn', type: 'rect', name: 'Add button', fills: [{ fillColor: '#e11d48', fillOpacity: 1 }] },
         { id: 'label', type: 'text', name: 'Label', content: 'Hi', fills: [{ fillColor: '#1d4ed8' }] },
       ],
     } as unknown as PenpotPage
 
-    const root = nodesToPresentation(flattenPageToIndexed(page))
+    seedDocument(docOf(page))
+    const root = nodesToPresentation('p')
     const kids = root?.children ?? []
     expect(kids.find((k) => k.nodeId === 'btn')?.style).toEqual({ background: '#e11d48' })
     expect(kids.find((k) => k.nodeId === 'label')?.style).toEqual({ color: '#1d4ed8' })
@@ -46,12 +61,10 @@ describe('nodesToPresentation — shape fill → inline style', () => {
   it('leaves style undefined for an unfilled shape', () => {
     const page = {
       id: 'p',
-      children: [
-        { id: ZERO, type: 'frame', name: 'Root' },
-        { id: 'btn', type: 'rect', name: 'Add button' },
-      ],
+      children: [{ id: 'btn', type: 'rect', name: 'Add button' }],
     } as unknown as PenpotPage
-    const root = nodesToPresentation(flattenPageToIndexed(page))
+    seedDocument(docOf(page))
+    const root = nodesToPresentation('p')
     expect(root?.children?.[0]?.style).toBeUndefined()
   })
 })

@@ -7,8 +7,8 @@
  */
 
 import { useState } from 'react'
-import { useSnapshot } from 'valtio'
-import { docProxy } from '../../renderer/store/doc-proxy'
+import { useNode } from '../../doc'
+import { useSelectedIds } from '../../renderer/store/document-selection'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
 import { keyframeAt, keyframeDelta, type ShapeMotion } from '../../renderer/motion/edit'
 import {
@@ -124,8 +124,7 @@ function PropertyRow({
 }
 
 export function MotionTab() {
-  const doc = useSnapshot(docProxy)
-  const selectedIds = new Set(doc.selectedIds)
+  const selectedIds = useSelectedIds()
   const singleId = selectedIds.size === 1 ? Array.from(selectedIds)[0] : null
 
   const shapes = useSignalCoalesced(motionShapes)
@@ -134,8 +133,7 @@ export function MotionTab() {
   const loop = useSignalCoalesced(motionLoop)
   const hasMotion = shapes.length > 0
 
-  const pageId = doc.currentPageId ?? (doc.pageMap.size === 1 ? [...doc.pageMap.keys()][0] : null)
-  const node = singleId && pageId ? doc.pageMap.get(pageId)?.objects[singleId] : undefined
+  const node = useNode(singleId)
   const baseFor = (p: AnimatableProperty): number => {
     const n = node as { x?: number; y?: number; rotation?: number; opacity?: number } | undefined
     switch (p) {

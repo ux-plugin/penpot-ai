@@ -41,8 +41,8 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react'
-import { useSnapshot } from 'valtio'
-import { docProxy } from '../../renderer/store/doc-proxy'
+import { useMeta } from '../../doc'
+import { getSelectedIdsSet } from '../../renderer/store/document-selection'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
@@ -122,7 +122,7 @@ function authoredText(t: Token | undefined): string {
 async function applyToSelection(token: Token): Promise<void> {
   const attrs = defaultApplyAttrs(token)
   if (attrs.length === 0) return
-  for (const id of [...docProxy.selectedIds]) {
+  for (const id of getSelectedIdsSet()) {
     await applyToken(id, token.name, attrs)
   }
 }
@@ -1756,8 +1756,7 @@ function NewTokenControl({ lib }: { lib: TokensLib | undefined }) {
 }
 
 export function TokensSections() {
-  const doc = useSnapshot(docProxy)
-  const lib = doc.meta?.tokens as TokensLib | undefined
+  const lib = useMeta()?.tokens as TokensLib | undefined
   const [tableOpen, setTableOpen] = useState(false)
   const [creatingTheme, setCreatingTheme] = useState(false)
   const [view, setView] = useState<'tree' | 'cards' | 'list'>('tree')

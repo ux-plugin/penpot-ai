@@ -8,7 +8,6 @@
  */
 
 import { useCallback, useMemo, useState } from 'react'
-import { useSnapshot } from 'valtio'
 import type { PenpotNode } from 'penpot-exporter/types'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Label } from '@/components/ui/label'
@@ -21,12 +20,9 @@ import {
 } from '@/lib/renderer/geom/primitives'
 import { recognizeShape } from '@/lib/renderer/geom/recognize-shape'
 import { pathContent, segmentsToAnchors } from '@/lib/renderer/geom/anchors'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '@/lib/renderer/properties/commit-node-properties'
+import { commitNodePartialUpdate } from '@/lib/renderer/properties/commit-node-properties'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
-import { docProxy, getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
+import { getNode, useNode } from '@/lib/doc'
 import { NumericField } from '../NumericField'
 
 interface ShapeSectionProps {
@@ -61,9 +57,7 @@ function regenPartial(
 }
 
 export function ShapeSection({ nodeId, initialNode, readOnly }: ShapeSectionProps) {
-  // Subscribe to doc changes so the recognized params track undo/redo/resize.
-  useSnapshot(docProxy)
-  const live = (getCommittedNodeOnActivePage(nodeId) ?? (initialNode as PenpotNode)) as PenpotNode
+  const live = (useNode(nodeId) ?? (initialNode as PenpotNode)) as PenpotNode
 
   const recognized = useMemo(() => {
     const content = (live as { content?: { segments?: unknown[] } }).content
@@ -79,10 +73,9 @@ export function ShapeSection({ nodeId, initialNode, readOnly }: ShapeSectionProp
   const commit = useCallback(
     async (kind: ParametricShapeKind, params: ParamInput) => {
       if (readOnly) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
-      await commitNodePartialUpdate(nodeId, before, regenPartial(before, kind, params), pid)
+      const before = getNode(nodeId)
+      if (!before) return
+      await commitNodePartialUpdate(nodeId, before, regenPartial(before, kind, params))
     },
     [readOnly, nodeId],
   )

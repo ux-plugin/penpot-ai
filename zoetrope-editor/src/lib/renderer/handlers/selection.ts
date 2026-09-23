@@ -11,7 +11,7 @@ import { dragStopper } from '../streams/drag-stopper'
 import { clearSelection, getSelectedIdsSet, setSelectedIds } from '../store/document-selection'
 import { selectionRect as selectionRectSignal } from '../signals/selection'
 import { useWorkspaceStore } from '../store/workspace-store'
-import { getActiveOrSinglePageId } from '../store/doc-proxy'
+import { getActiveOrSinglePageId } from '../../doc'
 import { screenToWorld } from '../viewport'
 import { makeSelrect } from '../../worker/types'
 

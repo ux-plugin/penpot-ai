@@ -49,7 +49,7 @@ import {
 } from '@/lib/renderer/three/scene3d-commit'
 import { defaultCameraPose } from '@/lib/renderer/three/three-scene'
 import { perspHalfHeightAtDistance } from '@/lib/renderer/three/camera3d'
-import { getNode } from '@/lib/renderer/store/doc-proxy'
+import { useField } from '@/lib/doc'
 import { NumericField } from '../NumericField'
 
 /** Home-view distance the default ortho size derives from (matches three-scene's
@@ -224,7 +224,7 @@ export function ThreeDObjectInspector({
 }) {
   const t = object.transform3d
   const m = object.material
-  const sceneName = (getNode(sceneId) as { name?: string } | undefined)?.name ?? '3D scene'
+  const sceneName = useField('node', sceneId, 'name') ?? '3D scene'
 
   const setPos = (axis: number, v: number) => {
     const position = [...t.position] as Vec3
@@ -330,7 +330,7 @@ export function ThreeDCameraInspector({
   sceneId: string
   camera: Camera3DEntry
 }) {
-  const sceneName = (getNode(sceneId) as { name?: string } | undefined)?.name ?? '3D scene'
+  const sceneName = useField('node', sceneId, 'name') ?? '3D scene'
   // A camera with no pose yet renders at the canonical 3/4 home view — show those REAL
   // values (and materialise them on the first edit) rather than zeros.
   const pose = camera.transform3d ?? defaultCameraPose()

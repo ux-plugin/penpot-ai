@@ -10,8 +10,7 @@
  * Coordinates come out relative to the main's own box, so the caller only has to
  * set a viewBox.
  */
-import { subtreeWithRoot } from '../../common/subtree'
-import type { IndexedShape } from '../../worker/types'
+import { descendants, getNode } from '../../doc'
 
 /** One flattened box in the preview, in main-local coordinates. */
 export interface PreviewItem {
@@ -57,18 +56,15 @@ function firstColor(fills: unknown): string | undefined {
  * Returns null when the main is missing or has no measurable box — the caller
  * shows a generic icon rather than an empty frame.
  */
-export function buildComponentPreview(
-  objects: Record<string, IndexedShape> | undefined,
-  mainId: string,
-): ComponentPreview | null {
-  const main = objects?.[mainId]
+export function buildComponentPreview(mainId: string): ComponentPreview | null {
+  const main = getNode(mainId)
   const box = main?.selrect
-  if (!objects || !main || !box || !(box.width > 0) || !(box.height > 0)) return null
+  if (!main || !box || !(box.width > 0) || !(box.height > 0)) return null
 
   const items: PreviewItem[] = []
-  for (const id of subtreeWithRoot(objects, mainId)) {
+  for (const id of [mainId, ...descendants(mainId)]) {
     if (items.length >= MAX_ITEMS) break
-    const node = objects[id] as (IndexedShape & { hidden?: boolean }) | undefined
+    const node = getNode(id)
     const sr = node?.selrect
     if (!node || !sr || node.hidden) continue
     const width = sr.width ?? 0

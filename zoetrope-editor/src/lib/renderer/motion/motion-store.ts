@@ -15,8 +15,8 @@ import { computed, signal } from '@preact/signals-core'
 import { useWorkspaceStore } from '../store/workspace-store'
 import { querySelectionRect, wasmSelectionRect } from '../signals/selection'
 import { getSelectedIdsSet } from '../store/document-selection'
-import { getActiveOrSinglePageId } from '../store/doc-proxy'
-import { commitNodeGeometry, getCommittedNodeOnActivePage } from '../properties/commit-node-properties'
+import { getActiveOrSinglePageId, getNode } from '../../doc'
+import { commitNodeGeometry } from '../properties/commit-node-properties'
 import { inspectorTab } from '../signals/inspector-tab'
 import { PlaybackController } from './playback-controller'
 import { WasmModifierSink } from './wasm-sink'
@@ -125,9 +125,9 @@ function computePivots(shapes: ShapeMotion[]): Map<string, Pivot> {
     // centre (correct). A displaced pivot double-counts the translation by
     // (1 − s)·delta, so scale/rotation + translation drifts and jumps -- pure
     // translation is unaffected because s = 1 leaves the pivot unused.
-    const node = getCommittedNodeOnActivePage(shape.targetId) as
+    const node = getNode(shape.targetId) as
       | { selrect?: { x: number; y: number; width: number; height: number } }
-      | null
+      | undefined
     const sr = node?.selrect
     if (sr) pivots.set(shape.targetId, { cx: sr.x + sr.width / 2, cy: sr.y + sr.height / 2 })
   }
@@ -301,9 +301,8 @@ export function previewMotionRestFrame(restFrame: number): void {
  */
 export async function commitMotionRestFrame(targetId: string, restFrame: number): Promise<void> {
   const { motions, docDelta } = rebaseToRest(motionShapes.value, targetId, restFrame)
-  const before = getCommittedNodeOnActivePage(targetId)
-  const pid = getActiveOrSinglePageId()
-  if (before && pid && (docDelta.x !== 0 || docDelta.y !== 0 || docDelta.rotation !== 0)) {
+  const before = getNode(targetId)
+  if (before && (docDelta.x !== 0 || docDelta.y !== 0 || docDelta.rotation !== 0)) {
     const b = before as { x?: number; y?: number; rotation?: number }
     await commitNodeGeometry(
       targetId,
@@ -313,7 +312,6 @@ export async function commitMotionRestFrame(targetId: string, restFrame: number)
         y: (typeof b.y === 'number' ? b.y : 0) + docDelta.y,
         rotation: (typeof b.rotation === 'number' ? b.rotation : 0) + docDelta.rotation,
       },
-      pid,
     )
   }
   setMotionShapes(motions)

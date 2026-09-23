@@ -17,11 +17,8 @@ import {
   StretchHorizontal,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '@/lib/renderer/properties/commit-node-properties'
-import { getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
+import { commitNodePartialUpdate } from '@/lib/renderer/properties/commit-node-properties'
+import { getNode } from '@/lib/doc'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
 import { NumericField } from '../NumericField'
 
@@ -114,10 +111,9 @@ export function LayoutFlexBody({ nodeId, initialNode, readOnly }: LayoutFlexBody
   const commit = useCallback(
     async (partial: Partial<PenpotNode>) => {
       if (readOnly) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
-      await commitNodePartialUpdate(nodeId, before, partial, pid)
+      const before = getNode(nodeId)
+      if (!before) return
+      await commitNodePartialUpdate(nodeId, before, partial)
     },
     [nodeId, readOnly],
   )

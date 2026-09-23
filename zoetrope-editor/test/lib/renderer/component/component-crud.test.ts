@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { IndexedPage, IndexedShape } from '../../../../src/lib/worker/types'
+import type { PenpotNode } from 'penpot-exporter/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
-import { docProxy, type DocumentMeta } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
-import { undo } from '../../../../src/lib/page-crud'
+import { children, getNode, meta, records, undo, type DocumentMeta } from '../../../../src/lib/doc'
+import { makeBaseDocument, resetWorkspace, ROOT, seedDocument } from '../../fixtures'
 import {
   createComponentFromFrame,
   deleteComponent,
@@ -14,106 +13,47 @@ import {
 } from '../../../../src/lib/renderer/component/component-crud'
 
 const PAGE_ID = 'page1'
-const ROOT = '00000000-0000-0000-0000-000000000000'
 
-function rect(x: number, y: number, w: number, h: number) {
-  return { x, y, width: w, height: h }
+function box(x: number, y: number, w: number, h: number) {
+  return { x, y, width: w, height: h, selrect: { x, y, width: w, height: h } }
 }
 
-/** Root + a two-child "Button" frame to promote, plus an unrelated frame. */
-function makePage(): IndexedPage {
-  return {
-    id: PAGE_ID,
-    objects: {
-      [ROOT]: {
-        id: ROOT,
-        type: 'frame',
-        name: 'Root',
-        ...rect(0, 0, 1200, 800),
-        selrect: rect(0, 0, 1200, 800),
-        shapes: ['button', 'other'],
+const frame = (id: string, name: string, b: ReturnType<typeof box>, kids: PenpotNode[] = []): PenpotNode =>
+  ({ id, type: 'frame', name, ...b, children: kids }) as unknown as PenpotNode
+const rect = (id: string, name: string, b: ReturnType<typeof box>): PenpotNode =>
+  ({ id, type: 'rect', name, ...b }) as unknown as PenpotNode
+
+/** A two-child "Button" frame to promote, plus an unrelated frame. */
+function seedPage(): void {
+  seedDocument({
+    ...makeBaseDocument(),
+    children: [
+      {
+        id: PAGE_ID,
+        name: 'Page',
+        background: '#FFFFFF',
+        children: [
+          frame('button', 'Button', box(100, 100, 200, 60), [
+            rect('label', 'Label', box(110, 115, 100, 30)),
+            rect('icon', 'Icon', box(250, 115, 30, 30)),
+          ]),
+          frame('other', 'Other', box(600, 100, 200, 60)),
+        ],
       },
-      button: {
-        id: 'button',
-        type: 'frame',
-        name: 'Button',
-        ...rect(100, 100, 200, 60),
-        selrect: rect(100, 100, 200, 60),
-        parentId: ROOT,
-        frameId: 'button',
-        shapes: ['label', 'icon'],
-      },
-      label: {
-        id: 'label',
-        type: 'rect',
-        name: 'Label',
-        ...rect(110, 115, 100, 30),
-        selrect: rect(110, 115, 100, 30),
-        parentId: 'button',
-        frameId: 'button',
-      },
-      icon: {
-        id: 'icon',
-        type: 'rect',
-        name: 'Icon',
-        ...rect(250, 115, 30, 30),
-        selrect: rect(250, 115, 30, 30),
-        parentId: 'button',
-        frameId: 'button',
-      },
-      other: {
-        id: 'other',
-        type: 'frame',
-        name: 'Other',
-        ...rect(600, 100, 200, 60),
-        selrect: rect(600, 100, 200, 60),
-        parentId: ROOT,
-        shapes: [],
-      },
-    },
-  } as unknown as IndexedPage
+    ],
+  })
 }
 
-function objects(): Record<string, IndexedShape> {
-  return docProxy.pageMap.get(PAGE_ID)?.objects as Record<string, IndexedShape>
-}
+const node = (id: string): Record<string, unknown> => getNode(id) as unknown as Record<string, unknown>
 
-function node(id: string): Record<string, unknown> {
-  return objects()[id] as unknown as Record<string, unknown>
-}
-
-/** Ids of every node in the page that is part of a copy. */
-function copyMemberIds(): string[] {
-  return Object.entries(objects())
-    .filter(([, n]) => (n as { shapeRef?: string }).shapeRef != null)
-    .map(([id]) => id)
-}
+/** Ids of every node in the document that is part of a copy. */
+const copyMemberIds = (): string[] => [...records('node')].filter((n) => n.shapeRef != null).map((n) => n.id)
 
 describe('component CRUD (integration through the commit pipeline)', () => {
   beforeEach(() => {
-    useJournalStore.getState().clear()
-    docProxy.pageMap.clear()
-    docProxy.pageMap.set(PAGE_ID, makePage())
-    docProxy.currentPageId = PAGE_ID
-    docProxy.selectedIds.clear()
-    docProxy.meta = {
-      name: 'Test doc',
-      components: {},
-      images: {},
-      paintStyles: {},
-      textStyles: {},
-      componentProperties: {},
-      externalLibraries: {},
-      missingFonts: [],
-      isShared: false,
-    } as unknown as DocumentMeta
-    useWorkspaceStore.setState({
-      workerClient: {
-        updatePageWithChanges: vi.fn(async () => {}),
-        updatePage: vi.fn(async () => {}),
-      } as never,
-      renderer: null,
-    })
+    resetWorkspace()
+    seedPage()
+    useWorkspaceStore.setState({ workerClient: { applyChanges: vi.fn(async () => {}) } as never, renderer: null })
   })
 
   describe('createComponentFromFrame', () => {
@@ -125,7 +65,7 @@ describe('component CRUD (integration through the commit pipeline)', () => {
       expect(node('button').mainInstance).toBe(true)
       expect(node('button').componentRoot).toBe(true)
       // The frame keeps its id, box and children — promotion is in place.
-      expect(node('button').shapes).toEqual(['label', 'icon'])
+      expect(children('button')).toEqual(['label', 'icon'])
 
       const listed = listComponents()
       expect(listed).toHaveLength(1)
@@ -171,32 +111,31 @@ describe('component CRUD (integration through the commit pipeline)', () => {
       expect((copy.selrect as { x: number }).x).toBe(100 + 200 + 40)
       expect((copy.selrect as { y: number }).y).toBe(100)
 
-      const children = copy.shapes as string[]
-      expect(children).toHaveLength(2)
-      const refs = children.map((id) => node(id).shapeRef)
-      expect(refs).toEqual(['label', 'icon'])
+      const kids = children(copyId!)
+      expect(kids).toHaveLength(2)
+      expect(kids.map((id) => node(id).shapeRef)).toEqual(['label', 'icon'])
       // Fresh ids throughout, and children point at the copy root, not the main.
-      expect(children).not.toContain('label')
-      for (const id of children) expect(node(id).parentId).toBe(copyId)
+      expect(kids).not.toContain('label')
+      for (const id of kids) expect(node(id).parentId).toBe(copyId)
       // Only the root carries the component link.
-      for (const id of children) expect(node(id).componentId).toBeUndefined()
+      for (const id of kids) expect(node(id).componentId).toBeUndefined()
 
       // Descendants are shifted by the same delta as the root.
-      expect((node(children[0]).selrect as { x: number }).x).toBe(110 + 240)
+      expect((node(kids[0]).selrect as { x: number }).x).toBe(110 + 240)
     })
 
     it('leaves the main untouched and is undone by a single step', async () => {
       const componentId = (await createComponentFromFrame('button'))!
       const copyId = (await instantiateComponent(componentId))!
 
-      expect(node('button').shapes).toEqual(['label', 'icon'])
+      expect(children('button')).toEqual(['label', 'icon'])
       expect((node('button').selrect as { x: number }).x).toBe(100)
 
       await undo()
-      expect(objects()[copyId]).toBeUndefined()
-      // The whole subtree goes with it, and the page root no longer lists it.
+      expect(getNode(copyId)).toBeUndefined()
+      // The whole subtree goes with it, and the page no longer lists it.
       expect(copyMemberIds()).toHaveLength(0)
-      expect(node(ROOT).shapes).toEqual(['button', 'other'])
+      expect(children(PAGE_ID)).toEqual(['button', 'other'])
       // The component itself survives — only the copy was undone.
       expect(getComponent(componentId)).toBeTruthy()
     })
@@ -207,7 +146,7 @@ describe('component CRUD (integration through the commit pipeline)', () => {
 
       expect((node(copyId).selrect as { x: number }).x).toBe(700)
       expect((node(copyId).selrect as { y: number }).y).toBe(400)
-      const child = (node(copyId).shapes as string[])[0]
+      const child = children(copyId)[0]
       expect((node(child).selrect as { x: number }).x).toBe(110 + 600)
     })
 
@@ -220,20 +159,20 @@ describe('component CRUD (integration through the commit pipeline)', () => {
     it('strips the component fields from the whole subtree, restored by undo', async () => {
       const componentId = (await createComponentFromFrame('button'))!
       const copyId = (await instantiateComponent(componentId))!
-      const children = node(copyId).shapes as string[]
+      const kids = [...children(copyId)]
 
       expect(await detachCopy(copyId)).toBe(true)
       expect(node(copyId).componentId).toBeUndefined()
       expect(node(copyId).componentRoot).toBeUndefined()
       expect(node(copyId).shapeRef).toBeUndefined()
-      for (const id of children) expect(node(id).shapeRef).toBeUndefined()
+      for (const id of kids) expect(node(id).shapeRef).toBeUndefined()
       // The shapes themselves survive detaching — only the links go.
-      expect(node(copyId).shapes).toEqual(children)
+      expect(children(copyId)).toEqual(kids)
 
       await undo()
       expect(node(copyId).componentId).toBe(componentId)
       expect(node(copyId).shapeRef).toBe('button')
-      expect(node(children[0]).shapeRef).toBe('label')
+      expect(node(kids[0]).shapeRef).toBe('label')
     })
 
     it('refuses a main instance', async () => {
@@ -247,29 +186,29 @@ describe('component CRUD (integration through the commit pipeline)', () => {
     it('drops the record and detaches the main and every copy, undone in one step', async () => {
       const componentId = (await createComponentFromFrame('button'))!
       const copyId = (await instantiateComponent(componentId))!
-      const children = node(copyId).shapes as string[]
+      const kids = children(copyId)
 
       expect(await deleteComponent(componentId)).toBe(true)
       expect(listComponents()).toHaveLength(0)
       expect(node('button').componentId).toBeUndefined()
       expect(node('button').mainInstance).toBeUndefined()
       expect(node(copyId).componentId).toBeUndefined()
-      expect(node(children[0]).shapeRef).toBeUndefined()
+      expect(node(kids[0]).shapeRef).toBeUndefined()
       // Nothing is deleted from the canvas — the shapes stay, unlinked.
-      expect(objects()[copyId]).toBeTruthy()
+      expect(getNode(copyId)).toBeTruthy()
 
       await undo()
       expect(listComponents()).toHaveLength(1)
       expect(node('button').mainInstance).toBe(true)
       expect(node(copyId).componentId).toBe(componentId)
-      expect(node(children[0]).shapeRef).toBe('label')
+      expect(node(kids[0]).shapeRef).toBe('label')
     })
   })
 
   describe('imported components are left alone', () => {
     it('ignores library entries that carry no main instance', () => {
-      docProxy.meta = {
-        ...(docProxy.meta as DocumentMeta),
+      meta.value = {
+        ...meta.peek()!,
         // The thinner shape the Figma adapter writes on import.
         components: { imported: { name: 'Imported', componentId: 'imported' } },
       } as unknown as DocumentMeta

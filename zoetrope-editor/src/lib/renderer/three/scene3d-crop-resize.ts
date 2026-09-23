@@ -7,27 +7,14 @@
  * fixed size on screen — and even Scale has to PIN a window on the first resize, or it would
  * be re-derived from whatever the box became and the scene would never resize at all.
  *
- * Rather than hooking each resize gesture, this augments the change set inside
- * `commitChanges` — the one place every geometry write passes through. So the 2D selection
- * handles, the in-edit handles and typing a width into the inspector are all covered by the
- * same code, in the SAME commit, and therefore the same undo frame: one press of undo puts
- * the box and its view back together. A second commit would have split them and made undo
- * jump the content.
+ * An effect of `commitChanges` — the one place every geometry write passes through — so the
+ * 2D handles, the in-edit handles and typing a width into the inspector are all covered, in
+ * the SAME commit and undo frame.
  */
-
-import type { Change } from 'penpot-exporter/types'
-import type { LocalChange } from '../../changes/bulk-changes'
-import { getNode } from '../store/doc-proxy'
+import type { Effect, LocalChange } from '../../doc'
+import { getNode, mod } from '../../doc'
 import type { Scene3DDocument } from './scene3d-store'
-import {
-  defaultWindow,
-  windowAfterCropResize,
-  isCropMode,
-  type BoxRect,
-} from './scene3d-viewframe'
-
-type ModObj = Extract<Change, { type: 'mod-obj' }>
-type Op = { type: string; value?: Record<string, unknown>; attr?: string; val?: unknown }
+import { defaultWindow, windowAfterCropResize, isCropMode, type BoxRect } from './scene3d-viewframe'
 
 /** Sub-pixel wobble in a committed rect shouldn't count as a resize. */
 const EPS = 1e-6
@@ -39,13 +26,7 @@ function num(v: unknown): number | null {
 /**
  * A node's box as the RENDERER measures it: its `selrect` — the shape's own rectangle,
  * unrotated — because that is what `getSelectionRect` reports and therefore what every live
- * rect is compared against.
- *
- * Do NOT be tempted to use the axis-aligned bounds of `points` instead. They differ the
- * moment a scene is rotated at all: 0.08° on a 348×327 box inflates the bounds by ~0.46
- * units, which is far past the threshold that decides "is a resize in flight", so a crop
- * treats it as one and rebuilds its window to the box's aspect — a jump of tens of percent,
- * not a nudge. Both sides must read the same kind of rectangle.
+ * rect is compared against. Not the bounds of `points`: those inflate under any rotation.
  */
 export function nodeBoxRect(node: unknown): BoxRect | null {
   const n = node as
@@ -61,21 +42,6 @@ export function nodeBoxRect(node: unknown): BoxRect | null {
   return { x, y, w, h }
 }
 
-/** Every attribute this change assigns, flattened across its operations. */
-function assignedAttrs(change: ModObj): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const op of (change.operations ?? []) as Op[]) {
-    if (op.type === 'assign' && op.value) Object.assign(out, op.value)
-    else if (op.type === 'set' && op.attr) out[op.attr] = op.val
-  }
-  return out
-}
-
-/**
- * The box this change leaves behind, or null if it doesn't touch geometry. Reads selrect
- * first, exactly as `nodeBoxRect` does, so `before` and `after` are always the same kind of
- * rectangle and a rotated scene never looks resized purely because of how it was measured.
- */
 function rectAfter(before: BoxRect, attrs: Record<string, unknown>): BoxRect | null {
   const sr = attrs.selrect as Record<string, unknown> | undefined
   const fromSelrect = sr ? nodeBoxRect({ selrect: sr }) : null
@@ -93,65 +59,29 @@ function sameSize(a: BoxRect, b: BoxRect): boolean {
   return Math.abs(a.w - b.w) < EPS && Math.abs(a.h - b.h) < EPS
 }
 
-/**
- * Pair the frame write onto a resize commit. Returns null — the common case, and the fast
- * path — when no crop-mode scene was resized, so the caller keeps its arrays as they are.
- *
- * Undo entries are PREPENDED to match how the changes builder orders inverses, though the
- * ordering is academic here: `scene3d` and the geometry attrs never overlap.
- */
-export function augmentCropResizeChanges(
-  redoChanges: readonly LocalChange[],
-  undoChanges: readonly LocalChange[],
-): { redoChanges: LocalChange[]; undoChanges: LocalChange[] } | null {
-  let extraRedo: Change[] | null = null
-  let extraUndo: Change[] | null = null
-
-  for (const change of redoChanges) {
-    if (change.type !== 'mod-obj') continue
-    const node = getNode(change.id) as { scene3d?: Scene3DDocument } | undefined
+/** Pair the frame write onto a resize commit. Returns nothing in the common case. */
+export const cropResizeEffect: Effect = (changes) => {
+  const out: LocalChange[] = []
+  for (const change of changes) {
+    if (change.op !== 'mod' || change.kind !== 'node') continue
+    const node = getNode(change.id)
     const doc = node?.scene3d
     if (!doc) continue
-
-    const attrs = assignedAttrs(change)
+    const attrs = change.set as Record<string, unknown>
     // A caller writing scene3d itself owns the frame; don't fight it.
     if ('scene3d' in attrs) continue
-
     const before = nodeBoxRect(node)
     if (!before) continue
     const after = rectAfter(before, attrs)
-    // Not geometry, or a pure move — a move takes the whole view with it, nothing to write.
     if (!after || sameSize(before, after)) continue
 
-    // The window has to be pinned down BEFORE the box changes, in either mode. Left to be
-    // re-derived from whatever the box became, a Scale resize would just re-fit the new box
-    // every time and the scene would never actually change size.
     const stored = doc.viewWindow
     const win = stored ?? defaultWindow(before.w, before.h)
-    // SCALE leaves the window alone — that is what makes the scene scale rather than reveal.
-    // CROP tracks the box with it, so the world keeps a fixed size on screen.
     const next = isCropMode(doc) ? windowAfterCropResize(win, before, after) : win
-    if (stored && next === win) continue // already pinned, and Scale has nothing to move
+    if (stored && next === win) continue
 
-    // `scene3d` is one opaque blob, so the pair carries whole documents.
-    const pageId = (change as { pageId?: string }).pageId
-    const write = (value: Scene3DDocument): Change => {
-      const base: ModObj = {
-        type: 'mod-obj',
-        id: change.id,
-        operations: [{ type: 'assign', value: { scene3d: value } }],
-      } as ModObj
-      return (pageId ? { ...base, pageId } : base) as Change
-    }
-    // Clone the doc so the redo change never aliases the live document object.
     const nextDoc = { ...(JSON.parse(JSON.stringify(doc)) as Scene3DDocument), viewWindow: next }
-    ;(extraRedo ??= []).push(write(nextDoc))
-    ;(extraUndo ??= []).push(write(JSON.parse(JSON.stringify(doc)) as Scene3DDocument))
+    out.push(mod('node', change.id, { scene3d: nextDoc }))
   }
-
-  if (!extraRedo || !extraUndo) return null
-  return {
-    redoChanges: [...redoChanges, ...extraRedo],
-    undoChanges: [...extraUndo, ...undoChanges],
-  }
+  return out
 }

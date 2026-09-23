@@ -2,16 +2,16 @@
  * Multi-camera model + commits (Phase: named/addable/switchable/look-through cameras).
  *
  * Pure helpers (nextCameraName) are tested directly; the commits
- * (add / set-active / patch) run through the real commit pipeline on a booted doc,
+ * (add / set-active / patch) run through the real commit pipeline on a seeded doc,
  * asserting they land on `node.scene3d.cameras` / `activeCameraId` and are undoable.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { IndexedPage, IndexedShape } from '../../../../src/lib/worker/types'
+import type { PenpotDocument, PenpotNode } from 'penpot-exporter/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
-import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
-import { undo } from '../../../../src/lib/page-crud'
+import '../../../../src/lib/renderer/store/commit'
+import { getNode, undo } from '../../../../src/lib/doc'
+import { resetWorkspace, seedDocument } from '../../fixtures'
 import {
   scene3dProxy,
   defaultSceneDocument,
@@ -30,17 +30,14 @@ import {
 } from '../../../../src/lib/renderer/three/scene3d-commit'
 
 const PAGE_ID = 'page1'
-const ROOT = '00000000-0000-0000-0000-000000000000'
 const RECT = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 
-function squareShape(id: string, size: number, extra: Partial<IndexedShape> = {}): IndexedShape {
+function squareShape(id: string, size: number, scene3d: Scene3DDocument): PenpotNode {
   const sel = { x: 0, y: 0, width: size, height: size, x1: 0, y1: 0, x2: size, y2: size }
   return {
     id,
     type: 'rect',
     name: '3D scene',
-    parentId: ROOT,
-    frameId: ROOT,
     x: 0,
     y: 0,
     width: size,
@@ -53,38 +50,29 @@ function squareShape(id: string, size: number, extra: Partial<IndexedShape> = {}
       { x: 0, y: size },
     ],
     transform: { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 },
-    ...extra,
-  } as IndexedShape
+    scene3d,
+  } as unknown as PenpotNode
 }
 
-function makePage(): IndexedPage {
-  const rootSel = { x: 0, y: 0, width: 800, height: 600, x1: 0, y1: 0, x2: 800, y2: 600 }
-  return {
-    id: PAGE_ID,
-    objects: {
-      [ROOT]: {
-        id: ROOT,
-        type: 'frame',
-        name: 'Root',
-        x: 0,
-        y: 0,
-        width: 800,
-        height: 600,
-        selrect: rootSel,
-        points: [],
-        shapes: [RECT],
-      } as IndexedShape,
-      [RECT]: squareShape(RECT, 100),
-    },
+/** One page holding a scene container carrying `scene3d`. */
+function seedScene(scene3d: Scene3DDocument): void {
+  const doc: PenpotDocument = {
+    name: 'Test',
+    children: [{ id: PAGE_ID, name: 'Page 1', background: '#FFFFFF', children: [squareShape(RECT, 100, scene3d)] }],
+    components: {},
+    images: {},
+    paintStyles: {},
+    textStyles: {},
+    componentProperties: {},
+    externalLibraries: {},
+    missingFonts: [],
+    isShared: false,
   }
+  seedDocument(doc)
 }
 
 function nodeScene(id: string): Scene3DDocument | undefined {
-  return (docProxy.pageMap.get(PAGE_ID)?.objects[id] as IndexedShape | undefined)?.scene3d
-}
-
-function seedScene(id: string, doc: Scene3DDocument): void {
-  ;(docProxy.pageMap.get(PAGE_ID)!.objects[id] as IndexedShape).scene3d = doc
+  return getNode(id)?.scene3d
 }
 
 describe('multi-camera model helpers', () => {
@@ -113,22 +101,12 @@ describe('multi-camera model helpers', () => {
 
 describe('multi-camera commits', () => {
   beforeEach(() => {
-    useJournalStore.getState().clear()
-    docProxy.pageMap.clear()
-    docProxy.pageMap.set(PAGE_ID, structuredClone(makePage()))
-    docProxy.currentPageId = PAGE_ID
-    docProxy.selectedIds.clear()
+    resetWorkspace()
     scene3dProxy.scenes.clear()
     scene3dProxy.focusedObjectId = null
     scene3dProxy.selectedCameraId = null
-    useWorkspaceStore.setState({
-      workerClient: {
-        updatePageWithChanges: vi.fn(async () => {}),
-        updatePage: vi.fn(async () => {}),
-      } as never,
-      renderer: null,
-    })
-    seedScene(RECT, defaultSceneDocument(RECT))
+    useWorkspaceStore.setState({ workerClient: { applyChanges: vi.fn(async () => {}) } as never, renderer: null })
+    seedScene(defaultSceneDocument(RECT))
     hydrateScene3dFromDocument()
   })
 

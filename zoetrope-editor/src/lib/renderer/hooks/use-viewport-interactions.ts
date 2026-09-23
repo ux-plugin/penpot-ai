@@ -21,7 +21,7 @@ import { getSelectedIdsSet, setSelectedIds } from '../store/document-selection'
 import { useWorkspaceStore } from '../store/workspace-store'
 import { useCanvasActor } from '../machine/canvas-actor-context'
 import { useViewportShortcutsStore } from '../store/shortcuts-store'
-import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
+import { getActiveOrSinglePageId, getNode } from '../../doc'
 import { isScene3D, setFocusedObject } from '../three/scene3d-store'
 import { pickBakedObjectAtScreen } from '../three/scene3d-bake'
 import { Viewport, screenToWorld } from '../viewport'
@@ -33,7 +33,7 @@ import { textToolHoverTarget } from '../signals/text-editor'
 import { queryNodesAtPoint, pickTopmostNode } from '../selection/query-at-point'
 import { createPenStartPath } from '../handlers/draw-path'
 import { isConvertibleToPath, primitiveToPathPartial } from '../handlers/primitive-to-path'
-import { commitNodePartialUpdate, getCommittedNodeOnActivePage } from '../properties/commit-node-properties'
+import { commitNodePartialUpdate } from '../properties/commit-node-properties'
 import { beginTextEdit, dragTextEdit, endTextEdit, screenToShapeLocal } from '../handlers/text-edit'
 import { buildKeyBindings, dispatchKey } from '../input/key-bindings'
 import type { CommandCtx } from '../input/commands'
@@ -202,12 +202,7 @@ export function useViewportInteractions({
       // already ran, so the press does exactly what the I-beam predicted.
       if (activeDrawTool === 'text') {
         const hoveredId = textToolHoverTarget.peek()
-        const tPageId = getActiveOrSinglePageId()
-        const tPage = tPageId ? getPage(tPageId) : undefined
-        const node =
-          hoveredId && tPage
-            ? (tPage.objects[hoveredId] as { type?: string } | undefined)
-            : undefined
+        const node = getNode(hoveredId)
         if (hoveredId && node?.type === 'text') {
           setSelectedIds(new Set([hoveredId]))
           // Drive this first gesture into the WASM editor from here: the press lands
@@ -239,7 +234,6 @@ export function useViewportInteractions({
       const { workerClient } = store
       const selectedIds = getSelectedIdsSet()
       const hitPageId = getActiveOrSinglePageId()
-      const page = hitPageId ? getPage(hitPageId) : undefined
       const viewportForHit = viewport.value
 
       if (mod) {
@@ -253,7 +247,7 @@ export function useViewportInteractions({
       }
       queryNodesAtPoint(workerClient, hitPageId, viewportForHit, screenX, screenY).then(
         (ids) => {
-          const topId = pickTopmostNode(page, ids)
+          const topId = pickTopmostNode(hitPageId, ids)
           if (topId) {
             if (shift) {
               const next = new Set(selectedIds)
@@ -299,9 +293,8 @@ export function useViewportInteractions({
     if (hoverInFlightRef.current) return
     const { workerClient } = useWorkspaceStore.getState()
     const pageId = getActiveOrSinglePageId()
-    const page = pageId ? getPage(pageId) : undefined
     const vp = viewport.value
-    if (!workerClient || !pageId || !page || !vp) {
+    if (!workerClient || !pageId || !vp) {
       textToolHoverTarget.value = null
       return
     }
@@ -309,9 +302,8 @@ export function useViewportInteractions({
     const at = hoverLatestRef.current
     void queryNodesAtPoint(workerClient, pageId, vp, at.x, at.y)
       .then((ids) => {
-        const topId = pickTopmostNode(page, ids)
-        const node = topId ? (page.objects[topId] as { type?: string } | undefined) : undefined
-        textToolHoverTarget.value = topId && node?.type === 'text' ? topId : null
+        const topId = pickTopmostNode(pageId, ids)
+        textToolHoverTarget.value = topId && getNode(topId)?.type === 'text' ? topId : null
       })
       .catch(() => {
         textToolHoverTarget.value = null
@@ -428,13 +420,12 @@ export function useViewportInteractions({
 
     const { workerClient } = useWorkspaceStore.getState()
     const hitPageId = getActiveOrSinglePageId()
-    const page = hitPageId ? getPage(hitPageId) : undefined
     const vp = viewport.value
-    if (!workerClient || !vp || !hitPageId || !page) return
+    if (!workerClient || !vp || !hitPageId) return
 
     queryNodesAtPoint(workerClient, hitPageId, vp, screenX, screenY).then(async (ids) => {
-      const topId = pickTopmostNode(page, ids)
-      const node = topId ? (page.objects[topId] as { type?: string } | undefined) : undefined
+      const topId = pickTopmostNode(hitPageId, ids)
+      const node = getNode(topId)
       if (topId && isScene3D(topId)) {
         // A 3D scene drops into 3D-edit mode (the analogue of double-clicking into a
         // frame), landing on the object you clicked: raycast the baked image at the click
@@ -456,9 +447,9 @@ export function useViewportInteractions({
         // undoable step — then drops into the same vector-edit mode, so a
         // double-click "explodes" it into draggable anchors like a star.
         setSelectedIds(new Set([topId]))
-        const before = getCommittedNodeOnActivePage(topId)
+        const before = getNode(topId)
         const partial = primitiveToPathPartial(before)
-        if (before && partial) await commitNodePartialUpdate(topId, before, partial, hitPageId)
+        if (before && partial) await commitNodePartialUpdate(topId, before, partial)
         canvasActor.send({ type: 'START_PATH_EDIT', shapeId: topId })
       } else {
         // Stroke-miss fallback: open paths only register a hit on the stroke
@@ -468,7 +459,7 @@ export function useViewportInteractions({
         // anyway — mirrors the mousedown bounds-fallback and Figma/Illustrator.
         const sel = getSelectedIdsSet()
         const selId = sel.size === 1 ? [...sel][0] : null
-        const selObj = selId ? (page.objects[selId] as { type?: string } | undefined) : undefined
+        const selObj = getNode(selId)
         const wasmRect = wasmSelectionRect.peek()
         const inBounds =
           !!selId && !!wasmRect && isPointInSelectionBounds(screenToWorld(vp, screenX, screenY), wasmRect)
@@ -478,9 +469,9 @@ export function useViewportInteractions({
           // Same bounds-fallback for a selected primitive: convert then edit, so a
           // double-click into a rect's fill still enters vector-edit even when the
           // hit-test worker returned nothing.
-          const before = getCommittedNodeOnActivePage(selId)
+          const before = getNode(selId)
           const partial = primitiveToPathPartial(before)
-          if (before && partial) await commitNodePartialUpdate(selId, before, partial, hitPageId)
+          if (before && partial) await commitNodePartialUpdate(selId, before, partial)
           canvasActor.send({ type: 'START_PATH_EDIT', shapeId: selId })
         }
       }

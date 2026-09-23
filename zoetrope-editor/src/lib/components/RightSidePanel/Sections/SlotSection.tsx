@@ -9,12 +9,10 @@
  */
 
 import { useCallback, useState } from 'react'
-import { useSnapshot } from 'valtio'
 import { ChevronDown, ChevronRight, Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
-import { getCommittedNodeOnActivePage } from '@/lib/renderer/properties/commit-node-properties'
-import { docProxy } from '@/lib/renderer/store/doc-proxy'
+import { useNode } from '@/lib/doc'
 import { isSlotShape } from '@/lib/worker/geometry/shapes'
 import { removeViewFromSlot, setActiveView, setSlotClip } from '@/lib/renderer/slot/slot-edit'
 import {
@@ -33,9 +31,7 @@ interface SlotSectionProps {
 }
 
 export function SlotSection({ nodeId, readOnly }: SlotSectionProps) {
-  // Track doc changes so the view list / active / clip reflect undo/redo + edits.
-  useSnapshot(docProxy)
-  const slot = getCommittedNodeOnActivePage(nodeId)
+  const slot = useNode(nodeId)
 
   const [collapsed, setCollapsed] = useState(false)
 

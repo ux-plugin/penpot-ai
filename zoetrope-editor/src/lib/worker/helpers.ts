@@ -3,17 +3,17 @@
  */
 
 import type { PenpotNode } from 'penpot-exporter/types'
-import type { IndexedShape } from './types'
+import type { TreeNode } from '../doc'
 import { ZERO_UUID } from '@zoetrope-editor/common/conversions'
 import {
   isFrameShape,
   isBoolShape,
 } from './geometry/shapes'
 
-/** Type guard: in the worker, shapes from objects are always IndexedShape. */
+/** Type guard: in the worker, shapes from objects are always tree nodes. */
 export function isIndexedShape(
   shape: PenpotNode | null | undefined
-): shape is IndexedShape {
+): shape is TreeNode {
   return shape != null
 }
 
@@ -25,8 +25,8 @@ export function assignHierarchy(
   id: string | undefined,
   parentId: string,
   frameId: string
-): IndexedShape {
-  const out: IndexedShape = { ...shape, parentId, frameId }
+): TreeNode {
+  const out = { ...shape, parentId, frameId } as TreeNode
   if (id !== undefined) {
     out.id = id
   }
@@ -37,9 +37,9 @@ export function assignHierarchy(
  * Set shapes (child id list) from childIds when provided; otherwise keep existing or leave undefined.
  */
 export function ensureShapes(
-  shape: IndexedShape,
+  shape: TreeNode,
   childIds?: string[] | null
-): IndexedShape {
+): TreeNode {
   if (childIds !== undefined && childIds !== null) {
     return { ...shape, shapes: childIds.length > 0 ? childIds : undefined }
   }

@@ -11,14 +11,12 @@
  */
 
 import { useEffect, useState } from 'react'
-import { useSnapshot } from 'valtio'
-import { docProxy } from '../renderer/store/doc-proxy'
+import { useMeta } from '../doc'
 import { resolveTokenMap, type ResolvedTokens } from './resolve'
 import { effectiveActiveTokens, type TokensLib } from './types'
 
 export function useResolvedTokens(extraSetId?: string): ResolvedTokens {
-  const doc = useSnapshot(docProxy)
-  const lib = doc.meta?.tokens as TokensLib | undefined
+  const lib = useMeta()?.tokens as TokensLib | undefined
   const [resolved, setResolved] = useState<ResolvedTokens>(() => new Map())
 
   useEffect(() => {

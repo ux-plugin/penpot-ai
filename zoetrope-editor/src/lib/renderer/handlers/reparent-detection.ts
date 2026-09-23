@@ -4,8 +4,8 @@
  *  - move handler per-frame to emit `setStructureModifiers` so propagate reflows
  *    flex/grid containers live (mirrors CLJS `set-wasm-modifiers` at
  *    frontend/src/app/main/data/workspace/modifiers.cljs:634).
- *  - move handler at commit time to fold `mov-objects` into the same
- *    `commitChanges` bundle as the move's `mod-obj` changes.
+ *  - move handler at commit time to fold the reparent (`moveNodes`) into the
+ *    same commit as the move's geometry.
  *
  * Refactored from the body of the previous `reparentSelectedIfMovedIntoFrame`
  * in handlers/move.ts; unlike that helper these functions never call
@@ -13,15 +13,15 @@
  */
 
 import type { Point } from 'penpot-exporter/types'
-import type { IndexedPage, IndexedShape } from '../../worker/types'
+import { ROOT, children, getNode, type PageObjects } from '../../doc'
 import { findContainerAtPoint, findSlotAtPoint } from '../../components/LayersPanel/reparent'
 import { isFrameShape } from '../../worker/geometry/shapes'
 import { rectToCenter } from '../../worker/geometry/rect'
-import { ZERO_UUID } from '@zoetrope-editor/common/conversions'
 import { computeDropIndex, hasAnyLayout } from './drop-intent'
 
 /** Per-shape reparent intent. Only present when the new parent differs from the current one. */
 export interface PerShapeReparent {
+  /** Target parent; `ROOT` for the top level (WASM's root frame). */
   parentId: string
   index: number
 }
@@ -37,16 +37,15 @@ export interface PerShapeReparent {
  */
 export function detectSlotDropTargets(
   selectedIds: ReadonlySet<string>,
-  page: IndexedPage,
+  objects: PageObjects,
   delta: Point,
 ): Map<string, string> {
   const result = new Map<string, string>()
   if (selectedIds.size === 0) return result
-  const objects = page.objects as Record<string, IndexedShape>
   const excludeIds = Array.from(selectedIds)
 
   for (const id of selectedIds) {
-    const shape = objects[id]
+    const shape = getNode(id)
     if (!isFrameShape(shape) || !shape.selrect) continue
     const baseCenter = rectToCenter(shape.selrect)
     if (!baseCenter) continue
@@ -57,7 +56,7 @@ export function detectSlotDropTargets(
   return result
 }
 
-/** A single (parent, index, ids) target — used by the commit pipeline to build mov-objects. */
+/** A single (parent, index, ids) target — used by the commit pipeline to build `moveNodes`. */
 export interface ReparentTarget {
   parentId: string
   index: number
@@ -84,7 +83,7 @@ export interface StructureModifierEntry {
  */
 export function detectReparentTargets(
   selectedIds: ReadonlySet<string>,
-  page: IndexedPage,
+  objects: PageObjects,
   delta: Point,
   /**
    * Point used to pick the insertion index within a flex container. Pass the
@@ -96,11 +95,10 @@ export function detectReparentTargets(
 ): Map<string, PerShapeReparent> {
   const result = new Map<string, PerShapeReparent>()
   if (selectedIds.size === 0) return result
-  const objects = page.objects as Record<string, IndexedShape>
-  const excludeIds = computeReparentExcludeIds(selectedIds, page)
+  const excludeIds = computeReparentExcludeIds(selectedIds)
 
   for (const id of selectedIds) {
-    const shape = objects[id]
+    const shape = getNode(id)
     if (!shape?.selrect) continue
     const baseCenter = rectToCenter(shape.selrect)
     if (!baseCenter) continue
@@ -111,12 +109,9 @@ export function detectReparentTargets(
     // point than the cursor — which is what made the placeholder and the actual
     // reparent disagree near borders. Falls back to the center when no cursor.
     const hit = findContainerAtPoint(objects, indexPoint ?? projected, excludeIds)
-    // When the projected center falls outside every container, escape to the
-    // root frame (parentId == null sentinel) — matches the existing handler's
-    // behavior at handlers/move.ts:189.
-    const newParent = hit ?? (excludeIds.includes(ZERO_UUID) ? null : ZERO_UUID)
-    if (!newParent) continue
-    const parent = objects[newParent]
+    // Outside every container: escape to the top level.
+    const newParent = hit && hit !== ROOT ? hit : undefined
+    const parent = newParent ? getNode(newParent) : undefined
     // Same-parent drop is an in-place reorder — only meaningful when the parent
     // has a layout (flex/grid). For a non-layout parent it's a free move, so skip.
     const sameParent = newParent === shape.parentId
@@ -126,9 +121,9 @@ export function detectReparentTargets(
     // parents append. For a same-parent reorder, exclude the dragged shapes from
     // the index math (they're lifted out of the flow during the drag).
     const index = parent
-      ? computeDropIndex(parent, objects, indexPoint ?? projected, sameParent ? selectedIds : undefined)
-      : 0
-    result.set(id, { parentId: newParent, index })
+      ? computeDropIndex(parent, indexPoint ?? projected, sameParent ? selectedIds : undefined)
+      : children(shape.page).length
+    result.set(id, { parentId: newParent ?? ROOT, index })
   }
   return result
 }
@@ -147,18 +142,13 @@ export function detectReparentTargets(
  * shapes, and the user explicitly wants those root-level reparents to keep
  * working, so we don't exclude root's children.
  */
-function computeReparentExcludeIds(
-  selectedIds: ReadonlySet<string>,
-  page: IndexedPage,
-): string[] {
+function computeReparentExcludeIds(selectedIds: ReadonlySet<string>): string[] {
   const out: string[] = Array.from(selectedIds)
   const seen = new Set(out)
-  const objects = page.objects as Record<string, IndexedShape>
   for (const id of selectedIds) {
-    const parentId = (objects[id] as { parentId?: string } | undefined)?.parentId
-    if (!parentId || parentId === ZERO_UUID) continue
-    const parent = objects[parentId] as { shapes?: string[] } | undefined
-    for (const sibId of parent?.shapes ?? []) {
+    const parentId = getNode(id)?.parentId
+    if (!parentId) continue
+    for (const sibId of children(parentId)) {
       if (!seen.has(sibId)) {
         seen.add(sibId)
         out.push(sibId)
@@ -170,8 +160,8 @@ function computeReparentExcludeIds(
 
 /**
  * Group per-shape reparent intents by their target parent. One entry per
- * destination parent. Caller uses this to build `mov-objects` changes (one per
- * group) and merge them into a single commit bundle.
+ * destination parent. Caller uses this to build one `moveNodes` per group and
+ * merge them into a single commit.
  */
 export function groupReparentTargets(
   targets: ReadonlyMap<string, PerShapeReparent>,
@@ -202,18 +192,15 @@ export function groupReparentTargets(
  */
 export function collectReflowParents(
   selectedIds: ReadonlySet<string>,
-  page: IndexedPage,
   targets: ReadonlyMap<string, PerShapeReparent>,
 ): Set<string> {
   const out = new Set<string>()
   if (targets.size === 0) return out
-  const objects = page.objects as Record<string, IndexedShape>
   for (const t of targets.values()) {
     out.add(t.parentId)
   }
   for (const id of selectedIds) {
-    const real = objects[id]?.parentId
-    if (real) out.add(real)
+    out.add(getNode(id)?.parentId ?? ROOT)
   }
   return out
 }
@@ -233,13 +220,11 @@ export function collectReflowParents(
  */
 export function buildCommitStructureEntries(
   targets: ReadonlyMap<string, PerShapeReparent>,
-  page: IndexedPage,
 ): StructureModifierEntry[] {
   const entries: StructureModifierEntry[] = []
-  const objects = page.objects as Record<string, IndexedShape>
   for (const [id, target] of targets) {
-    const realParent = (objects[id] as { parentId?: string } | undefined)?.parentId
-    if (realParent && realParent !== target.parentId) {
+    const realParent = getNode(id)?.parentId ?? ROOT
+    if (realParent !== target.parentId) {
       entries.push({
         type: 'remove-children',
         parent: realParent,
@@ -268,17 +253,12 @@ export function buildCommitStructureEntries(
  *
  * Mirrors CLJS's drag-time structure-parent `:remove-children` op.
  */
-export function buildLayoutDetachEntries(
-  selectedIds: ReadonlySet<string>,
-  page: IndexedPage,
-): StructureModifierEntry[] {
+export function buildLayoutDetachEntries(selectedIds: ReadonlySet<string>): StructureModifierEntry[] {
   const out: StructureModifierEntry[] = []
-  const objects = page.objects as Record<string, IndexedShape>
   for (const id of selectedIds) {
-    const shape = objects[id]
-    const realParent = shape?.parentId
+    const realParent = getNode(id)?.parentId
     if (!realParent) continue
-    const parent = objects[realParent] as Record<string, unknown> | undefined
+    const parent = getNode(realParent) as Record<string, unknown> | undefined
     if (!parent) continue
     const hasLayout =
       parent.layout ||
@@ -313,14 +293,12 @@ export function buildLayoutDetachEntries(
  */
 export function buildReparentPreviewEntries(
   selectedIds: ReadonlySet<string>,
-  page: IndexedPage,
   targetId: string,
 ): StructureModifierEntry[] {
   const out: StructureModifierEntry[] = []
-  const objects = page.objects as Record<string, IndexedShape>
   for (const id of selectedIds) {
-    const realParent = (objects[id] as { parentId?: string } | undefined)?.parentId
-    if (realParent && realParent !== targetId) {
+    const realParent = getNode(id)?.parentId ?? ROOT
+    if (realParent !== targetId) {
       out.push({ type: 'remove-children', parent: realParent, id, value: 0 })
     }
     // index 0 = topmost child: the SSA scheduler (emit_tree_in_z_order) paints
@@ -332,14 +310,10 @@ export function buildReparentPreviewEntries(
 }
 
 /** Walk selected ids; return text shapes mapped to their current `growType`. Used at commit. */
-export function collectTextGrowTypes(
-  selectedIds: ReadonlySet<string>,
-  page: IndexedPage,
-): Map<string, string | undefined> {
+export function collectTextGrowTypes(selectedIds: ReadonlySet<string>): Map<string, string | undefined> {
   const out = new Map<string, string | undefined>()
-  const objects = page.objects as Record<string, IndexedShape>
   for (const id of selectedIds) {
-    const shape = objects[id]
+    const shape = getNode(id)
     if (!shape) continue
     if ((shape as { type?: string }).type !== 'text') continue
     out.set(id, (shape as { growType?: string }).growType)

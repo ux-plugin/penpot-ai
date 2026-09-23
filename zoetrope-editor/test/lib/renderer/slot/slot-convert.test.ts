@@ -1,58 +1,52 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { IndexedPage, IndexedShape } from '../../../../src/lib/worker/types'
+import type { PenpotNode } from 'penpot-exporter/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
-import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
-import { undo } from '../../../../src/lib/page-crud'
+import { canUndo, children, getNode, undo } from '../../../../src/lib/doc'
+import { makeBaseDocument, resetWorkspace, ROOT, seedDocument } from '../../fixtures'
 import {
   convertFrameToSlot,
   convertSlotToFrame,
 } from '../../../../src/lib/renderer/slot/slot-authoring'
 
 const PAGE_ID = 'page1'
-const ROOT = '00000000-0000-0000-0000-000000000000'
 
 function box(x: number, y: number, w: number, h: number) {
   return { x, y, width: w, height: h, selrect: { x, y, width: w, height: h } }
 }
 
+const frame = (id: string, name: string, b: ReturnType<typeof box>, kids: PenpotNode[] = []): PenpotNode =>
+  ({ id, type: 'frame', name, ...b, children: kids }) as unknown as PenpotNode
+const rect = (id: string, name: string, b: ReturnType<typeof box>): PenpotNode =>
+  ({ id, type: 'rect', name, ...b }) as unknown as PenpotNode
+
 /**
- * Root
- *  └ shell (frame 100,100 300x200)
- *      ├ child (rect 120,120 50x50)
- *      └ inner (frame 200,140 80x40)
- *          └ deep (rect 210,150 20x20)
+ * shell (frame 100,100 300x200)
+ *  ├ child (rect 120,120 50x50)
+ *  └ inner (frame 200,140 80x40)
+ *      └ deep (rect 210,150 20x20)
  */
-function makePage(): IndexedPage {
-  return {
-    id: PAGE_ID,
-    objects: {
-      [ROOT]: { id: ROOT, type: 'frame', name: 'Root', ...box(0, 0, 1200, 800), shapes: ['shell'] },
-      shell: { id: 'shell', type: 'frame', name: 'Shell', ...box(100, 100, 300, 200), parentId: ROOT, frameId: ROOT, shapes: ['child', 'inner'] },
-      child: { id: 'child', type: 'rect', name: 'Child', ...box(120, 120, 50, 50), parentId: 'shell', frameId: 'shell' },
-      inner: { id: 'inner', type: 'frame', name: 'Inner', ...box(200, 140, 80, 40), parentId: 'shell', frameId: 'shell', shapes: ['deep'] },
-      deep: { id: 'deep', type: 'rect', name: 'Deep', ...box(210, 150, 20, 20), parentId: 'inner', frameId: 'inner' },
-    },
-  } as unknown as IndexedPage
+function seedShell(kids: PenpotNode[]): void {
+  seedDocument({
+    ...makeBaseDocument(),
+    children: [{ id: PAGE_ID, name: 'Page', background: '#FFFFFF', children: [frame('shell', 'Shell', box(100, 100, 300, 200), kids)] }],
+  })
 }
 
-const objects = (): Record<string, IndexedShape> => docProxy.pageMap.get(PAGE_ID)!.objects
-const node = (id: string) => objects()[id] as IndexedShape & { views?: string[]; activeView?: string }
+const populated = (): PenpotNode[] => [
+  rect('child', 'Child', box(120, 120, 50, 50)),
+  frame('inner', 'Inner', box(200, 140, 80, 40), [rect('deep', 'Deep', box(210, 150, 20, 20))]),
+]
+
+const node = (id: string) => getNode(id) as unknown as Record<string, unknown> & { views?: string[]; activeView?: string }
 
 describe('convert frame <-> slot', () => {
   beforeEach(() => {
-    useJournalStore.getState().clear()
-    docProxy.pageMap.clear()
-    docProxy.pageMap.set(PAGE_ID, makePage())
-    docProxy.currentPageId = PAGE_ID
-    docProxy.selectedIds.clear()
-    useWorkspaceStore.setState({
-      workerClient: { updatePageWithChanges: vi.fn(async () => {}), updatePage: vi.fn(async () => {}) } as never,
-      renderer: null,
-    })
+    resetWorkspace()
+    seedShell(populated())
+    useWorkspaceStore.setState({ workerClient: { applyChanges: vi.fn(async () => {}) } as never, renderer: null })
   })
 
-  it('extracts a populated frame\'s content into a view frame the new slot shows', async () => {
+  it("extracts a populated frame's content into a view frame the new slot shows", async () => {
     const viewId = await convertFrameToSlot('shell')
     expect(viewId).toBeTruthy()
 
@@ -61,7 +55,7 @@ describe('convert frame <-> slot', () => {
     expect(slot.type).toBe('slot')
     expect(slot.views).toEqual([viewId])
     expect(slot.activeView).toBe(viewId)
-    expect(Array.isArray(slot.shapes)).toBe(false)
+    expect(children('shell')).toEqual([])
     // ...keeping its own id and box
     expect(slot.selrect).toMatchObject({ x: 100, y: 100, width: 300, height: 200 })
 
@@ -69,7 +63,7 @@ describe('convert frame <-> slot', () => {
     const view = node(viewId as string)
     expect(view.type).toBe('frame')
     expect(view.selrect).toMatchObject({ x: 100 + 300 + 40, y: 100, width: 300, height: 200 })
-    expect(view.shapes).toEqual(['child', 'inner'])
+    expect(children(viewId as string)).toEqual(['child', 'inner'])
   })
 
   it('translates the whole extracted subtree so content lands inside the view frame', async () => {
@@ -87,11 +81,7 @@ describe('convert frame <-> slot', () => {
   })
 
   it('converts an empty frame to an empty slot without inventing a view', async () => {
-    const o = objects()
-    o['shell'].shapes = []
-    delete o['child']
-    delete o['inner']
-    delete o['deep']
+    seedShell([])
 
     const viewId = await convertFrameToSlot('shell')
     expect(viewId).toBeNull()
@@ -102,25 +92,30 @@ describe('convert frame <-> slot', () => {
     expect(slot.activeView).toBeUndefined()
   })
 
+  // Blocked: doc/commit.ts `cascade()` resolves a del's descendants against the
+  // pre-apply state of the whole batch, so the undo frame's `del view` also
+  // deletes the children the preceding mods move back under the shell.
   it('undo restores the frame, its children, and their original coordinates', async () => {
     const viewId = await convertFrameToSlot('shell')
     await undo()
 
     const shell = node('shell')
     expect(shell.type).toBe('frame')
-    expect(shell.shapes).toEqual(['child', 'inner'])
+    expect(children('shell')).toEqual(['child', 'inner'])
     expect(shell.views).toBeUndefined()
     // geometry is back where it started
     expect(node('child').selrect).toMatchObject({ x: 120, y: 120 })
     expect(node('deep').selrect).toMatchObject({ x: 210, y: 150 })
     expect(node('child').parentId).toBe('shell')
     // and the extracted view frame is gone
-    expect(objects()[viewId as string]).toBeUndefined()
+    expect(getNode(viewId as string)).toBeUndefined()
+    // the whole conversion was one frame
+    expect(canUndo.value).toBe(false)
   })
 
   it('refuses to convert the page root', async () => {
     expect(await convertFrameToSlot(ROOT)).toBeNull()
-    expect(node(ROOT).type).toBe('frame')
+    expect(canUndo.value).toBe(false)
   })
 
   it('slot -> frame clears the references but leaves the view frames alive', async () => {
@@ -133,6 +128,6 @@ describe('convert frame <-> slot', () => {
     expect(shell.activeView).toBeUndefined()
     // the view is shared/independent — converting back must not consume it
     expect(node(viewId).type).toBe('frame')
-    expect(node(viewId).shapes).toEqual(['child', 'inner'])
+    expect(children(viewId)).toEqual(['child', 'inner'])
   })
 })

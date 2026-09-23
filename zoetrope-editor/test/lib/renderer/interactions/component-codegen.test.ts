@@ -1,12 +1,11 @@
-import { describe, expect, it } from 'vitest'
-import type { PenpotPage } from 'penpot-exporter/types'
-import { flattenPageToIndexed } from '../../../../src/lib/worker/flatten'
+import { beforeEach, describe, expect, it } from 'vitest'
+import type { PenpotDocument, PenpotPage } from 'penpot-exporter/types'
 import { emptyPageInteractions } from '../../../../src/lib/renderer/interactions/ir'
 import { nodesToPresentation } from '../../../../src/lib/renderer/interactions/document/nodes-to-presentation'
 import { emitReactComponent } from '../../../../src/lib/renderer/interactions/compile/emit-react'
 import type { LocalComponent } from '../../../../src/lib/common/component'
+import { resetWorkspace, seedDocument } from '../../fixtures'
 
-const ZERO = '00000000-0000-0000-0000-000000000000'
 const COMPONENT_ID = 'component-1'
 
 /**
@@ -18,7 +17,6 @@ function page(): PenpotPage {
     id: 'p',
     name: 'P',
     children: [
-      { id: ZERO, type: 'frame', name: 'Root' },
       {
         id: 'main',
         type: 'frame',
@@ -48,6 +46,21 @@ function page(): PenpotPage {
   } as unknown as PenpotPage
 }
 
+function docOf(p: PenpotPage): PenpotDocument {
+  return {
+    name: 'Test',
+    children: [p],
+    components: {},
+    images: {},
+    paintStyles: {},
+    textStyles: {},
+    componentProperties: {},
+    externalLibraries: {},
+    missingFonts: [],
+    isShared: false,
+  }
+}
+
 const component: LocalComponent = {
   id: COMPONENT_ID,
   name: 'Button',
@@ -74,8 +87,13 @@ const component: LocalComponent = {
 
 const library = { [COMPONENT_ID]: component }
 
+beforeEach(() => {
+  resetWorkspace()
+  seedDocument(docOf(page()))
+})
+
 function emit(): string {
-  const root = nodesToPresentation(flattenPageToIndexed(page()), library)!
+  const root = nodesToPresentation('p', library)!
   return emitReactComponent(emptyPageInteractions(), root, { componentName: 'Page' })
 }
 
@@ -119,7 +137,7 @@ describe('component codegen', () => {
 
   it('emits one definition however many copies there are', () => {
     const twoCopies = page()
-    const extra = JSON.parse(JSON.stringify((twoCopies.children as unknown[])[2])) as Record<
+    const extra = JSON.parse(JSON.stringify((twoCopies.children as unknown[])[1])) as Record<
       string,
       unknown
     >
@@ -128,8 +146,9 @@ describe('component codegen', () => {
     ;(extra.children as Array<Record<string, unknown>>)[0].id = 'copy2-label'
     ;(extra.children as Array<Record<string, unknown>>)[1].id = 'copy2-icon'
     ;(twoCopies.children as unknown[]).push(extra)
+    seedDocument(docOf(twoCopies))
 
-    const root = nodesToPresentation(flattenPageToIndexed(twoCopies), library)!
+    const root = nodesToPresentation('p', library)!
     const source = emitReactComponent(emptyPageInteractions(), root)
 
     expect(source.match(/function Button\(/g)).toHaveLength(1)
@@ -139,7 +158,7 @@ describe('component codegen', () => {
   })
 
   it('falls back to inlining when the library is not supplied', () => {
-    const root = nodesToPresentation(flattenPageToIndexed(page()))!
+    const root = nodesToPresentation('p')!
     const source = emitReactComponent(emptyPageInteractions(), root)
 
     expect(source).not.toContain('function Button(')

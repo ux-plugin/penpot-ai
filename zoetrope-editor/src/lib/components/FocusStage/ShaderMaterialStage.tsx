@@ -39,11 +39,8 @@ import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import type { Material, MaterialUniform } from '../../renderer/api/material'
 import type { ShaderCompileOutput } from '../../renderer/shader-lang'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '../../renderer/properties/commit-node-properties'
-import { getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
+import { commitNodePartialUpdate } from '../../renderer/properties/commit-node-properties'
+import { getNode, onBeforeUndo, onChangesApplied } from '../../doc'
 import { getWasmModule } from '../../renderer/wasm-module'
 import { Ticker } from '../../renderer/anim/ticker'
 import {
@@ -63,8 +60,6 @@ import type { ShaderGraph } from '../../renderer/shader-lang/nodegraph/model'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { shaderUniformsBridge } from '../../renderer/signals/shader-uniforms-bridge'
 import { shaderConsoleBridge } from '../../renderer/signals/shader-console-bridge'
-import { registerFocusFlush } from '../../history/focus-pending'
-import { onChangesApplied } from '../../changes/change-emitter'
 
 /** Pause after which the draft is committed to the document as one frame. */
 const COMMIT_IDLE_MS = 1000
@@ -196,16 +191,10 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
       timerRef.current = null
     }
     if (!dirtyRef.current) return
-    const before = getCommittedNodeOnActivePage(nodeId)
-    const pid = getActiveOrSinglePageId()
-    if (!before || !pid) return
+    const before = getNode(nodeId)
+    if (!before) return
     dirtyRef.current = false
-    await commitNodePartialUpdate(
-      nodeId,
-      before,
-      { material: draftRef.current } as Partial<PenpotNode>,
-      pid,
-    )
+    await commitNodePartialUpdate(nodeId, before, { material: draftRef.current } as Partial<PenpotNode>)
   }, [nodeId])
 
   const applyChange = useCallback(
@@ -226,27 +215,20 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
   // Flush any pending draft on exit, so closing focus never drops edits.
   useEffect(() => () => void commitNow(), [commitNow])
 
-  // Expose the pending-draft flush to the focus-undo reader: a Cmd+Z fired
-  // moments after typing must first commit that draft so the freshest edit is a
-  // history frame the walk can see. One slot — only one focus stage is open.
-  useEffect(() => registerFocusFlush(() => commitNow()), [commitNow])
+  // A Cmd+Z fired moments after typing must first commit the draft, so it is
+  // the frame undo takes back.
+  useEffect(() => onBeforeUndo(() => commitNow()), [commitNow])
 
   // Re-seed the draft when the committed material changes UNDER us — a focus
   // undo/redo, a canvas undo, or token propagation on a bound uniform. Guarded
-  // on `!dirtyRef` so it never clobbers in-flight typing: the focus reader
-  // flushes the pending draft first, so by the time its revert lands we're
-  // clean. Compared by value, so our own just-landed commit is a no-op.
+  // on `!dirtyRef` so it never clobbers in-flight typing: undo flushes the
+  // pending draft first, so by the time its revert lands we're clean. Compared
+  // by value, so our own just-landed commit is a no-op.
   useEffect(() => {
     return onChangesApplied((event) => {
       if (dirtyRef.current) return
-      const touched = event.redoChanges.some(
-        (ch) =>
-          (ch as { type?: string }).type === 'mod-obj' &&
-          (ch as { id?: string }).id === nodeId,
-      )
-      if (!touched) return
-      const node = getCommittedNodeOnActivePage(nodeId)
-      const mat = (node as { material?: Material } | null)?.material
+      if (!event.touched.node.has(nodeId)) return
+      const mat = (getNode(nodeId) as { material?: Material } | undefined)?.material
       if (!mat || JSON.stringify(mat) === JSON.stringify(draftRef.current)) return
       draftRef.current = mat
       setDraft(mat)

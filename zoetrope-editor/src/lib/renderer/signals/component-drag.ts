@@ -18,7 +18,7 @@ import { signal } from '@preact/signals-core'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import type { LocalComponent } from '../../common/component'
 import { viewport } from './pointer'
-import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
+import { getNode } from '../../doc'
 import { screenToWorld } from '../viewport'
 import { instantiateComponent } from '../component/component-crud'
 import { setSelectedIds } from '../store/document-selection'
@@ -61,9 +61,7 @@ function overCanvas(clientX: number, clientY: number): boolean {
 
 /** World size of the component's main, for the ghost and for centring the drop. */
 function mainSize(component: LocalComponent): { width: number; height: number } {
-  const pageId = getActiveOrSinglePageId()
-  const page = pageId ? getPage(pageId) : null
-  const sr = page?.objects[component.mainInstanceId]?.selrect
+  const sr = getNode(component.mainInstanceId)?.selrect
   return {
     width: sr?.width && sr.width > 0 ? sr.width : FALLBACK_W,
     height: sr?.height && sr.height > 0 ? sr.height : FALLBACK_H,

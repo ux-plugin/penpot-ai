@@ -14,7 +14,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useSnapshot } from 'valtio'
 import { Box, Circle, Square, Crosshair, Maximize2, Minimize2, Move3d, Rotate3d, Scale3d, Plus, Video, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { docProxy, getNode } from '../renderer/store/doc-proxy'
+import { useField } from '../doc'
+import { useSelectedIds } from '../renderer/store/document-selection'
 import { useSignalCoalesced } from '../renderer/signals/use-signal-coalesced'
 import { editPlacement, toggleFocus } from '../renderer/three/scene3d-focus'
 import {
@@ -51,7 +52,8 @@ type Flyout = 'add' | 'camera' | null
 export function Scene3DEditMenu() {
   const { editingSceneId, gizmoMode, enter, exit, setGizmo } = useScene3dEditing()
   const sceneSnap = useSnapshot(scene3dProxy)
-  const docSnap = useSnapshot(docProxy)
+  const selectedIds = useSelectedIds()
+  const sceneName = useField('node', editingSceneId, 'name') ?? '3D scene'
   const placement = useSignalCoalesced(editPlacement)
   const [flyout, setFlyout] = useState<Flyout>(null)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -67,7 +69,7 @@ export function Scene3DEditMenu() {
   }, [flyout])
 
   const selId =
-    docSnap.selectedIds.size === 1 ? (docSnap.selectedIds.values().next().value as string) : null
+    selectedIds.size === 1 ? (selectedIds.values().next().value as string) : null
   const selectedScene = selId && sceneSnap.scenes.has(selId) ? selId : null
 
   if (!editingSceneId && !selectedScene) return null
@@ -97,7 +99,6 @@ export function Scene3DEditMenu() {
   const activeGizmo = selectedCameraId && gizmoMode === 'scale' ? 'translate' : gizmoMode
   const editingDoc = sceneSnap.scenes.get(editingSceneId) as Scene3DDocument | undefined
   const cameraName = editingDoc ? activeCamera(editingDoc).name : 'Camera'
-  const sceneName = (getNode(editingSceneId) as { name?: string } | undefined)?.name ?? '3D scene'
 
   const addObject = (ref: (typeof ADD_PRIMS)[number]['ref']) => {
     const id = crypto.randomUUID()

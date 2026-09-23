@@ -13,8 +13,8 @@
  */
 
 import { useMemo, useRef } from 'react'
-import { useSnapshot } from 'valtio'
-import { docProxy } from '../../renderer/store/doc-proxy'
+import { useField } from '../../doc'
+import { useSelectedIds } from '../../renderer/store/document-selection'
 import { viewport as viewportSignal } from '../../renderer/signals/pointer'
 import { wasmSelectionRect as wasmSelectionRectSignal } from '../../renderer/signals/selection'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
@@ -46,9 +46,7 @@ export function MotionPathOverlay({ canvasSize }: MotionPathOverlayProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   useViewBoxSync(svgRef, canvasSize)
 
-  const doc = useSnapshot(docProxy)
-  // `docProxy.selectedIds` is a Set snapshot — normalize to an array to read it.
-  const selectedIds = useMemo(() => [...doc.selectedIds], [doc.selectedIds])
+  const selectedIds = useSelectedIds()
   const wasmSelectionRect = useSignalCoalesced(wasmSelectionRectSignal)
   const viewport = useSignalCoalesced(viewportSignal)
   const shapes = useSignalCoalesced(motionShapes)
@@ -60,7 +58,7 @@ export function MotionPathOverlay({ canvasSize }: MotionPathOverlayProps) {
 
   // Gate: exactly one selected shape that carries a motion, paths toggle on, not
   // actively playing, and a finite selection rect + viewport to anchor to.
-  const targetId = selectedIds.length === 1 ? selectedIds[0] : null
+  const targetId = selectedIds.size === 1 ? selectedIds.values().next().value! : null
   const active =
     targetId != null &&
     pathsOn &&
@@ -71,18 +69,11 @@ export function MotionPathOverlay({ canvasSize }: MotionPathOverlayProps) {
     Number.isFinite(viewport.zoom) &&
     viewport.zoom > 0
 
-  // Stable rest anchor = the committed selrect center, read from the reactive doc
-  // snapshot (NOT the live selection rect). It doesn't move while the shape is
-  // dragged — only when the document pose actually changes (e.g. rest re-home).
-  const restAnchor = useMemo(() => {
-    if (!targetId) return null
-    const page = doc.currentPageId ? doc.pageMap.get(doc.currentPageId) : undefined
-    const node = page?.objects[targetId] as
-      | { selrect?: { x: number; y: number; width: number; height: number } }
-      | undefined
-    const sr = node?.selrect
-    return sr ? { x: sr.x + sr.width / 2, y: sr.y + sr.height / 2 } : null
-  }, [targetId, doc])
+  // Stable rest anchor = the committed selrect center (NOT the live selection
+  // rect). It doesn't move while the shape is dragged — only when the document
+  // pose actually changes (e.g. rest re-home).
+  const sr = useField('node', targetId, 'selrect')
+  const restAnchor = useMemo(() => (sr ? { x: sr.x + sr.width / 2, y: sr.y + sr.height / 2 } : null), [sr])
 
   const geom = useMemo(() => {
     if (!active || !wasmSelectionRect || !restAnchor) return null

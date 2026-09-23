@@ -26,18 +26,16 @@ import type { MultiPolygon, Polygon, Ring } from 'polygon-clipping'
 const pc = (polygonClippingNs as unknown as { default?: typeof polygonClippingNs }).default ??
   polygonClippingNs
 const { union } = pc
-import { getPage } from '../store/doc-proxy'
 import { getSubpaths, compoundContent, segmentsToSubpaths, type Subpath } from '../geom/subpaths'
 import { fitClosedRing, rdpSimplify } from '../geom/fit-curve'
 import { pathBoolean } from '../api/boolean'
 import { getWasmModule } from '../wasm-module'
 import type { Anchor, Pt } from '../geom/anchors'
 import { anchorsTightBounds } from '../geom/anchors'
-import { commitNodePartialUpdate, getCommittedNodeOnActivePage } from '../properties/commit-node-properties'
+import { commitNodePartialUpdate } from '../properties/commit-node-properties'
 import { applyChanges } from '../../page-crud'
-import type { AddObjChange, DelObjChange, PenpotNode } from 'penpot-exporter/types'
-
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
+import { del, getNode } from '../../doc'
+import type { PenpotNode } from 'penpot-exporter/types'
 
 /** Below this removed area — measured in SCREEN px² so it means the same thing at
  *  any zoom — the drag erased nothing meaningful (a scribble that missed, or a
@@ -70,14 +68,13 @@ const SIMPLIFY_EPS = 3
 export async function eraseBrush(
   worldPts: Pt[],
   shapeId: string,
-  pageId: string,
   radius: number,
   zoom = 1,
   capStyle: 'round' | 'square' = 'round',
 ): Promise<boolean> {
   const band = brushBand(worldPts, radius, capStyle, zoom)
   if (band.length === 0) return false
-  return subtractClips(shapeId, pageId, [band], zoom)
+  return subtractClips(shapeId, [band], zoom)
 }
 
 /** The axis-perpendicular rectangle swept by a disc of radius `r` along segment a→b
@@ -206,7 +203,6 @@ export function brushBandPath(
 export async function eraseLasso(
   worldPts: Pt[],
   shapeId: string,
-  pageId: string,
   zoom = 1,
 ): Promise<boolean> {
   const pts = dedupePts(worldPts)
@@ -217,7 +213,7 @@ export async function eraseLasso(
   // clip is well-formed before the difference.
   const lasso = union([ring])
   if (lasso.length === 0) return false
-  return subtractClips(shapeId, pageId, [lasso], zoom)
+  return subtractClips(shapeId, [lasso], zoom)
 }
 
 /**
@@ -229,7 +225,6 @@ export async function eraseLasso(
 export async function eraseLassoAnchors(
   vertices: Anchor[],
   shapeId: string,
-  pageId: string,
   zoom = 1,
 ): Promise<boolean> {
   if (vertices.length < 3) return false
@@ -239,7 +234,7 @@ export async function eraseLassoAnchors(
   ring.push([ring[0][0], ring[0][1]])
   const lasso = union([ring])
   if (lasso.length === 0) return false
-  return subtractClips(shapeId, pageId, [lasso], zoom)
+  return subtractClips(shapeId, [lasso], zoom)
 }
 
 /**
@@ -261,18 +256,13 @@ export async function eraseLassoAnchors(
  */
 async function subtractClips(
   shapeId: string,
-  pageId: string,
   clips: Array<Polygon | MultiPolygon>,
   zoom = 1,
 ): Promise<boolean> {
   if (clips.length === 0) return false
   const minRemoved = MIN_REMOVED_SCREEN_AREA / (zoom * zoom)
-  const page = getPage(pageId)
-  if (!page) return false
-  if ((page.objects[shapeId] as PenpotNode | undefined)?.type !== 'path') return false
-
-  const before = getCommittedNodeOnActivePage(shapeId)
-  if (!before) return false
+  const before = getNode(shapeId)
+  if (before?.type !== 'path') return false
 
   const subpaths = getSubpaths((before as { content?: unknown }).content as Parameters<typeof getSubpaths>[0])
   const closed = subpaths.filter((sp) => sp.closed && sp.vertices.length >= 2)
@@ -282,7 +272,7 @@ async function subtractClips(
   const subjectArea = subpathsArea(closed)
   if (subjectArea <= 0) {
     if (canDelete) {
-      await deleteShape(before, pageId)
+      await deleteShape(before)
       return true
     }
     return false
@@ -310,7 +300,7 @@ async function subtractClips(
     remaining < subjectArea * 0.5 &&
     (outClosed.length === 0 || remaining < DELETE_REMNANT_AREA)
   ) {
-    await deleteShape(before, pageId)
+    await deleteShape(before)
     return true
   }
 
@@ -320,7 +310,6 @@ async function subtractClips(
     shapeId,
     before,
     erasePartial(before, [...outClosed, ...openSubpaths]),
-    pageId,
   )
   return false
 }
@@ -515,20 +504,6 @@ function unionTightBounds(subpaths: Subpath[]): {
 }
 
 /** Remove a shape whose fill the eraser fully covered, keeping it undoable. */
-async function deleteShape(node: PenpotNode, pageId: string): Promise<void> {
-  const page = getPage(pageId)
-  const parentId = node.parentId ?? ROOT_UUID
-  const parent = page ? (page.objects[parentId] as PenpotNode | undefined) : undefined
-  const index = parent?.shapes?.indexOf(node.id) ?? 0
-  const del: DelObjChange = { type: 'del-obj', id: node.id, pageId }
-  const undo: AddObjChange = {
-    type: 'add-obj',
-    id: node.id,
-    obj: node,
-    frameId: parentId,
-    parentId,
-    index,
-    pageId,
-  }
-  await applyChanges([del], { undoChanges: [undo] })
+async function deleteShape(node: PenpotNode): Promise<void> {
+  await applyChanges([del('node', node.id)])
 }

@@ -5,11 +5,11 @@
  * renderer the way shader thumbnails are.
  */
 
-import { useSnapshot } from 'valtio'
+import { useMemo } from 'react'
+import { computed } from '@preact/signals-core'
 import { Component } from 'lucide-react'
-import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
+import { useSignal } from '../../doc'
 import { buildComponentPreview } from '../../renderer/component/component-preview'
-import type { IndexedShape } from '../../worker/types'
 import type { LocalComponent } from '../../common/component'
 
 /** Text renders as a bar; fade it so it reads as a line of text, not a slab. */
@@ -22,13 +22,9 @@ export function ComponentThumbnail({
   component: LocalComponent
   className?: string
 }) {
-  // Re-derive on document edits so the thumbnail tracks the main.
-  useSnapshot(docProxy)
-  const pageId = getActiveOrSinglePageId()
-  const objects = pageId
-    ? (docProxy.pageMap.get(pageId)?.objects as Record<string, IndexedShape> | undefined)
-    : undefined
-  const preview = buildComponentPreview(objects, component.mainInstanceId)
+  // A computed, so the thumbnail tracks edits to the main.
+  const mainId = component.mainInstanceId
+  const preview = useSignal(useMemo(() => computed(() => buildComponentPreview(mainId)), [mainId]))
 
   // No main on this page (or nothing visible in it) — a generic mark beats an
   // empty box that reads as a broken thumbnail.

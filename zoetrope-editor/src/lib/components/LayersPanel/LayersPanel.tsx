@@ -5,11 +5,23 @@
  */
 
 import { Fragment, useCallback, useMemo, useState } from 'react'
-import type { IndexedPage, IndexedShape } from '../../worker/types'
-import type { PenpotNode, PenpotPage } from 'penpot-exporter/types'
+import { computed } from '@preact/signals-core'
+import type { PenpotPage } from 'penpot-exporter/types'
 import { useSnapshot } from 'valtio'
-import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
-import { setSelectedIds } from '../../renderer/store/document-selection'
+import {
+  currentPageId,
+  getNode,
+  getPage,
+  moveNodes,
+  pagesInOrder,
+  treeOf,
+  useCurrentPageId,
+  useMeta,
+  useSignal,
+  type DepthNode,
+  type Page,
+} from '../../doc'
+import { getSelectedIdsSet, setSelectedIds, useSelectedIds } from '../../renderer/store/document-selection'
 import {
   scene3dProxy,
   sceneCameras,
@@ -21,7 +33,6 @@ import { commitSetActiveCamera } from '../../renderer/three/scene3d-commit'
 import { useScene3dEditing } from '../../renderer/three/use-scene3d-editing'
 import { Scene3DObjectRow } from './Scene3DObjectRow'
 import { Scene3DCameraRow } from './Scene3DCameraRow'
-import { orderedNodesWithDepth } from '../../renderer/store/ordered-page-nodes'
 import { FloatingEditorRail } from '../EditorShell/floating-editor-rail'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -30,7 +41,7 @@ import { ChevronDown, ChevronRight, FileText, Plus, Video } from 'lucide-react'
 import { commitPageMetadataUpdate } from '../../renderer/properties/commit-page-properties'
 import { setActivePage, addPage } from '../../page-crud'
 import { commitChanges } from '../../renderer/store/commit'
-import { buildReparentChanges, resolveDropTarget, resolveSlotDrop, type DropSide } from './reparent'
+import { resolveDropTarget, resolveSlotDrop, type DropSide } from './reparent'
 import { addViewsToSlot } from '../../renderer/slot/slot-edit'
 import { LayerRow, type DragOverState } from './layer-row'
 import { TokensSections } from '../TokensPanel/TokensPanel'
@@ -53,17 +64,17 @@ const TAB_TITLES: Record<LeftRailTab, string> = {
   chat: 'Chat',
 }
 
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
+const pagesSignal = computed((): Page[] => pagesInOrder())
 
 export interface LayersPanelProps {
   className?: string
 }
 
 export function LayersPanel({ className }: LayersPanelProps) {
-  const doc = useSnapshot(docProxy)
   const sceneSnap = useSnapshot(scene3dProxy)
   const { editingSceneId, enter } = useScene3dEditing()
-  const selectedIds = useMemo(() => new Set(doc.selectedIds), [doc.selectedIds])
+  const selectedIds = useSelectedIds()
+  const meta = useMeta()
 
   const [collapsed, setCollapsed] = useState(false)
   // Scene ids whose "Cameras" sub-group is collapsed (default: expanded).
@@ -84,52 +95,29 @@ export function LayersPanel({ className }: LayersPanelProps) {
   const [editingPageId, setEditingPageId] = useState<string | null>(null)
   const [editingName, setEditingName] = useState('')
 
-  const pid = doc.currentPageId ?? getActiveOrSinglePageId()
-  const page: IndexedPage | undefined = pid ? doc.pageMap.get(pid) : undefined
+  const pid = useCurrentPageId()
+  const page = pid ? getPage(pid) : undefined
 
-  const pages = useMemo(() => Array.from(doc.pageMap.values()), [doc.pageMap])
+  const pages = useSignal(pagesSignal)
 
-  const currentPageNodes = useMemo(() => {
-    if (!page) return
-    return orderedNodesWithDepth(page)
-  }, [page])
-
-  const shapeLayers = useMemo(
-    () => (currentPageNodes ?? []).filter(({ node }) => node.id !== ROOT_UUID),
-    [currentPageNodes],
+  // A computed tracks every node and child list it reads.
+  const shapeLayers = useSignal(
+    useMemo(() => computed((): DepthNode[] => (pid ? treeOf(pid) : [])), [pid]),
   )
 
   const layerCount = shapeLayers.length
 
   const onSelectPage = useCallback((id: string) => {
-    if (id === docProxy.currentPageId) return
+    if (id === currentPageId.peek()) return
     void setActivePage(id)
   }, [])
 
   const onCreatePage = useCallback(async () => {
     const newId = crypto.randomUUID()
-    const name = `Page ${docProxy.pageMap.size + 1}`
-    const rootFrame: PenpotNode = {
-      id: ROOT_UUID,
-      name: 'Root',
-      type: 'frame',
-      x: 0,
-      y: 0,
-      width: 800,
-      height: 600,
-      parentId: undefined,
-      selrect: { x: 0, y: 0, width: 800, height: 600, x1: 0, y1: 0, x2: 800, y2: 600 },
-      points: [
-        { x: 0, y: 0 },
-        { x: 800, y: 0 },
-        { x: 800, y: 600 },
-        { x: 0, y: 600 },
-      ],
-    }
     const newPage: PenpotPage = {
       id: newId,
-      name,
-      children: [rootFrame],
+      name: `Page ${pagesInOrder().length + 1}`,
+      children: [],
       background: '#FFFFFF',
     }
     await addPage(newPage)
@@ -143,14 +131,14 @@ export function LayersPanel({ className }: LayersPanelProps) {
 
   const commitRename = useCallback(
     async (id: string) => {
-      const p = docProxy.pageMap.get(id)
+      const p = getPage(id)
       if (!p) {
         setEditingPageId(null)
         return
       }
       const trimmed = editingName.trim()
       if (trimmed && trimmed !== (p.name ?? '')) {
-        await commitPageMetadataUpdate(id, p, { name: trimmed })
+        await commitPageMetadataUpdate(id, { name: trimmed })
       }
       setEditingPageId(null)
     },
@@ -165,7 +153,7 @@ export function LayersPanel({ className }: LayersPanelProps) {
 
   const onLayerDragStart = useCallback((id: string): string[] => {
     setDraggingInPanel(true)
-    const current = docProxy.selectedIds
+    const current = getSelectedIdsSet()
     if (current.has(id) && current.size > 1) {
       return Array.from(current)
     }
@@ -180,27 +168,19 @@ export function LayersPanel({ className }: LayersPanelProps) {
   const onLayerDrop = useCallback(
     async (targetId: string, side: DropSide, draggedIds: string[]) => {
       setDragOver(null)
-      const activePageId = docProxy.currentPageId ?? getActiveOrSinglePageId()
+      const activePageId = currentPageId.peek()
       if (!activePageId) return
-      const currentPage = docProxy.pageMap.get(activePageId)
-      if (!currentPage) return
-      const objects = currentPage.objects
       // Dropping frames onto a slot assigns them as views (not a reparent).
-      const slotDrop = resolveSlotDrop({ targetId, side, draggedIds, objects })
+      const slotDrop = resolveSlotDrop({ targetId, side, draggedIds })
       if (slotDrop) {
         await addViewsToSlot(slotDrop.slotId, slotDrop.viewIds)
         return
       }
-      const resolved = resolveDropTarget({ targetId, side, draggedIds, objects })
+      const resolved = resolveDropTarget({ targetId, side, draggedIds })
       if (!resolved) return
-      const { redoChanges, undoChanges } = buildReparentChanges({
-        pageId: activePageId,
-        parentId: resolved.parentId,
-        index: resolved.index,
-        shapeIds: draggedIds,
-        objects,
+      await commitChanges({
+        changes: moveNodes(draggedIds, { page: activePageId, parentId: resolved.parentId, index: resolved.index }),
       })
-      await commitChanges({ redoChanges, undoChanges, pageId: activePageId })
     },
     [],
   )
@@ -211,34 +191,19 @@ export function LayersPanel({ className }: LayersPanelProps) {
     setRootDropActive(false)
     setDragOver(null)
     if (draggedIds.length === 0) return
-    const activePageId = docProxy.currentPageId ?? getActiveOrSinglePageId()
+    const activePageId = currentPageId.peek()
     if (!activePageId) return
-    const currentPage = docProxy.pageMap.get(activePageId)
-    if (!currentPage) return
-    const objects = currentPage.objects as Record<string, IndexedShape>
-    const rootChildren = objects[ROOT_UUID]?.shapes ?? []
-    const filtered = draggedIds.filter((id) => {
-      const shape = objects[id]
-      if (!shape) return false
-      if (shape.parentId === ROOT_UUID) return false
-      return true
-    })
+    // Already top-level nodes stay put.
+    const filtered = draggedIds.filter((id) => !!getNode(id)?.parentId)
     if (filtered.length === 0) return
-    const { redoChanges, undoChanges } = buildReparentChanges({
-      pageId: activePageId,
-      parentId: ROOT_UUID,
-      index: rootChildren.length,
-      shapeIds: filtered,
-      objects,
-    })
-    await commitChanges({ redoChanges, undoChanges, pageId: activePageId })
+    await commitChanges({ changes: moveNodes(filtered, { page: activePageId }) })
   }, [])
 
   const designFooter = layerCount === 1 ? '1 layer' : `${layerCount} layers`
   const tokensCount = useMemo(() => {
-    const sets = doc.meta?.tokens?.sets ?? []
+    const sets = meta?.tokens?.sets ?? []
     return sets.reduce((n, s) => n + s.tokens.length, 0)
-  }, [doc.meta?.tokens])
+  }, [meta?.tokens])
   const tokensFooter = tokensCount === 1 ? '1 token' : `${tokensCount} tokens`
   const footer = activeTab === 'design' ? designFooter : activeTab === 'tokens' ? tokensFooter : undefined
 
@@ -301,7 +266,7 @@ export function LayersPanel({ className }: LayersPanelProps) {
                 </span>
               </button>
               <span className="min-w-4 text-right text-xs tabular-nums text-muted-foreground">
-                {doc.pageMap.size}
+                {pages.length}
               </span>
               <Button
                 type="button"
@@ -322,7 +287,7 @@ export function LayersPanel({ className }: LayersPanelProps) {
                   <li className="px-2 py-1 text-xs text-muted-foreground">No pages yet</li>
                 )}
                 {pages.map((p) => {
-                  const active = p.id === doc.currentPageId
+                  const active = p.id === pid
                   const isEditing = editingPageId === p.id
                   return (
                     <li key={p.id}>
@@ -438,7 +403,6 @@ export function LayersPanel({ className }: LayersPanelProps) {
                                 depth={depth}
                                 active={active}
                                 selectedIds={selectedIds}
-                                objects={page.objects as Record<string, IndexedShape>}
                                 dragOver={dragOver}
                                 onSelect={onLayerRowClick}
                                 onDragStart={onLayerDragStart}

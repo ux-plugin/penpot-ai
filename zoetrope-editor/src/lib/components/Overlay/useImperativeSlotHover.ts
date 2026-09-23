@@ -15,12 +15,11 @@
  */
 import type { RefObject } from 'react'
 import { useLayoutEffect } from 'react'
-import { effect } from '@preact/signals-core'
+import { effect, untracked } from '@preact/signals-core'
 import { viewport as viewportSignal, worldPointerPos } from '../../renderer/signals/pointer'
 import { dropIntentSignal } from '../../renderer/signals/drop-intent'
-import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
+import { getActiveOrSinglePageId, getNode, pageObjects, type Node } from '../../doc'
 import { resolveHoveredSlot } from '../../renderer/slot/slot-hover'
-import type { IndexedShape } from '../../worker/types'
 
 /** Same accent the slot chrome has always used. */
 export const HOVER_COLOR = '#7F77DD'
@@ -67,7 +66,7 @@ export function roundedRectPath(w: number, h: number, radii: Corners): string {
   ].join(' ')
 }
 
-function cornersOf(node: IndexedShape): Corners {
+function cornersOf(node: Node): Corners {
   const n = node as { r1?: number; r2?: number; r3?: number; r4?: number; rx?: number }
   const r = (v: number | undefined) => (Number.isFinite(v) ? (v as number) : (n.rx ?? 0))
   return [r(n.r1), r(n.r2), r(n.r3), r(n.r4)]
@@ -80,7 +79,7 @@ export function useImperativeSlotHover(
   useLayoutEffect(() => {
     // Last outline drawn, so a pointer move over the same slot at the same zoom
     // doesn't rewrite the path. Pointer moves arrive far faster than slots change.
-    let drawn: { id: string; zoom: number; node: IndexedShape } | null = null
+    let drawn: { id: string; zoom: number; node: Node } | null = null
 
     const hide = (outline: SVGPathElement, label: SVGTextElement) => {
       outline.style.display = 'none'
@@ -97,12 +96,12 @@ export function useImperativeSlotHover(
       const label = labelRef.current
       if (!outline || !label) return
 
-      const pageId = getActiveOrSinglePageId()
-      const objects = pageId
-        ? (docProxy.pageMap.get(pageId)?.objects as Record<string, IndexedShape> | undefined)
-        : undefined
-      const hovered = resolveHoveredSlot(objects, point, dragging)
-      const node = hovered ? objects?.[hovered.id] : undefined
+      // Untracked: the page is read per pointer move, not watched.
+      const { hovered, node } = untracked(() => {
+        const pageId = getActiveOrSinglePageId()
+        const hovered = resolveHoveredSlot(pageId ? pageObjects(pageId) : undefined, point, dragging)
+        return { hovered, node: hovered ? getNode(hovered.id) : undefined }
+      })
 
       if (!hovered || !node || !vp || !Number.isFinite(vp.zoom) || vp.zoom <= 0) {
         hide(outline, label)

@@ -14,7 +14,7 @@ import { activeEditorGradient, activeEditorOnChange, activeEditorTarget, wasmSel
 import { dragStopper } from '../streams/drag-stopper'
 import { screenToWorld } from '../viewport'
 import { useWorkspaceStore } from '../store/workspace-store'
-import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
+import { getNode } from '../../doc'
 import { getSelectedIdsSet } from '../store/document-selection'
 import { DRAG_RENDER_INTERVAL_MS } from './drag-render-interval'
 import type { Point } from '../types'
@@ -128,10 +128,9 @@ export function startGradientDrag(
 
   const selectedIds = getSelectedIdsSet()
   const shapeId = selectedIds.size === 1 ? Array.from(selectedIds)[0] : null
-  const pageId = getActiveOrSinglePageId()
   const editorTarget = activeEditorTarget.peek()
 
-  if (!shapeId || !pageId || !editorTarget) return EMPTY
+  if (!shapeId || !editorTarget) return EMPTY
 
   const isFill = editorTarget.kind === 'fill'
   const fillIndex = isFill ? editorTarget.index : -1
@@ -139,8 +138,7 @@ export function startGradientDrag(
   // Snapshot shape fills at drag start (only needed for fill drags)
   let baseFills: Fill[] = []
   if (isFill) {
-    const page = getPage(pageId)
-    const shape = page?.objects[shapeId] as { fills?: Fill[] } | undefined
+    const shape = getNode(shapeId) as { fills?: Fill[] } | undefined
     baseFills = shape?.fills ?? []
   }
 

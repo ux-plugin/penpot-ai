@@ -8,10 +8,22 @@
  */
 
 import { useMemo, useState } from 'react'
-import { useSnapshot } from 'valtio'
+import { computed } from '@preact/signals-core'
 import { cn } from '@/lib/utils'
-import type { IndexedShape } from '../../worker/types'
-import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
+import {
+  children,
+  getActiveOrSinglePageId,
+  getNode,
+  nodesOfPage,
+  useChildren,
+  useCurrentPageId,
+  useMeta,
+  useNode,
+  useRecord,
+  useSignal,
+  type Node,
+} from '../../doc'
+import { useSelectedIds } from '../../renderer/store/document-selection'
 import {
   emptyPageInteractions,
   cellRef,
@@ -74,8 +86,6 @@ import {
   currentStores,
 } from '../../renderer/interactions/document/commit-interactions'
 
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
-
 type Commit = (next: PageInteractions) => void
 type LiveIR = () => PageInteractions
 
@@ -134,7 +144,7 @@ function ActionRow({
   index: number
   /** Every cell an action may write — anything but a formula. */
   cells: readonly Cell[]
-  nodes: readonly IndexedShape[]
+  nodes: readonly Node[]
   commit: Commit
   liveIR: LiveIR
 }) {
@@ -302,7 +312,7 @@ function InteractionCard({
   it: Interaction
   triggers: ReturnType<typeof listTriggers>
   cells: readonly Cell[]
-  nodes: readonly IndexedShape[]
+  nodes: readonly Node[]
   commit: Commit
   liveIR: LiveIR
 }) {
@@ -386,22 +396,20 @@ function InteractionCard({
  */
 function ListSection({
   node,
-  objects,
   ir,
   lists,
   commit,
   liveIR,
 }: {
-  node: IndexedShape
-  objects: Record<string, IndexedShape>
+  node: Node
   ir: PageInteractions
   /** Every list available to repeat over — page state AND lists arriving from outside. */
   lists: readonly { id: string }[]
   commit: Commit
   liveIR: LiveIR
 }) {
-  const children = (node.shapes ?? []).map((id) => objects[id]).filter((c): c is IndexedShape => Boolean(c))
-  const template = children.find((c) => propRef(ir, c.id, REPEAT_PROP) !== undefined)
+  const kids = children(node.id).map(getNode).filter((c): c is Node => Boolean(c))
+  const template = kids.find((c) => propRef(ir, c.id, REPEAT_PROP) !== undefined)
   const rep = template ? refsOf(ir, template.id) : undefined
   const on = Boolean(rep && template)
   const hasLists = lists.length > 0
@@ -409,11 +417,11 @@ function ListSection({
   const overMissing = on && over !== '' && !lists.some((v) => v.id === over)
   const keyText = exprText(rep?.item?.key, ir)
   const keyErr = exprError(keyText)
-  const childName = (c: IndexedShape) => c.name ?? c.id.slice(0, 8)
+  const childName = (c: Node) => c.name ?? c.id.slice(0, 8)
 
   const toggle = () => {
     if (on && template) commit(clearRepeat(liveIR(), template.id))
-    else if (hasLists && children[0]) commit(setRepeat(liveIR(), children[0].id, { over: lists[0].id, as: 'item' }))
+    else if (hasLists && kids[0]) commit(setRepeat(liveIR(), kids[0].id, { over: lists[0].id, as: 'item' }))
   }
 
   return (
@@ -473,7 +481,7 @@ function ListSection({
                 onChange={(e) => commit(moveRepeat(liveIR(), template.id, e.target.value))}
                 aria-label="Item template"
               >
-                {children.map((c) => (
+                {kids.map((c) => (
                   <option key={c.id} value={c.id}>
                     {childName(c)}
                   </option>
@@ -906,14 +914,14 @@ function FormulaRow({ c, commit, liveIR }: { c: Cell; commit: Commit; liveIR: Li
 }
 
 export function InteractionsTab() {
-  const doc = useSnapshot(docProxy)
-  const pid = doc.currentPageId ?? getActiveOrSinglePageId()
-  const page = pid ? doc.pageMap.get(pid) : undefined
-  const selectedIds = useMemo(() => new Set(doc.selectedIds), [doc.selectedIds])
+  const currentPageId = useCurrentPageId()
+  const pid = currentPageId ?? getActiveOrSinglePageId()
+  const page = useRecord('page', pid)
+  const selectedIds = useSelectedIds()
   const singleId = selectedIds.size === 1 ? Array.from(selectedIds)[0] : null
 
   const ir = page?.interactions ?? emptyPageInteractions()
-  const stores = doc.meta?.stores ?? []
+  const stores = useMeta()?.stores ?? []
   const cells = ir.cells as Cell[]
   // Store cells are authored in the Data panel and formulas below; this section
   // is the design's own state. All remain one namespace an interaction can name.
@@ -922,9 +930,8 @@ export function InteractionsTab() {
   const writable = cells.filter((c) => !isFormula(c))
   const lists = cells.filter((c) => isCollectionType(c.type)).map((c) => ({ id: cellRef(c) }))
   const triggers = useMemo(() => listTriggers().filter((t) => t.scope === 'node'), [])
-  const nodes: IndexedShape[] = page
-    ? (Object.values(page.objects) as IndexedShape[]).filter((o) => o.id !== ROOT_UUID)
-    : []
+  // A computed over the page, so target pickers track adds, deletes and renames.
+  const nodes = useSignal(useMemo(() => computed(() => (pid ? nodesOfPage(pid) : [])), [pid]))
 
   const liveIR: LiveIR = () => (pid ? currentInteractions(pid) : undefined) ?? emptyPageInteractions()
   const commit: Commit = (next) => {
@@ -947,10 +954,9 @@ export function InteractionsTab() {
     setNewDerived('')
   }
 
-  const objects = (page?.objects ?? {}) as Record<string, IndexedShape>
-  const node = singleId ? objects[singleId] : undefined
+  const node = useNode(singleId)
   const nodeInteractions = singleId ? ir.interactions.filter((it) => it.on.node === singleId) : []
-  const isContainer = (node?.shapes?.length ?? 0) > 0
+  const isContainer = useChildren(singleId).length > 0
   const isTemplate = node ? propRef(ir, node.id, REPEAT_PROP) !== undefined : false
 
   return (
@@ -1041,7 +1047,7 @@ export function InteractionsTab() {
         <>
           {/* A container frame can SHOW a list — author it here; the repeater lands on the template child */}
           {isContainer && (
-            <ListSection node={node} objects={objects} ir={ir} lists={lists} commit={commit} liveIR={liveIR} />
+            <ListSection node={node} ir={ir} lists={lists} commit={commit} liveIR={liveIR} />
           )}
 
           {/* Two-way: this node EDITS a value (a field), rather than only displaying one */}

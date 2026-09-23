@@ -12,13 +12,11 @@
 import { applyChanges } from '../../page-crud'
 import { createRect } from '../node-factory'
 import { setSelectedIds } from '../store/document-selection'
-import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
+import { addNode, getActiveOrSinglePageId } from '../../doc'
 import { viewport } from '../signals/pointer'
 import { screenToWorld } from '../viewport'
-import type { AddObjChange } from 'penpot-exporter/types'
+import type { PenpotNode } from 'penpot-exporter/types'
 import { defaultSceneDocument, SCENE3D_BASE_VIEW } from './scene3d-store'
-
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 // Creation size = the camera's design viewport, so a fresh scene exactly fills
 // its frame (see SCENE3D_BASE_VIEW).
 const DEFAULT_WIDTH = SCENE3D_BASE_VIEW.w
@@ -43,11 +41,6 @@ function viewportCenterWorld(): { x: number; y: number } {
 export async function create3DScene(): Promise<string | null> {
   const pageId = getActiveOrSinglePageId()
   if (!pageId) return null
-  const page = getPage(pageId)
-  if (!page) return null
-
-  const root = Object.values(page.objects).find((o) => o.parentId == null)
-  const rootId = root?.id ?? ROOT_UUID
 
   const center = viewportCenterWorld()
   const rect = createRect({
@@ -55,7 +48,6 @@ export async function create3DScene(): Promise<string | null> {
     y: center.y - DEFAULT_HEIGHT / 2,
     width: DEFAULT_WIDTH,
     height: DEFAULT_HEIGHT,
-    parentId: rootId,
     name: '3D scene',
     // A frame: transparent fill (the three.js overlay paints the scene over this
     // region) with a subtle border so the empty frame is visible.
@@ -67,19 +59,10 @@ export async function create3DScene(): Promise<string | null> {
 
   // The serializable scene rides on the rect as `node.scene3d`, so 3D state lives
   // in the document from creation onward. scene3d-sync upserts it into the proxy
-  // when this add-obj commits.
+  // when this add commits.
   const sceneDoc = defaultSceneDocument(rect.id)
 
-  const addChange: AddObjChange = {
-    type: 'add-obj',
-    id: rect.id,
-    obj: { ...rect, scene3d: sceneDoc } as AddObjChange['obj'],
-    frameId: rootId,
-    parentId: rootId,
-    index: root?.shapes?.length ?? 0,
-    pageId,
-  }
-  await applyChanges([addChange])
+  await applyChanges([addNode({ ...rect, scene3d: sceneDoc } as PenpotNode, { page: pageId })])
 
   setSelectedIds(new Set([rect.id]))
   return rect.id

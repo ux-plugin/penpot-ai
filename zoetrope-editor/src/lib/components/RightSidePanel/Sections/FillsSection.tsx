@@ -4,12 +4,9 @@ import { ChevronDown, ChevronRight, Info } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { cn } from '@/lib/utils'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '@/lib/renderer/properties/commit-node-properties'
+import { commitNodePartialUpdate } from '@/lib/renderer/properties/commit-node-properties'
 import { DEFAULT_FILL, MAX_FILLS, type RectLikeNode } from '@/lib/renderer/properties/panel-utils'
-import { getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
+import { getNode } from '@/lib/doc'
 import { useSignalCoalesced } from '@/lib/renderer/signals/use-signal-coalesced'
 import {
   textEditorActive,
@@ -64,9 +61,8 @@ export function FillsSection({ nodeId, readOnly, initialNode }: FillsSectionProp
   const commitFills = useCallback(
     async (next: Fill[]) => {
       if (readOnly) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(nodeId)
+      if (!before) return
       if (isTextNode(before as { type?: string })) {
         // Text colour lives on the content leaves (per-range capable), not the
         // shape-level `fills`. Apply to every leaf through the same content path
@@ -76,10 +72,10 @@ export function FillsSection({ nodeId, readOnly, initialNode }: FillsSectionProp
           (before as { content?: TextContent }).content,
           { span: { fills: next } },
         )
-        await commitNodePartialUpdate(nodeId, before, { content } as Partial<PenpotNode>, pid)
+        await commitNodePartialUpdate(nodeId, before, { content } as Partial<PenpotNode>)
         return
       }
-      await commitNodePartialUpdate(nodeId, before, { fills: next }, pid)
+      await commitNodePartialUpdate(nodeId, before, { fills: next })
     },
     [readOnly, nodeId],
   )

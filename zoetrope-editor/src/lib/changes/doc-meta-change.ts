@@ -17,7 +17,7 @@
 import type { Uuid } from 'penpot-exporter/types'
 import type { LocalComponent } from '../common/component'
 import type { Store } from '../renderer/interactions/ir'
-import type { DocumentMeta } from '../renderer/store/doc-proxy'
+import type { DocumentMeta } from '../doc/meta'
 import { emptyTokensLib } from '../tokens/types'
 import type { Token, TokenSet, TokenTheme, TokensLib } from '../tokens/types'
 

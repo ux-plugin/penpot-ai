@@ -6,11 +6,11 @@
  */
 
 import type { RefObject } from 'react'
-import { useLayoutEffect, useMemo, useRef } from 'react'
+import { useLayoutEffect, useRef } from 'react'
 import { useSelector } from '@xstate/react'
 import { useCanvasActor } from '../../renderer/machine/canvas-actor-context'
-import { useSnapshot } from 'valtio'
-import { docProxy, getActiveOrSinglePageId, getPage } from '../../renderer/store/doc-proxy'
+import { useNode } from '../../doc'
+import { useSelectedIds } from '../../renderer/store/document-selection'
 import type { TextContent } from 'penpot-exporter/types'
 import { isEmptyTextContent } from '../RightSidePanel/Sections/text-typography'
 import { pointerPos, viewport as viewportSignal } from '../../renderer/signals/pointer'
@@ -91,8 +91,8 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   useImperativeSlotHover(slotHoverOutlineRef, slotHoverLabelRef)
 
   const canvasActor = useCanvasActor()
-  const doc = useSnapshot(docProxy)
-  const selectedIds = useMemo(() => new Set(doc.selectedIds), [doc.selectedIds])
+  const selectedIds = useSelectedIds()
+  const soleNode = useNode(selectedIds.size === 1 ? selectedIds.values().next().value : null)
   const wasmSelectionRect = useSignalCoalesced(wasmSelectionRectSignal)
   const viewport = useSignalCoalesced(viewportSignal)
   const selectionRect = useSignalCoalesced(selectionRectSignal)
@@ -241,19 +241,11 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   // outline even while empty (the user explicitly drew that box). Recomputed each
   // render; on commit the machine leaves `textEditing` and re-reads the content.
   const selectedTextEmpty = (() => {
-    if (selectedIds.size !== 1) return false
-    const id = selectedIds.values().next().value
-    const pid = getActiveOrSinglePageId()
-    const node =
-      id && pid
-        ? (getPage(pid)?.objects[id] as
-            | { type?: string; content?: TextContent; growType?: string }
-            | undefined)
-        : undefined
+    const node = soleNode as { id: string; type?: string; content?: TextContent; growType?: string } | undefined
     if (node?.type !== 'text' || node.growType !== 'auto-width') return false
     // While this shape is being edited, the typed text isn't in `node.content`
     // yet — read the live editor signal so the outline appears on the first key.
-    if (isTextEditing && editingId === id) return editorIsEmpty
+    if (isTextEditing && editingId === node.id) return editorIsEmpty
     return isEmptyTextContent(node.content)
   })()
 

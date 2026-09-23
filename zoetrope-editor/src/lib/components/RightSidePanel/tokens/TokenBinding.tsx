@@ -13,8 +13,7 @@
 
 import { useState } from 'react'
 import { Link2, Plus, Unlink2 } from 'lucide-react'
-import { useSnapshot } from 'valtio'
-import { docProxy } from '../../../renderer/store/doc-proxy'
+import { useMeta } from '../../../doc'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import {
@@ -82,8 +81,7 @@ function display(type: SupportedTokenType, r?: ResolvedToken): { swatch?: string
 }
 
 export function TokenBinding({ nodeId, attr, tokenType, currentValue, boundName, label }: Props) {
-  const doc = useSnapshot(docProxy)
-  const lib = doc.meta?.tokens as TokensLib | undefined
+  const lib = useMeta()?.tokens as TokensLib | undefined
   const resolved = useResolvedTokens()
   const [open, setOpen] = useState(false)
   const attrs = Array.isArray(attr) ? attr : [attr]

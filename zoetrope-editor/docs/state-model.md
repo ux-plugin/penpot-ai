@@ -1,8 +1,9 @@
 # State model
 
-Status: decided 2026-09-22. Supersedes the "Document layer — Valtio" section of
-`state-architecture.md`. Nothing below is built yet; the plan for the cut is a
-separate document.
+Status: decided 2026-09-22, built 2026-09-23 for pages and nodes (`src/lib/doc/`,
+see `state-cut-plan.md`). Supersedes the "Document layer — Valtio" section of
+`state-architecture.md`. Cells, bindings, rules and timelines are still the
+`interactions` block on the page record; storage and sync are not built.
 
 ## Three kinds of state, one writer
 

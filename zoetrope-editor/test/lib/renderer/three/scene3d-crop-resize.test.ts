@@ -14,13 +14,12 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
-import type { Change } from 'penpot-exporter/types'
-import type { IndexedPage, IndexedShape } from '../../../../src/lib/worker/types'
+import type { PenpotDocument, PenpotNode } from 'penpot-exporter/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
-import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { commitChanges } from '../../../../src/lib/renderer/store/commit'
-import { undo } from '../../../../src/lib/page-crud'
+import { getNode, mod, undo } from '../../../../src/lib/doc'
+import { framesOf } from '../../../../src/lib/doc/undo'
+import { resetWorkspace, seedDocument } from '../../fixtures'
 import {
   scene3dProxy,
   defaultSceneDocument,
@@ -39,7 +38,6 @@ import {
 import { nodeBoxRect } from '../../../../src/lib/renderer/three/scene3d-crop-resize'
 
 const PAGE_ID = 'page1'
-const ROOT = '00000000-0000-0000-0000-000000000000'
 const SCENE = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 
 const BOX = { x: 0, y: 0, w: 360, h: 260 }
@@ -306,14 +304,12 @@ describe('view geometry', () => {
 
 /* -------------------------------------------------------------- document wiring */
 
-function sceneShape(x: number, y: number, w: number, h: number): IndexedShape {
+function sceneShape(x: number, y: number, w: number, h: number, scene3d: Scene3DDocument): PenpotNode {
   const sel = { x, y, width: w, height: h, x1: x, y1: y, x2: x + w, y2: y + h }
   return {
     id: SCENE,
     type: 'rect',
     name: '3D scene',
-    parentId: ROOT,
-    frameId: ROOT,
     x,
     y,
     width: w,
@@ -326,32 +322,29 @@ function sceneShape(x: number, y: number, w: number, h: number): IndexedShape {
       { x, y: y + h },
     ],
     transform: { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 },
-  } as IndexedShape
+    scene3d,
+  } as unknown as PenpotNode
 }
 
-function makePage(): IndexedPage {
-  return {
-    id: PAGE_ID,
-    objects: {
-      [ROOT]: {
-        id: ROOT,
-        type: 'frame',
-        name: 'Root',
-        x: 0,
-        y: 0,
-        width: 800,
-        height: 600,
-        selrect: { x: 0, y: 0, width: 800, height: 600, x1: 0, y1: 0, x2: 800, y2: 600 },
-        points: [],
-        shapes: [SCENE],
-      } as unknown as IndexedShape,
-      [SCENE]: sceneShape(0, 0, 360, 260),
-    },
+/** One page holding the scene box at BOX, carrying `scene3d`. */
+function seedScene(scene3d: Scene3DDocument): void {
+  const doc: PenpotDocument = {
+    name: 'Test',
+    children: [{ id: PAGE_ID, name: 'Page 1', background: '#FFFFFF', children: [sceneShape(0, 0, 360, 260, scene3d)] }],
+    components: {},
+    images: {},
+    paintStyles: {},
+    textStyles: {},
+    componentProperties: {},
+    externalLibraries: {},
+    missingFonts: [],
+    isShared: false,
   }
+  seedDocument(doc)
 }
 
-function node(): IndexedShape {
-  return docProxy.pageMap.get(PAGE_ID)!.objects[SCENE] as IndexedShape
+function node() {
+  return getNode(SCENE)!
 }
 
 function win(): Scene3DViewWindow | undefined {
@@ -359,62 +352,34 @@ function win(): Scene3DViewWindow | undefined {
 }
 
 /** The geometry half of a resize/move commit, exactly as the real paths write it. */
-function geometryChange(x: number, y: number, w: number, h: number): Change {
-  return {
-    type: 'mod-obj',
-    id: SCENE,
-    pageId: PAGE_ID,
-    operations: [
-      {
-        type: 'assign',
-        value: {
-          x,
-          y,
-          width: w,
-          height: h,
-          selrect: { x, y, width: w, height: h, x1: x, y1: y, x2: x + w, y2: y + h },
-        },
-      },
-    ],
-  } as unknown as Change
-}
-
 async function commitGeometry(x: number, y: number, w: number, h: number): Promise<void> {
-  const n = node()
-  const before = { x: n.x, y: n.y, width: n.width, height: n.height, selrect: n.selrect }
   await commitChanges({
-    redoChanges: [geometryChange(x, y, w, h)],
-    undoChanges: [
-      { type: 'mod-obj', id: SCENE, pageId: PAGE_ID, operations: [{ type: 'assign', value: before }] } as unknown as Change,
+    changes: [
+      mod('node', SCENE, {
+        x,
+        y,
+        width: w,
+        height: h,
+        selrect: { x, y, width: w, height: h, x1: x, y1: y, x2: x + w, y2: y + h },
+      }),
     ],
-    pageId: PAGE_ID,
   })
 }
 
 describe('resize through the commit pipeline', () => {
   beforeEach(() => {
-    useJournalStore.getState().clear()
-    docProxy.pageMap.clear()
-    docProxy.pageMap.set(PAGE_ID, structuredClone(makePage()))
-    docProxy.currentPageId = PAGE_ID
-    docProxy.selectedIds.clear()
+    resetWorkspace()
     scene3dProxy.scenes.clear()
     scene3dProxy.focusedObjectId = null
-    useWorkspaceStore.setState({
-      workerClient: {
-        updatePageWithChanges: vi.fn(async () => {}),
-        updatePage: vi.fn(async () => {}),
-      } as never,
-      renderer: null,
-    })
-    node().scene3d = docWith('crop')
+    useWorkspaceStore.setState({ workerClient: { applyChanges: vi.fn(async () => {}) } as never, renderer: null })
+    seedScene(docWith('crop'))
   })
 
   it('moves a crop window with the box, in ONE undo frame', async () => {
     await commitGeometry(160, 0, 200, 260)
     expect(win()!.x + win()!.w).toBeCloseTo(WIN.x + WIN.w, 6) // right edge held
     expect(win()!.w).toBeCloseTo((WIN.w * 200) / 360, 6)
-    expect(useJournalStore.getState().txns).toHaveLength(1)
+    expect(framesOf()).toHaveLength(1)
 
     // One undo restores the box AND its window together — split across two frames, undo
     // would put the box back and leave the content shifted.
@@ -424,14 +389,14 @@ describe('resize through the commit pipeline', () => {
   })
 
   it('leaves a scale window where it is, but pins it on the first resize', async () => {
-    node().scene3d = { ...defaultSceneDocument(SCENE) } // reframe, no window yet
+    seedScene({ ...defaultSceneDocument(SCENE) }) // reframe, no window yet
     await commitGeometry(160, 0, 200, 260)
     expect(win()).toMatchObject(WIN) // materialised from the PRE-resize box, unmoved
-    expect(useJournalStore.getState().txns).toHaveLength(1)
+    expect(framesOf()).toHaveLength(1)
   })
 
   it('writes nothing at all on a later scale resize', async () => {
-    node().scene3d = docWith('reframe')
+    seedScene(docWith('reframe'))
     await commitGeometry(0, 0, 720, 520)
     expect(win()).toMatchObject(WIN)
   })

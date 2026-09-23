@@ -8,7 +8,7 @@ import { pointerPos, signalToObservable, viewport } from '../signals/pointer'
 import { dragStopper } from '../streams/drag-stopper'
 import { setSelectedIds } from '../store/document-selection'
 import { shapeDrawPreview as shapeDrawPreviewSignal } from '../signals/selection'
-import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
+import { addNode, getActiveOrSinglePageId } from '../../doc'
 import { screenToWorld } from '../viewport'
 import { makeSelrect } from '../../worker/types'
 import { isSnapPixelGridEnabled } from '../store/workspace-settings'
@@ -22,11 +22,9 @@ import {
   createSlot,
   createText,
 } from '../node-factory'
-import type { AddObjChange, DelObjChange, PenpotNode } from 'penpot-exporter/types'
+import type { PenpotNode } from 'penpot-exporter/types'
 import type { LocalNode } from '../../common/slot-shape'
 import type { DrawTool } from '../machine/canvas-machine'
-
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
 /** Minimum rubber-band size in screen pixels before committing a shape. */
 const MIN_DRAW_SCREEN_PX = 3
@@ -42,10 +40,9 @@ export const pendingTextEdit: { id: string | null } = { id: null }
 
 export function handleDrawShape(tool: DrawTool): Observable<void> {
   const initialVp = viewport.value
-  const effectivePageId = getActiveOrSinglePageId()
-  const page = effectivePageId ? getPage(effectivePageId) : undefined
+  const page = getActiveOrSinglePageId()
 
-  if (!initialVp || !effectivePageId || !page) {
+  if (!initialVp || !page) {
     shapeDrawPreviewSignal.value = null
     return EMPTY
   }
@@ -124,14 +121,8 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
             const h = isClick ? 17 : snapped ? Math.max(1, snapped.height) : lastRect.height / vp.zoom
             if (!isClick && (w < 1e-6 || h < 1e-6)) return
 
-            const currentPage = effectivePageId ? getPage(effectivePageId) : undefined
-            if (!currentPage) return
-
-            const root = Object.values(currentPage.objects).find((o) => o.parentId == null)
-            const rootId = root?.id ?? ROOT_UUID
-
             // Shared geometry + the default fill/stroke used by the filled shapes.
-            const geom = { x: worldOrigin.x, y: worldOrigin.y, width: w, height: h, parentId: rootId }
+            const geom = { x: worldOrigin.x, y: worldOrigin.y, width: w, height: h }
             const filled = {
               fillColor: '#3B82F6',
               fillOpacity: 0.85,
@@ -187,23 +178,12 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
                 break
             }
 
-            const addChange: AddObjChange = {
-              type: 'add-obj',
-              id: newNode.id,
-              // Slot is a local extension of the node union; the commit pipeline
-              // treats objects structurally (by `type` string), so cast is safe.
-              obj: newNode as PenpotNode,
-              frameId: rootId,
-              parentId: rootId,
-              index: root?.shapes?.length ?? 0,
-              pageId: effectivePageId,
-            }
             // Await so the shape is in the WASM scene before we enter edit mode —
             // `text_editor_focus` needs it present, otherwise the caret never
             // shows on the first click that creates the box (the sync is async).
-            // Pair with the inverse del-obj so creation is undoable (Cmd+Z removes it).
-            const undoChange: DelObjChange = { type: 'del-obj', id: newNode.id, pageId: effectivePageId }
-            await applyChanges([addChange], { undoChanges: [undoChange] })
+            // Slot is a local extension of the node union; the commit pipeline
+            // treats objects structurally (by `type` string), so cast is safe.
+            await applyChanges([addNode(newNode as PenpotNode, { page })])
             setSelectedIds(new Set([newNode.id]))
             // A freshly created text shape opens straight into edit mode.
             if (tool === 'text') pendingTextEdit.id = newNode.id

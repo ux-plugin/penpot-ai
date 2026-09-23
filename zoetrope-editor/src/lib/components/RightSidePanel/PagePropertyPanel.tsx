@@ -1,6 +1,5 @@
 import { useCallback, useState } from 'react'
-import type { IndexedPage } from '../../worker/types'
-import { docProxy } from '../../renderer/store/doc-proxy'
+import { getPage, type Page } from '../../doc'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { commitPageMetadataUpdate } from '../../renderer/properties/commit-page-properties'
@@ -8,7 +7,7 @@ import { normalizeHex } from '../../renderer/properties/panel-utils'
 
 export interface PagePropertyPanelProps {
   pageId: string
-  initialPage: IndexedPage
+  initialPage: Page
 }
 
 export function PagePropertyPanel({ pageId, initialPage }: PagePropertyPanelProps) {
@@ -16,27 +15,25 @@ export function PagePropertyPanel({ pageId, initialPage }: PagePropertyPanelProp
   const [pageBg, setPageBg] = useState(() => initialPage.background ?? '#FFFFFF')
 
   const commitPageName = useCallback(async () => {
-    const page = docProxy.pageMap.get(pageId)
+    const page = getPage(pageId)
     if (!page) return
     const trimmed = pageName.trim()
     if (trimmed === (page.name ?? '')) return
-    await commitPageMetadataUpdate(pageId, page, { name: trimmed || 'Page' })
+    await commitPageMetadataUpdate(pageId, { name: trimmed || 'Page' })
   }, [pageName, pageId])
 
   const commitPageBackground = useCallback(async () => {
-    const page = docProxy.pageMap.get(pageId)
+    const page = getPage(pageId)
     if (!page) return
     const next = normalizeHex(pageBg)
     if (next === (page.background ?? '#FFFFFF')) return
-    await commitPageMetadataUpdate(pageId, page, { background: next })
+    await commitPageMetadataUpdate(pageId, { background: next })
   }, [pageBg, pageId])
 
   const onPageBgColorPick = useCallback(
     (hex: string) => {
       setPageBg(hex)
-      const page = docProxy.pageMap.get(pageId)
-      if (!page) return
-      void commitPageMetadataUpdate(pageId, page, { background: hex })
+      void commitPageMetadataUpdate(pageId, { background: hex })
     },
     [pageId],
   )

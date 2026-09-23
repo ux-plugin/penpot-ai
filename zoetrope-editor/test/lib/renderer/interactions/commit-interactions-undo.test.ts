@@ -1,26 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { IndexedPage } from '../../../../src/lib/worker/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
-import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
-import {
-  commitInteractions,
-  currentInteractions,
-} from '../../../../src/lib/renderer/interactions/document/commit-interactions'
-import { undo, redo } from '../../../../src/lib/page-crud'
+import { commitInteractions, currentInteractions } from '../../../../src/lib/renderer/interactions/document/commit-interactions'
+import { canUndo, redo, undo } from '../../../../src/lib/doc'
 import { emptyPageInteractions } from '../../../../src/lib/renderer/interactions/ir'
 import type { PageInteractions, Cell } from '../../../../src/lib/renderer/interactions/ir'
 import { rawExpr } from '../../../../src/lib/renderer/interactions/expr'
-
-const PAGE_ID = 'page1'
-const ROOT = '00000000-0000-0000-0000-000000000000'
-
-function makePage(): IndexedPage {
-  return {
-    id: PAGE_ID,
-    objects: { [ROOT]: { id: ROOT, type: 'frame', name: 'Root', x: 0, y: 0, width: 800, height: 600, shapes: [] } },
-  } as unknown as IndexedPage
-}
+import { makeBaseDocument, PAGE_ID, resetWorkspace, seedDocument } from '../../fixtures'
 
 const formula = (id: string, expr: string): Cell => ({ uid: id, id, owner: { kind: 'page' }, type: 'any', initial: null, formula: rawExpr(expr) })
 
@@ -33,15 +18,9 @@ function irB(): PageInteractions {
 
 describe('interaction edits are undoable through the global history', () => {
   beforeEach(() => {
-    useJournalStore.getState().clear()
-    docProxy.pageMap.clear()
-    docProxy.pageMap.set(PAGE_ID, makePage())
-    docProxy.currentPageId = PAGE_ID
-    docProxy.selectedIds.clear()
-    useWorkspaceStore.setState({
-      workerClient: { updatePageWithChanges: vi.fn(async () => {}), updatePage: vi.fn(async () => {}) } as never,
-      renderer: null,
-    })
+    resetWorkspace()
+    seedDocument(makeBaseDocument())
+    useWorkspaceStore.setState({ workerClient: { applyChanges: vi.fn(async () => {}) } as never, renderer: null })
   })
 
   it('commit records a frame; undo restores prev; redo reapplies', async () => {
@@ -50,7 +29,7 @@ describe('interaction edits are undoable through the global history', () => {
     const next = irA()
     await commitInteractions(PAGE_ID, next)
     expect(currentInteractions(PAGE_ID)).toEqual(next)
-    expect(useJournalStore.getState().txns).toHaveLength(1)
+    expect(canUndo.value).toBe(true)
 
     await undo()
     expect(currentInteractions(PAGE_ID)).toBeUndefined()

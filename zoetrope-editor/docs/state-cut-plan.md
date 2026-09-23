@@ -1,7 +1,7 @@
 # State cut — plan
 
-Status: proposed 2026-09-23, not started. Builds `state-model.md` and
-`history-model.md`. Presented before building.
+Status: steps a and b landed 2026-09-23 (`src/lib/doc/`). Builds `state-model.md`
+and `history-model.md`. Steps c–f open.
 
 ## Rules
 
@@ -176,8 +176,16 @@ revision, applied through `commitChanges`.
 | e | §8 | kv-indexeddb envelope | ~10 |
 | f | §9 | | |
 
-Step a is the big one and cannot be split green. It lands as several
-commits on one branch, merged when green.
+Step a landed with b folded in: the journal codec was written against the
+penpot change types, so the undo stack replaced it in the same cut.
+
+What a built, beyond the plan: the root frame is not a record (each page's
+nil-UUID root collided in one node table; top-level nodes have no `parentId`,
+`childrenOf(pageId)` is the top level, `pageObjects` and the worker supply
+the root WASM needs); effects (`registerEffect`) unify component sync,
+aspects and 3D crop-resize; the hit-index worker keeps its own page copy fed
+by the same three ops (`worker/page-store.ts`); `commitChanges` takes no undo
+vectors, `pageId` or `IndexedPage` anywhere.
 
 ## Decide before a
 

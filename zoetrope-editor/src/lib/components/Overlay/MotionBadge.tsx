@@ -11,9 +11,8 @@
  * rest of the SVG is transparent to them.
  */
 
-import { useMemo, useRef } from 'react'
-import { useSnapshot } from 'valtio'
-import { docProxy } from '../../renderer/store/doc-proxy'
+import { useRef } from 'react'
+import { useSelectedIds } from '../../renderer/store/document-selection'
 import { viewport as viewportSignal } from '../../renderer/signals/pointer'
 import { wasmSelectionRect as wasmSelectionRectSignal } from '../../renderer/signals/selection'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
@@ -40,15 +39,13 @@ export function MotionBadge({ canvasSize }: MotionBadgeProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   useViewBoxSync(svgRef, canvasSize)
 
-  const doc = useSnapshot(docProxy)
-  // `docProxy.selectedIds` is a Set snapshot — normalize to an array to read it.
-  const selectedIds = useMemo(() => [...doc.selectedIds], [doc.selectedIds])
+  const selectedIds = useSelectedIds()
   const wasmSelectionRect = useSignalCoalesced(wasmSelectionRectSignal)
   const viewport = useSignalCoalesced(viewportSignal)
   const isPlaying = useSignalCoalesced(motionPlaying)
   const pathsOn = useSignalCoalesced(showMotionPaths)
 
-  const targetId = selectedIds.length === 1 ? selectedIds[0] : null
+  const targetId = selectedIds.size === 1 ? selectedIds.values().next().value! : null
   const active =
     targetId != null &&
     !isPlaying &&

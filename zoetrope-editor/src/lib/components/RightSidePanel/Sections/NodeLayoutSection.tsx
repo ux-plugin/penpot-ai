@@ -2,12 +2,9 @@ import { useCallback, useState } from 'react'
 import type { PenpotNode } from 'penpot-exporter/types'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Separator } from '@/components/ui/separator'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '../../../renderer/properties/commit-node-properties'
+import { commitNodePartialUpdate } from '../../../renderer/properties/commit-node-properties'
 import type { RectLikeNode } from '../../../renderer/properties/panel-utils'
-import { getActiveOrSinglePageId } from '../../../renderer/store/doc-proxy'
+import { getNode } from '../../../doc'
 import { LayoutFlexBody } from './LayoutFlexBody'
 import { LayoutGridBody } from './LayoutGridBody'
 import { LayoutModeToggle } from './LayoutModeToggle'
@@ -26,11 +23,10 @@ export function NodeLayoutSection({ nodeId, initialNode, readOnly }: NodeLayoutS
   const onModeChange = useCallback(
     async (next: LayoutMode | null) => {
       if (readOnly || next === mode) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(nodeId)
+      if (!before) return
       const partial = modeSwitchPartial(next, before as RectLikeNode) as Partial<PenpotNode>
-      await commitNodePartialUpdate(nodeId, before, partial, pid)
+      await commitNodePartialUpdate(nodeId, before, partial)
     },
     [nodeId, readOnly, mode],
   )

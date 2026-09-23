@@ -1,18 +1,18 @@
 /**
- * Right rail: page + node properties driven by document selection (Valtio).
+ * Right rail: page + node properties driven by document selection.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useSnapshot } from 'valtio'
 import type { Fill } from 'penpot-exporter/types'
-import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
+import { getActiveOrSinglePageId, useCurrentPageId, useNode, useRecord } from '../../doc'
+import { useSelectedIds } from '../../renderer/store/document-selection'
 import { activeEditorGradient, activeEditorOnChange, activeEditorTarget } from '../../renderer/signals/selection'
 import { MAX_GRADIENT_STOPS } from '../../renderer/api/constants'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { FloatingEditorRail } from '../EditorShell/floating-editor-rail'
-import { ROOT_UUID, type EffectItem, type RectLikeNode } from '../../renderer/properties/panel-utils'
+import { type EffectItem, type RectLikeNode } from '../../renderer/properties/panel-utils'
 import { PagePropertyPanel } from './PagePropertyPanel'
 import { NodePropertyPanel } from './NodePropertyPanel'
 import {
@@ -37,8 +37,7 @@ export interface RightSidePanelProps {
 }
 
 export function RightSidePanel({ className }: RightSidePanelProps) {
-  const doc = useSnapshot(docProxy)
-  const selectedIds = useMemo(() => new Set(doc.selectedIds), [doc.selectedIds])
+  const selectedIds = useSelectedIds()
 
   const [collapsed, setCollapsed] = useState(false)
   const tab = useSignalCoalesced(inspectorTab)
@@ -214,15 +213,14 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
 
   const count = selectedIds.size
   const singleId = count === 1 ? Array.from(selectedIds)[0] : null
-  const isRoot = singleId === ROOT_UUID
-
-  const resolvePageId = useCallback((): string | null => getActiveOrSinglePageId(), [])
+  const currentPageId = useCurrentPageId()
+  const pid = count === 0 ? (currentPageId ?? getActiveOrSinglePageId()) : null
+  const page = useRecord('page', pid)
+  const node = useNode(singleId) as RectLikeNode | undefined
 
   // The Parameters tab body — the existing selection-driven property editor.
   let parametersBody: ReactNode = null
   if (count === 0) {
-    const pid = resolvePageId()
-    const page = pid ? doc.pageMap.get(pid) : undefined
     parametersBody = (
       <div className="flex min-h-0 flex-1 flex-col">
         <ScrollArea className="min-h-0 flex-1">
@@ -242,22 +240,18 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
       </div>
     )
   } else if (singleId) {
-    const currentPage = doc.currentPageId ? doc.pageMap.get(doc.currentPageId) : undefined
-    const node = currentPage?.objects[singleId] as RectLikeNode | undefined
     parametersBody = (
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {!isRoot && (
-          <p
-            className="shrink-0 truncate border-b border-border px-3 py-1.5 text-xs text-muted-foreground"
-            title={singleId}
-          >
-            {singleId.slice(0, 8)}…
-          </p>
-        )}
+        <p
+          className="shrink-0 truncate border-b border-border px-3 py-1.5 text-xs text-muted-foreground"
+          title={singleId}
+        >
+          {singleId.slice(0, 8)}…
+        </p>
         <ScrollArea className="min-h-0 min-w-0 flex-1">
           <div className="min-w-0 space-y-4 p-3">
             {node ? (
-              <NodePropertyPanel key={singleId} nodeId={singleId} initialNode={node} readOnly={isRoot} />
+              <NodePropertyPanel key={singleId} nodeId={singleId} initialNode={node} readOnly={false} />
             ) : null}
           </div>
         </ScrollArea>

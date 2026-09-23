@@ -6,9 +6,8 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { PenpotNode, Stroke } from 'penpot-exporter/types'
-import { redo, setDocument, undo } from '../../../src/lib/page-crud'
-import { docProxy } from '../../../src/lib/renderer/store/doc-proxy'
+import type { Stroke } from 'penpot-exporter/types'
+import { getNode, meta, redo, undo } from '../../../src/lib/doc'
 import { applyToken, detachToken } from '../../../src/lib/tokens/apply'
 import { createToken, createTokenSet, type Token, type TokensLib } from '../../../src/lib/tokens/types'
 import {
@@ -19,9 +18,9 @@ import {
   readRectFill,
   readRectStroke,
   resetWorkspace,
+  seedDocument,
 } from '../fixtures'
 
-const PAGE = 'page-1'
 const STROKE: Stroke = { strokeColor: '#000000', strokeOpacity: 1, strokeWidth: 1, strokeAlignment: 'center' }
 
 beforeEach(resetWorkspace)
@@ -34,11 +33,12 @@ function installTokens(tokens: Token[]): void {
     tokens,
   })
   // No active theme → effectiveActiveTokens falls back to all sets (single implicit mode).
-  docProxy.meta!.tokens = { sets: [set], themes: [], activeThemes: [] } satisfies TokensLib
+  const lib = { sets: [set], themes: [], activeThemes: [] } satisfies TokensLib
+  meta.value = { ...meta.peek()!, tokens: lib }
 }
 
-function nodeOf(id: string): PenpotNode {
-  return docProxy.pageMap.get(PAGE)!.objects[id] as PenpotNode
+function nodeOf(id: string): Record<string, unknown> {
+  return getNode(id) as unknown as Record<string, unknown>
 }
 function appliedOf(id: string): Record<string, string> | undefined {
   return nodeOf(id).appliedTokens as Record<string, string> | undefined
@@ -46,7 +46,7 @@ function appliedOf(id: string): Record<string, string> | undefined {
 
 describe('apply color → fill', () => {
   it('writes the resolved color and stamps appliedTokens.fill', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     installTokens([createToken({ id: 'c', name: 'color.brand', type: 'color', value: '#00FF00' })])
 
     await applyToken(RECT_ID, 'color.brand', ['fill'])
@@ -58,7 +58,7 @@ describe('apply color → fill', () => {
   })
 
   it('resolves an alias end-to-end', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     installTokens([
       createToken({ id: 'b', name: 'color.base', type: 'color', value: '#FF0000' }),
       createToken({ id: 'f', name: 'color.fg', type: 'color', value: '{color.base}' }),
@@ -72,7 +72,7 @@ describe('apply color → fill', () => {
 
 describe('apply color → strokeColor', () => {
   it('writes the resolved stroke color and stamps appliedTokens.strokeColor', async () => {
-    await setDocument(makeBaseDocument({ rectStroke: STROKE }))
+    seedDocument(makeBaseDocument({ rectStroke: STROKE }))
     installTokens([createToken({ id: 'c', name: 'color.line', type: 'color', value: '#0000FF' })])
 
     await applyToken(RECT_ID, 'color.line', ['strokeColor'])
@@ -85,12 +85,12 @@ describe('apply color → strokeColor', () => {
 
 describe('apply borderRadius → r1..r4', () => {
   it('sets all four corners and stamps the four appliedTokens keys', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     installTokens([createToken({ id: 'r', name: 'radius.md', type: 'borderRadius', value: '8' })])
 
     await applyToken(RECT_ID, 'radius.md', ['r1', 'r2', 'r3', 'r4'])
 
-    const node = nodeOf(RECT_ID) as Record<string, unknown>
+    const node = nodeOf(RECT_ID)
     expect([node.r1, node.r2, node.r3, node.r4]).toEqual([8, 8, 8, 8])
     expect(appliedOf(RECT_ID)).toMatchObject({
       r1: 'radius.md',
@@ -103,7 +103,7 @@ describe('apply borderRadius → r1..r4', () => {
 
 describe('apply opacity / strokeWidth', () => {
   it('opacity writes a 0..1 number', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     installTokens([createToken({ id: 'o', name: 'opacity.half', type: 'opacity', value: '0.5' })])
 
     await applyToken(RECT_ID, 'opacity.half', ['opacity'])
@@ -112,7 +112,7 @@ describe('apply opacity / strokeWidth', () => {
   })
 
   it('strokeWidth (dimension on the stroke) writes the number', async () => {
-    await setDocument(makeBaseDocument({ rectStroke: STROKE }))
+    seedDocument(makeBaseDocument({ rectStroke: STROKE }))
     installTokens([createToken({ id: 'w', name: 'border.thick', type: 'dimension', value: '4' })])
 
     await applyToken(RECT_ID, 'border.thick', ['strokeWidth'])
@@ -123,7 +123,7 @@ describe('apply opacity / strokeWidth', () => {
 
 describe('apply typography → spans', () => {
   it('decomposes the composite onto every span and stamps appliedTokens.typography', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     installTokens([
       createToken({
         id: 't',
@@ -145,7 +145,7 @@ describe('apply typography → spans', () => {
 
 describe('detach', () => {
   it('strips appliedTokens but keeps the concrete value; empties to {}', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     installTokens([createToken({ id: 'c', name: 'color.brand', type: 'color', value: '#00FF00' })])
     await applyToken(RECT_ID, 'color.brand', ['fill'])
 
@@ -158,7 +158,7 @@ describe('detach', () => {
 
 describe('no-ops', () => {
   it('unknown token leaves the shape untouched', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     installTokens([createToken({ id: 'c', name: 'color.brand', type: 'color', value: '#00FF00' })])
     const before = readRectFill()
     await applyToken(RECT_ID, 'color.missing', ['fill'])
@@ -167,7 +167,7 @@ describe('no-ops', () => {
   })
 
   it('non-appliable attr is skipped (color cannot fill r1)', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     installTokens([createToken({ id: 'c', name: 'color.brand', type: 'color', value: '#00FF00' })])
     const beforeR1 = (nodeOf(RECT_ID) as { r1?: number }).r1
     await applyToken(RECT_ID, 'color.brand', ['r1'])
@@ -176,7 +176,7 @@ describe('no-ops', () => {
   })
 
   it('a token that resolves with errors is not applied', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     installTokens([createToken({ id: 'x', name: 'color.bad', type: 'color', value: '{does.not.exist}' })])
     const before = readRectFill()
     await applyToken(RECT_ID, 'color.bad', ['fill'])
@@ -187,7 +187,7 @@ describe('no-ops', () => {
 
 describe('undo / redo', () => {
   it('apply reverts value + appliedTokens in one frame; redo re-applies', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     installTokens([createToken({ id: 'c', name: 'color.brand', type: 'color', value: '#00FF00' })])
     const original = readRectFill()?.fillColor
 

@@ -36,7 +36,7 @@ import { requestRender } from '../../renderer/api/rendering'
 import { textIsComposing, textEditorDomNode } from '../../renderer/signals/text-editor'
 import { viewport as viewportSignal } from '../../renderer/signals/pointer'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
-import { getActiveOrSinglePageId, getPage } from '../../renderer/store/doc-proxy'
+import { getNode } from '../../doc'
 import {
   CursorDirection,
   textEditorInsertText,
@@ -71,11 +71,7 @@ function getModule() {
 
 /** Read the edited shape's selrect (world coords) + rotation from the model. */
 function getGeom(shapeId: string): { selrect: Selrect; rotation: number } | null {
-  const pageId = getActiveOrSinglePageId()
-  if (!pageId) return null
-  const node = getPage(pageId)?.objects[shapeId] as
-    | { selrect?: Selrect; rotation?: number }
-    | undefined
+  const node = getNode(shapeId) as { selrect?: Selrect; rotation?: number } | undefined
   if (!node?.selrect) return null
   return { selrect: node.selrect, rotation: node.rotation ?? 0 }
 }

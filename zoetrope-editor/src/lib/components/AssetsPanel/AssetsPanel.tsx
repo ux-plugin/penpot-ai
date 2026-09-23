@@ -9,20 +9,13 @@
  * material row). Nothing selected shows a hint. (Drag-to-canvas is a follow-up.)
  */
 
-import { useCallback } from 'react'
-import { useSnapshot } from 'valtio'
+import { useCallback, useMemo } from 'react'
 import type { PenpotNode } from 'penpot-exporter/types'
 import type { Material } from '../../renderer/api/material'
 import { SHADER_PRESETS } from '../../renderer/shader-lang/presets'
-import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '../../renderer/properties/commit-node-properties'
-import {
-  beginJournalTransaction,
-  commitJournalTransaction,
-} from '../../history/journal/journal-store'
+import { beginGroup, endGroup, getNode } from '../../doc'
+import { useSelectedIds } from '../../renderer/store/document-selection'
+import { commitNodePartialUpdate } from '../../renderer/properties/commit-node-properties'
 import { armShaderDrag, consumeShaderDragClick } from '../../renderer/signals/shader-drag'
 import { ShaderThumbnail } from '../RightSidePanel/shader-thumbnails'
 import {
@@ -36,28 +29,26 @@ import {
 import { setSelectedIds } from '../../renderer/store/document-selection'
 import { ComponentThumbnail } from './ComponentThumbnail'
 
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
-function ShadersSection({ selectedIds }: { selectedIds: readonly string[] }) {
-  const targets = selectedIds.filter((id) => id !== ROOT_UUID)
+function ShadersSection({ selectedIds }: { selectedIds: ReadonlySet<string> }) {
+  const targets = useMemo(() => [...selectedIds], [selectedIds])
   const canApply = targets.length > 0
 
   const apply = useCallback(
     async (material: Material) => {
-      const pid = getActiveOrSinglePageId()
-      if (!pid || targets.length === 0) return
+      if (targets.length === 0) return
       // Just apply — as ONE undo step. Editing is a separate, explicit step (the
       // `</>` on the material row / dbl-click), not something applying forces.
-      beginJournalTransaction('assets-apply-shader')
+      beginGroup('assets-apply-shader')
       try {
         for (const id of targets) {
-          const before = getCommittedNodeOnActivePage(id)
+          const before = getNode(id)
           if (before) {
-            await commitNodePartialUpdate(id, before, { material } as Partial<PenpotNode>, pid)
+            await commitNodePartialUpdate(id, before, { material } as Partial<PenpotNode>)
           }
         }
       } finally {
-        commitJournalTransaction('assets-apply-shader')
+        endGroup('assets-apply-shader')
       }
     },
     [targets],
@@ -163,11 +154,7 @@ function ComponentsSection() {
 
 /** The scrollable body of the Assets tab. More asset kinds become sibling sections. */
 export function AssetsSections() {
-  const snap = useSnapshot(docProxy)
-  // `selectedIds` is a proxy Set — materialize it so downstream code can filter.
-  const selectedIds: string[] = snap.selectedIds
-    ? Array.from(snap.selectedIds as Iterable<string>)
-    : []
+  const selectedIds = useSelectedIds()
 
   return (
     <div className="space-y-4">

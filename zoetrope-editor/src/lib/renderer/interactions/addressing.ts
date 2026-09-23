@@ -8,7 +8,7 @@
  *
  * Two jobs:
  *   1. `buildScope` — a symbol table from the page IR + the node ids present on
- *      the page (the keys of `IndexedPage.objects`). Text becomes ids through it
+ *      the page (the keys of `pageObjects(pageId)`). Text becomes ids through it
  *      (./expr `resolveExpr`); ids never depend on it again.
  *   2. `validatePageInteractions` — walk every stored expression/target and
  *      report references that point at nothing, action targets of the wrong

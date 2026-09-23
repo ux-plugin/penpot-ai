@@ -1,130 +1,76 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { IndexedPage, IndexedShape } from '../../../../src/lib/worker/types'
+import type { PenpotNode } from 'penpot-exporter/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
-import { docProxy, type DocumentMeta } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { commitChanges } from '../../../../src/lib/renderer/store/commit'
-import { undo } from '../../../../src/lib/page-crud'
+import { canRedo, children, getNode, idOf, mod, records, registerEffect, undo, type Node } from '../../../../src/lib/doc'
+import { framesOf } from '../../../../src/lib/doc/undo'
+import { makeBaseDocument, resetWorkspace, seedDocument } from '../../fixtures'
 import {
   createComponentFromFrame,
   instantiateComponent,
 } from '../../../../src/lib/renderer/component/component-crud'
 
 const PAGE_ID = 'page1'
-const ROOT = '00000000-0000-0000-0000-000000000000'
 
 function rect(x: number, y: number, w: number, h: number) {
   return { x, y, width: w, height: h }
 }
 
-function makePage(): IndexedPage {
-  return {
-    id: PAGE_ID,
-    objects: {
-      [ROOT]: {
-        id: ROOT,
-        type: 'frame',
-        name: 'Root',
-        ...rect(0, 0, 2000, 900),
-        selrect: rect(0, 0, 2000, 900),
-        shapes: ['button'],
+function seedPage(): void {
+  seedDocument({
+    ...makeBaseDocument(),
+    children: [
+      {
+        id: PAGE_ID,
+        name: 'Page',
+        background: '#FFFFFF',
+        children: [
+          {
+            id: 'button',
+            type: 'frame',
+            name: 'Button',
+            ...rect(100, 100, 200, 60),
+            selrect: rect(100, 100, 200, 60),
+            fills: [{ fillColor: '#EEEEEE' }],
+            children: [
+              {
+                id: 'label',
+                type: 'rect',
+                name: 'Label',
+                ...rect(110, 115, 100, 30),
+                selrect: rect(110, 115, 100, 30),
+                fills: [{ fillColor: '#111111' }],
+                opacity: 1,
+              },
+            ],
+          } as unknown as PenpotNode,
+        ],
       },
-      button: {
-        id: 'button',
-        type: 'frame',
-        name: 'Button',
-        ...rect(100, 100, 200, 60),
-        selrect: rect(100, 100, 200, 60),
-        parentId: ROOT,
-        frameId: 'button',
-        shapes: ['label'],
-        fills: [{ fillColor: '#EEEEEE' }],
-      },
-      label: {
-        id: 'label',
-        type: 'rect',
-        name: 'Label',
-        ...rect(110, 115, 100, 30),
-        selrect: rect(110, 115, 100, 30),
-        parentId: 'button',
-        frameId: 'button',
-        fills: [{ fillColor: '#111111' }],
-        opacity: 1,
-      },
-    },
-  } as unknown as IndexedPage
-}
-
-function objects(): Record<string, IndexedShape> {
-  return docProxy.pageMap.get(PAGE_ID)?.objects as Record<string, IndexedShape>
-}
-
-function node(id: string): Record<string, unknown> {
-  return objects()[id] as unknown as Record<string, unknown>
-}
-
-function assign(id: string, value: Record<string, unknown>) {
-  return {
-    type: 'mod-obj' as const,
-    id,
-    pageId: PAGE_ID,
-    operations: [{ type: 'assign' as const, value }],
-  }
-}
-
-/** Edit an attribute on a main node the way any ordinary editor path would. */
-async function editMain(id: string, value: Record<string, unknown>): Promise<void> {
-  const before: Record<string, unknown> = {}
-  for (const key of Object.keys(value)) before[key] = node(id)[key]
-  await commitChanges({
-    pageId: PAGE_ID,
-    redoChanges: [assign(id, value)],
-    undoChanges: [assign(id, before)],
+    ],
   })
 }
 
-/** The copy node mirroring `mainNodeId`, or undefined. */
-function copyOf(mainNodeId: string): Record<string, unknown> | undefined {
-  return Object.values(objects()).find(
-    (n) => (n as { shapeRef?: string }).shapeRef === mainNodeId,
-  ) as unknown as Record<string, unknown> | undefined
+const node = (id: string): Record<string, unknown> => getNode(id) as unknown as Record<string, unknown>
+
+/** Edit an attribute the way any ordinary editor path would. */
+async function edit(id: string, value: Record<string, unknown>): Promise<void> {
+  await commitChanges({ changes: [mod('node', id, value as Partial<Node>)] })
 }
 
-/** Shapes the newest history entry touches. */
-const entitiesInLastEntry = () =>
-  new Set(useJournalStore.getState().txns.at(-1)!.ops.map((op) => op.entity))
+/** Ids the newest history frame touches. */
+const idsInLastFrame = () => new Set(framesOf().at(-1)!.redo.map(idOf))
 
 describe('component sync (main edits fanning into copies)', () => {
   beforeEach(() => {
-    useJournalStore.getState().clear()
-    docProxy.pageMap.clear()
-    docProxy.pageMap.set(PAGE_ID, makePage())
-    docProxy.currentPageId = PAGE_ID
-    docProxy.selectedIds.clear()
-    docProxy.meta = {
-      name: 'Test doc',
-      components: {},
-      images: {},
-      paintStyles: {},
-      textStyles: {},
-      componentProperties: {},
-      externalLibraries: {},
-      missingFonts: [],
-      isShared: false,
-    } as unknown as DocumentMeta
-    useWorkspaceStore.setState({
-      workerClient: {
-        updatePageWithChanges: vi.fn(async () => {}),
-        updatePage: vi.fn(async () => {}),
-      } as never,
-      renderer: null,
-    })
+    resetWorkspace()
+    seedPage()
+    useWorkspaceStore.setState({ workerClient: { applyChanges: vi.fn(async () => {}) } as never, renderer: null })
   })
 
   it('does nothing at all in a document with no components', async () => {
-    await editMain('label', { fills: [{ fillColor: '#00FF00' }] })
+    await edit('label', { fills: [{ fillColor: '#00FF00' }] })
 
-    expect([...entitiesInLastEntry()]).toEqual(['label'])
+    expect([...idsInLastFrame()]).toEqual(['label'])
     expect(node('label').fills).toEqual([{ fillColor: '#00FF00' }])
   })
 
@@ -132,10 +78,10 @@ describe('component sync (main edits fanning into copies)', () => {
     const componentId = (await createComponentFromFrame('button'))!
     const copyA = (await instantiateComponent(componentId, { x: 500, y: 100 }))!
     const copyB = (await instantiateComponent(componentId, { x: 900, y: 100 }))!
-    const labelA = (node(copyA).shapes as string[])[0]
-    const labelB = (node(copyB).shapes as string[])[0]
+    const labelA = children(copyA)[0]
+    const labelB = children(copyB)[0]
 
-    await editMain('label', { fills: [{ fillColor: '#00FF00' }] })
+    await edit('label', { fills: [{ fillColor: '#00FF00' }] })
 
     expect(node(labelA).fills).toEqual([{ fillColor: '#00FF00' }])
     expect(node(labelB).fills).toEqual([{ fillColor: '#00FF00' }])
@@ -151,7 +97,7 @@ describe('component sync (main edits fanning into copies)', () => {
     const componentId = (await createComponentFromFrame('button'))!
     const copyId = (await instantiateComponent(componentId))!
 
-    await editMain('button', { fills: [{ fillColor: '#123456' }] })
+    await edit('button', { fills: [{ fillColor: '#123456' }] })
     expect(node(copyId).fills).toEqual([{ fillColor: '#123456' }])
   })
 
@@ -159,16 +105,13 @@ describe('component sync (main edits fanning into copies)', () => {
     const componentId = (await createComponentFromFrame('button'))!
     const copyA = (await instantiateComponent(componentId, { x: 500, y: 100 }))!
     const copyB = (await instantiateComponent(componentId, { x: 900, y: 100 }))!
-    const labelA = (node(copyA).shapes as string[])[0]
-    const labelB = (node(copyB).shapes as string[])[0]
+    const labelA = children(copyA)[0]
+    const labelB = children(copyB)[0]
 
-    // Copy A's label has a local fill override (P4 will write this on edit).
-    await commitChanges({
-      pageId: PAGE_ID,
-      redoChanges: [assign(labelA, { fills: [{ fillColor: '#AAAAAA' }], touched: ['fill-group'] })],
-    })
+    // Copy A's label has a local fill override.
+    await edit(labelA, { fills: [{ fillColor: '#AAAAAA' }], touched: ['fill-group'] })
 
-    await editMain('label', { fills: [{ fillColor: '#00FF00' }], opacity: 0.5 })
+    await edit('label', { fills: [{ fillColor: '#00FF00' }], opacity: 0.5 })
 
     // The touched group is frozen on A; everything else still follows.
     expect(node(labelA).fills).toEqual([{ fillColor: '#AAAAAA' }])
@@ -183,7 +126,7 @@ describe('component sync (main edits fanning into copies)', () => {
     const copyId = (await instantiateComponent(componentId, { x: 500, y: 100 }))!
     const copyBox = { ...(node(copyId).selrect as Record<string, number>) }
 
-    await editMain('button', { selrect: rect(100, 100, 400, 60), width: 400 })
+    await edit('button', { selrect: rect(100, 100, 400, 60), width: 400 })
 
     // Deliberate for now: geometry needs rebasing per copy, which rides with
     // structural sync. Asserted so the behaviour is defined, not accidental.
@@ -191,16 +134,12 @@ describe('component sync (main edits fanning into copies)', () => {
     expect(node(copyId).width).not.toBe(400)
   })
 
-  it('ignores edits to a detached copy — nothing points at the main any more', async () => {
+  it('ignores edits to a copy — nothing travels back up to the main', async () => {
     const componentId = (await createComponentFromFrame('button'))!
     const copyId = (await instantiateComponent(componentId))!
-    const labelCopy = (node(copyId).shapes as string[])[0]
+    const labelCopy = children(copyId)[0]
 
-    // Editing the *copy* must never travel back up to the main.
-    await commitChanges({
-      pageId: PAGE_ID,
-      redoChanges: [assign(labelCopy, { fills: [{ fillColor: '#FF00FF' }] })],
-    })
+    await edit(labelCopy, { fills: [{ fillColor: '#FF00FF' }] })
     expect(node('label').fills).toEqual([{ fillColor: '#111111' }])
   })
 
@@ -211,19 +150,15 @@ describe('component sync (main edits fanning into copies)', () => {
         await instantiateComponent(componentId, { x: 400 + i * 10, y: 400 })
       }
 
-      await editMain('label', { fills: [{ fillColor: '#00FF00' }] })
+      await edit('label', { fills: [{ fillColor: '#00FF00' }] })
 
-      // One history entry: the user's own edit plus all 20 copies. The journal
-      // records per-shape ops, so the bulk change is expanded here.
-      expect(useJournalStore.getState().txns.at(-1)!.undoes).toBeUndefined()
-      expect(entitiesInLastEntry().size).toBe(21)
+      // One frame: the user's own edit plus all 20 copies (bulk changes are
+      // expanded per node before apply).
+      expect(idsInLastFrame().size).toBe(21)
 
       // And every copy really did get it.
-      const greens = Object.values(objects()).filter(
-        (n) =>
-          (n as { shapeRef?: string }).shapeRef === 'label' &&
-          JSON.stringify((n as { fills?: unknown }).fills) ===
-            JSON.stringify([{ fillColor: '#00FF00' }]),
+      const greens = [...records('node')].filter(
+        (n) => n.shapeRef === 'label' && JSON.stringify(n.fills) === JSON.stringify([{ fillColor: '#00FF00' }]),
       )
       expect(greens).toHaveLength(20)
     })
@@ -232,16 +167,21 @@ describe('component sync (main edits fanning into copies)', () => {
   it('does not re-run during undo replay', async () => {
     const componentId = (await createComponentFromFrame('button'))!
     const copyId = (await instantiateComponent(componentId))!
-    const labelCopy = (node(copyId).shapes as string[])[0]
+    const labelCopy = children(copyId)[0]
 
-    await editMain('label', { fills: [{ fillColor: '#00FF00' }] })
-    const entriesAfterEdit = useJournalStore.getState().txns.length
+    await edit('label', { fills: [{ fillColor: '#00FF00' }] })
+    const framesAfterEdit = framesOf().length
 
+    // Any effect is skipped on replay; the frame already carries the fan-out.
+    const spy = vi.fn(() => [])
+    const dispose = registerEffect(spy)
     await undo()
+    dispose()
+
     expect(node(labelCopy).fills).toEqual([{ fillColor: '#111111' }])
-    // Undo appends exactly its own entry; replay must not add a sync entry on top.
-    const txns = useJournalStore.getState().txns
-    expect(txns.length).toBe(entriesAfterEdit + 1)
-    expect(txns.at(-1)!.undoes).toBeDefined()
+    expect(spy).not.toHaveBeenCalled()
+    // Undo moves the cursor; it never appends a frame.
+    expect(framesOf().length).toBe(framesAfterEdit)
+    expect(canRedo.value).toBe(true)
   })
 })

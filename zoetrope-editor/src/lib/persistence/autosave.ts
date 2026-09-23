@@ -9,7 +9,7 @@
  * Returns a disposer.
  */
 
-import { onChangesApplied } from '../changes/change-emitter'
+import { onChangesApplied } from '../doc/commit'
 import { documentModel } from '../renderer/store/document-model'
 import type { DocumentPersistenceProvider } from './document-persistence'
 import { activeDocumentId } from './document-session'

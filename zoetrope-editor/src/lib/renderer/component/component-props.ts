@@ -14,40 +14,26 @@
  * because copies are materialized — the document always holds real values, and
  * nothing has to resolve props at paint time.
  *
- * Those derived writes are deliberately NOT flagged `ignoreTouched`, so the
- * commit pipeline marks them as overrides. That is what protects a prop-driven
+ * Those derived writes are deliberately NOT `system`, so the commit pipeline
+ * marks them as overrides. That is what protects a prop-driven
  * value from being clobbered by the next edit to the main, and it makes "reset
  * overrides" clear prop values and freeform overrides together — one notion of
  * "put this instance back to the component's defaults".
  */
-import { snapshot } from 'valtio'
-import { docProxy, getActiveOrSinglePageId } from '../store/doc-proxy'
 import { commitChanges } from '../store/commit'
+import { descendants, getNode, mod, type Change, type Node } from '../../doc'
 import { newShapeId } from '../../common/shape-id'
-import { subtreeWithRoot } from '../../common/subtree'
 import { isComponentCopyRoot } from '../../worker/geometry/shapes'
 import { getComponent } from './component-crud'
 import { setPlainTextContent } from '../../common/text-content'
 import type { ComponentProp, ComponentPropType, LocalComponent } from '../../common/component'
-import type { IndexedShape } from '../../worker/types'
-import type { ModObjChange, PenpotNode, TextContent } from 'penpot-exporter/types'
-
-function readObjects(pageId: string): Record<string, IndexedShape> | undefined {
-  return snapshot(docProxy).pageMap.get(pageId)?.objects as
-    | Record<string, IndexedShape>
-    | undefined
-}
-
-function modObj(pageId: string, id: string, assign: Record<string, unknown>): ModObjChange {
-  return { type: 'mod-obj', id, pageId, operations: [{ type: 'assign', value: assign }] }
-}
+import type { PenpotNode, TextContent } from 'penpot-exporter/types'
 
 /** Replace a component record wholesale, with its previous form as the inverse. */
 async function commitComponent(previous: LocalComponent, next: LocalComponent): Promise<void> {
   await commitChanges({
-    redoChanges: [],
-    docMetaRedoChanges: [{ type: 'mod-component', component: next }],
-    docMetaUndoChanges: [{ type: 'mod-component', component: previous }],
+    docMeta: [{ type: 'mod-component', component: next }],
+    docMetaUndo: [{ type: 'mod-component', component: previous }],
   })
 }
 
@@ -104,9 +90,7 @@ export async function removeProp(componentId: string, propId: string): Promise<b
 
 /** Prop values set on a copy. Absent keys mean the component's declared default. */
 export function getPropValues(copyRootId: string): Record<string, unknown> {
-  const pageId = getActiveOrSinglePageId()
-  if (!pageId) return {}
-  const root = readObjects(pageId)?.[copyRootId] as { propValues?: Record<string, unknown> } | undefined
+  const root = getNode(copyRootId) as { propValues?: Record<string, unknown> } | undefined
   return { ...(root?.propValues ?? {}) }
 }
 
@@ -115,10 +99,7 @@ export function getPropValues(copyRootId: string): Record<string, unknown> {
  * what codegen emits.
  */
 export function resolvePropValues(copyRootId: string): Record<string, unknown> {
-  const pageId = getActiveOrSinglePageId()
-  if (!pageId) return {}
-  const objects = readObjects(pageId)
-  const root = objects?.[copyRootId] as PenpotNode | undefined
+  const root = getNode(copyRootId)
   if (!root?.componentId) return {}
   const component = getComponent(root.componentId)
   if (!component) return {}
@@ -166,11 +147,7 @@ export async function setPropValue(
   propId: string,
   value: unknown,
 ): Promise<boolean> {
-  const pageId = getActiveOrSinglePageId()
-  if (!pageId) return false
-  const objects = readObjects(pageId)
-  if (!objects) return false
-  const root = objects[copyRootId] as PenpotNode | undefined
+  const root = getNode(copyRootId)
   if (!isComponentCopyRoot(root) || !root?.componentId) return false
   const component = getComponent(root.componentId)
   const prop = component?.props.find((p) => p.id === propId)
@@ -178,34 +155,25 @@ export async function setPropValue(
 
   // Targets name nodes in the *main*; find their twins inside this copy.
   const byRef = new Map<string, string>()
-  for (const id of subtreeWithRoot(objects, copyRootId)) {
-    const ref = (objects[id] as { shapeRef?: string } | undefined)?.shapeRef
+  for (const id of [copyRootId, ...descendants(copyRootId)]) {
+    const ref = getNode(id)?.shapeRef
     if (ref != null) byRef.set(ref, id)
   }
 
-  const redo: ModObjChange[] = []
-  const undo: ModObjChange[] = []
+  const changes: Change[] = []
   for (const target of prop.targets) {
     const localId = byRef.get(target.nodeId)
-    if (!localId) continue
-    const node = objects[localId] as PenpotNode | undefined
+    const node = getNode(localId)
     if (!node) continue
     const write = propWrite(prop, value, node)
     if (!write) return false
-    const before: Record<string, unknown> = {}
-    for (const key of Object.keys(write)) {
-      before[key] = (node as unknown as Record<string, unknown>)[key]
-    }
-    redo.push(modObj(pageId, localId, write))
-    undo.unshift(modObj(pageId, localId, before))
+    changes.push(mod('node', localId!, write as Partial<Node>))
   }
 
   const values = { ...((root as { propValues?: Record<string, unknown> }).propValues ?? {}) }
-  const previousValues = { ...values }
   values[propId] = value
-  redo.push(modObj(pageId, copyRootId, { propValues: values }))
-  undo.unshift(modObj(pageId, copyRootId, { propValues: previousValues }))
+  changes.push(mod('node', copyRootId, { propValues: values } as Partial<Node>))
 
-  await commitChanges({ pageId, redoChanges: redo, undoChanges: undo })
+  await commitChanges({ changes })
   return true
 }

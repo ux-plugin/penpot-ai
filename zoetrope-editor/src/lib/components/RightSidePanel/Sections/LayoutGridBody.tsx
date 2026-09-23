@@ -19,11 +19,8 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '@/lib/renderer/properties/commit-node-properties'
-import { getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
+import { commitNodePartialUpdate } from '@/lib/renderer/properties/commit-node-properties'
+import { getNode } from '@/lib/doc'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
 import { NumericField } from '../NumericField'
 import {
@@ -136,10 +133,9 @@ export function LayoutGridBody({ nodeId, initialNode, readOnly }: LayoutGridBody
   const commit = useCallback(
     async (partial: Partial<PenpotNode>) => {
       if (readOnly) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
-      await commitNodePartialUpdate(nodeId, before, partial, pid)
+      const before = getNode(nodeId)
+      if (!before) return
+      await commitNodePartialUpdate(nodeId, before, partial)
     },
     [nodeId, readOnly],
   )

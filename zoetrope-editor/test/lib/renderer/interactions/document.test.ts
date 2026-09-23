@@ -1,22 +1,36 @@
-import { describe, it, expect } from 'vitest'
-import type { PenpotPage } from 'penpot-exporter/types'
-import { flattenPageToIndexed, unflattenIndexedPageToPage } from '../../../../src/lib/worker/flatten'
+import { beforeEach, describe, it, expect } from 'vitest'
+import type { PenpotDocument, PenpotNode, PenpotPage } from 'penpot-exporter/types'
 import type { PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
-import type { IndexedPage } from '../../../../src/lib/worker/types'
 import { toTextIR } from '../../../../src/lib/renderer/interactions/expr'
 import { nodesToPresentation, findPNode } from '../../../../src/lib/renderer/interactions/document/nodes-to-presentation'
+import { exportDocument, getPage, ROOT } from '../../../../src/lib/doc'
+import { resetWorkspace, seedDocument } from '../../fixtures'
 import { listCell, pageCell, up } from './todo-ir'
 
-const ZERO = '00000000-0000-0000-0000-000000000000'
+const PAGE = 'page-1'
 
-/** A page: nil-UUID root frame + two top-level siblings (a button and a list w/ a row). */
+function docOf(...pages: PenpotPage[]): PenpotDocument {
+  return {
+    name: 'Test',
+    children: pages,
+    components: {},
+    images: {},
+    paintStyles: {},
+    textStyles: {},
+    componentProperties: {},
+    externalLibraries: {},
+    missingFonts: [],
+    isShared: false,
+  }
+}
+
+/** A page: two top-level siblings (a button and a list w/ a row). */
 function makePage(interactions?: PageInteractions): PenpotPage {
   return {
-    id: 'page-1',
+    id: PAGE,
     name: 'Page 1',
     background: '#ffffff',
     children: [
-      { id: ZERO, type: 'frame', name: 'Root' },
       { id: 'addBtn', type: 'rect', name: 'Add button' },
       {
         id: 'list',
@@ -29,14 +43,16 @@ function makePage(interactions?: PageInteractions): PenpotPage {
   } as unknown as PenpotPage
 }
 
-describe('serialization — interactions survive flatten/unflatten', () => {
+beforeEach(resetWorkspace)
+
+describe('serialization — interactions survive import/export', () => {
   it('carries PageInteractions through the round-trip', () => {
     const ir = up({ cells: [listCell('items')] })
 
-    const indexed = flattenPageToIndexed(makePage(ir))
-    expect(indexed.interactions?.cells.map((c) => c.id)).toEqual(['items'])
+    seedDocument(docOf(makePage(ir)))
+    expect(getPage(PAGE)?.interactions?.cells.map((c) => c.id)).toEqual(['items'])
 
-    const page = unflattenIndexedPageToPage(indexed) as PenpotPage & { interactions?: PageInteractions }
+    const page = exportDocument()!.children![0] as PenpotPage & { interactions?: PageInteractions }
     expect(page.interactions?.cells[0]?.id).toBe('items')
   })
 
@@ -51,24 +67,25 @@ describe('serialization — interactions survive flatten/unflatten', () => {
       states: [],
       repeaters: [{ node: 'row', over: 'items' }],
     }
-    const indexed = flattenPageToIndexed(makePage(v1 as unknown as PageInteractions))
-    expect(indexed.interactions?.version).toBe(3)
-    expect(indexed.interactions?.cells.map((c) => c.id)).toEqual(['items'])
-    expect(toTextIR(indexed.interactions!).refs).toEqual([{ node: 'row', props: { text: 'item.label', repeat: 'items' } }])
+    seedDocument(docOf(makePage(v1 as unknown as PageInteractions)))
+    const ir = getPage(PAGE)!.interactions!
+    expect(ir.version).toBe(3)
+    expect(ir.cells.map((c) => c.id)).toEqual(['items'])
+    expect(toTextIR(ir).refs).toEqual([{ node: 'row', props: { text: 'item.label', repeat: 'items' } }])
   })
 
   it('leaves interactions undefined when the page has none', () => {
-    const indexed = flattenPageToIndexed(makePage())
-    expect(indexed.interactions).toBeUndefined()
+    seedDocument(docOf(makePage()))
+    expect(getPage(PAGE)?.interactions).toBeUndefined()
   })
 })
 
 describe('nodesToPresentation — shapes -> PNode tree with anchors', () => {
   it('maps the shape hierarchy to anchors + text', () => {
-    const indexed = flattenPageToIndexed(makePage())
-    const root = nodesToPresentation(indexed)
+    seedDocument(docOf(makePage()))
+    const root = nodesToPresentation(PAGE)
 
-    expect(root?.nodeId).toBe(ZERO)
+    expect(root?.nodeId).toBe(ROOT)
 
     const list = (root?.children ?? []).find((k) => k.nodeId === 'list')
     const row = list?.children?.[0]
@@ -79,7 +96,8 @@ describe('nodesToPresentation — shapes -> PNode tree with anchors', () => {
   it('gives a shape with no behaviour a plain role, whatever it is CALLED', () => {
     // "Add button" and "Todo list" used to become <button> and <ul> purely by
     // name. A layer name is not behaviour — rename it and the meaning changed.
-    const root = nodesToPresentation(flattenPageToIndexed(makePage()))
+    seedDocument(docOf(makePage()))
+    const root = nodesToPresentation(PAGE)
     const kids = root?.children ?? []
     expect(root?.role).toBe('container')
     expect(kids.find((k) => k.nodeId === 'addBtn')?.role).toBe('container')
@@ -97,7 +115,8 @@ describe('nodesToPresentation — shapes -> PNode tree with anchors', () => {
       ],
     })
 
-    const root = nodesToPresentation(flattenPageToIndexed(makePage(ir)))
+    seedDocument(docOf(makePage(ir)))
+    const root = nodesToPresentation(PAGE)
     const kids = root?.children ?? []
     expect(kids.find((k) => k.nodeId === 'addBtn')?.role).toBe('field') // it edits a cell
     expect(kids.find((k) => k.nodeId === 'list')?.role).toBe('list') // its child is a template
@@ -106,45 +125,47 @@ describe('nodesToPresentation — shapes -> PNode tree with anchors', () => {
 
   it('a press makes a node a button; open-url makes it a link', () => {
     const ir = up({ interactions: [{ id: 'i1', on: { node: 'addBtn', trigger: { type: 'press' } }, do: [] }] })
-    expect(
-      nodesToPresentation(flattenPageToIndexed(makePage(ir)))?.children?.find((k) => k.nodeId === 'addBtn')?.role,
-    ).toBe('button')
+    seedDocument(docOf(makePage(ir)))
+    expect(nodesToPresentation(PAGE)?.children?.find((k) => k.nodeId === 'addBtn')?.role).toBe('button')
 
     const linkIr = up({
       interactions: [{ id: 'i1', on: { node: 'addBtn', trigger: { type: 'press' } }, do: [{ type: 'open-url', value: '"https://example.com"' }] }],
     })
-    expect(
-      nodesToPresentation(flattenPageToIndexed(makePage(linkIr)))?.children?.find((k) => k.nodeId === 'addBtn')?.role,
-    ).toBe('link')
+    seedDocument(docOf(makePage(linkIr)))
+    expect(nodesToPresentation(PAGE)?.children?.find((k) => k.nodeId === 'addBtn')?.role).toBe('link')
   })
 
-  it('returns null for an empty page', () => {
-    expect(nodesToPresentation({ id: 'p', objects: {} })).toBeNull()
+  it('returns null for a page that does not exist', () => {
+    seedDocument(docOf(makePage()))
+    expect(nodesToPresentation('nope')).toBeNull()
   })
 })
 
 /**
  * A page whose root holds a shell frame containing a slot, plus two top-level
- * view frames the slot references. Built as an indexed objects map directly so
- * the local `slot` fields (`views`/`activeView`, not in the upstream node union)
- * survive without a flatten round-trip.
+ * view frames the slot references. The local `slot` fields (`views`/`activeView`,
+ * not in the upstream node union) ride through import untouched.
  */
-function slotPage(activeView?: string): IndexedPage {
-  const objects: Record<string, unknown> = {
-    [ZERO]: { id: ZERO, type: 'frame', name: 'Root', parentId: null, shapes: ['shell', 'home', 'about'] },
-    shell: { id: 'shell', type: 'frame', name: 'Shell', parentId: ZERO, shapes: ['outlet'] },
-    outlet: { id: 'outlet', type: 'slot', name: 'Outlet', parentId: 'shell', views: ['home', 'about'], activeView },
-    home: { id: 'home', type: 'frame', name: 'Home', parentId: ZERO, shapes: ['homeTxt'] },
-    homeTxt: { id: 'homeTxt', type: 'text', name: 'HomeText', parentId: 'home', content: 'Home view' },
-    about: { id: 'about', type: 'frame', name: 'About', parentId: ZERO, shapes: ['aboutTxt'] },
-    aboutTxt: { id: 'aboutTxt', type: 'text', name: 'AboutText', parentId: 'about', content: 'About view' },
-  }
-  return { id: 'p', name: 'P', objects } as unknown as IndexedPage
+function slotPage(activeView?: string, opts: { withAbout?: boolean; shellInsideHome?: boolean } = {}): PenpotPage {
+  const withAbout = opts.withAbout ?? true
+  const shell = { id: 'shell', type: 'frame', name: 'Shell', children: [
+    { id: 'outlet', type: 'slot', name: 'Outlet', views: ['home', 'about'], activeView },
+  ] }
+  const home = { id: 'home', type: 'frame', name: 'Home', children: [
+    { id: 'homeTxt', type: 'text', name: 'HomeText', content: 'Home view' },
+    ...(opts.shellInsideHome ? [shell] : []),
+  ] }
+  const about = { id: 'about', type: 'frame', name: 'About', children: [
+    { id: 'aboutTxt', type: 'text', name: 'AboutText', content: 'About view' },
+  ] }
+  const children: unknown[] = [...(opts.shellInsideHome ? [] : [shell]), home, ...(withAbout ? [about] : [])]
+  return { id: 'p', name: 'P', children: children as PenpotNode[] } as unknown as PenpotPage
 }
 
 describe('nodesToPresentation — slot projection', () => {
   it('emits a slot descriptor carrying each candidate view as a projected subtree', () => {
-    const root = nodesToPresentation(slotPage('home'))
+    seedDocument(docOf(slotPage('home')))
+    const root = nodesToPresentation('p')
     const shell = root?.children?.find((c) => c.nodeId === 'shell')
     const slot = shell?.children?.find((c) => c.nodeId === 'outlet')
 
@@ -159,28 +180,25 @@ describe('nodesToPresentation — slot projection', () => {
   })
 
   it('carries an undefined default when the slot has no active view', () => {
-    const root = nodesToPresentation(slotPage())
+    seedDocument(docOf(slotPage()))
+    const root = nodesToPresentation('p')
     const slot = root?.children?.find((c) => c.nodeId === 'shell')?.children?.find((c) => c.nodeId === 'outlet')
     expect(slot?.slot?.activeView).toBeUndefined()
     expect(Object.keys(slot?.slot?.views ?? {})).toEqual(['home', 'about'])
   })
 
   it('skips a referenced view that is missing from the page', () => {
-    const page = slotPage('home')
-    delete (page.objects as Record<string, unknown>).about
-    const slot = nodesToPresentation(page)
+    seedDocument(docOf(slotPage('home', { withAbout: false })))
+    const slot = nodesToPresentation('p')
       ?.children?.find((c) => c.nodeId === 'shell')
       ?.children?.find((c) => c.nodeId === 'outlet')
     expect(Object.keys(slot?.slot?.views ?? {})).toEqual(['home'])
   })
 
   it('guards against a view that re-references the slot (no infinite recursion)', () => {
-    const page = slotPage('home')
-    // make Home contain the shell again -> outlet would re-project Home forever
-    ;(page.objects as Record<string, { shapes?: string[] }>).home.shapes = ['homeTxt', 'shell']
-    const slot = nodesToPresentation(page)
-      ?.children?.find((c) => c.nodeId === 'shell')
-      ?.children?.find((c) => c.nodeId === 'outlet')
+    // Home contains the shell -> outlet would re-project Home forever
+    seedDocument(docOf(slotPage('home', { shellInsideHome: true })))
+    const slot = findPNode(nodesToPresentation('p')!, 'outlet')
     // Home is projected once; the nested outlet inside it re-projects About but
     // not Home (already in-flight), so it terminates.
     expect(slot?.slot?.views.home).toBeDefined()
@@ -191,11 +209,10 @@ describe('nodesToPresentation — slot projection', () => {
 /** A page whose shapes carry real design properties, not just names. */
 function makeStyledPage(): PenpotPage {
   return {
-    id: 'page-1',
+    id: PAGE,
     name: 'Page 1',
     background: '#ffffff',
     children: [
-      { id: ZERO, type: 'frame', name: 'Root', selrect: { x: 0, y: 0, width: 1200, height: 900 } },
       {
         id: 'card',
         type: 'frame',
@@ -238,18 +255,13 @@ function makeStyledPage(): PenpotPage {
 }
 
 describe('nodesToPresentation — design properties become inline CSS', () => {
-  const build = () => nodesToPresentation(flattenPageToIndexed(makeStyledPage()))
+  const build = () => {
+    seedDocument(docOf(makeStyledPage()))
+    return nodesToPresentation(PAGE)
+  }
   const find = (id: string) => {
-    const walk = (n: NonNullable<ReturnType<typeof build>>): NonNullable<ReturnType<typeof build>> | null => {
-      if (n.nodeId === id) return n
-      for (const c of n.children ?? []) {
-        const hit = walk(c)
-        if (hit) return hit
-      }
-      return null
-    }
     const root = build()
-    return root ? walk(root) : null
+    return root ? findPNode(root, id) : null
   }
 
   it('carries size from the selrect so a shape is not a zero-height div', () => {
@@ -292,7 +304,10 @@ describe('nodesToPresentation — design properties become inline CSS', () => {
 })
 
 describe('findPNode — the scoping primitive for "show only the selection"', () => {
-  const tree = () => nodesToPresentation(flattenPageToIndexed(makeStyledPage()))!
+  const tree = () => {
+    seedDocument(docOf(makeStyledPage()))
+    return nodesToPresentation(PAGE)!
+  }
 
   it('finds a nested node and returns its whole subtree', () => {
     const card = findPNode(tree(), 'card')
@@ -301,7 +316,7 @@ describe('findPNode — the scoping primitive for "show only the selection"', ()
   })
 
   it('finds the root itself', () => {
-    expect(findPNode(tree(), ZERO)?.nodeId).toBe(ZERO)
+    expect(findPNode(tree(), ROOT)?.nodeId).toBe(ROOT)
   })
 
   it('returns null for an id that is not in the tree', () => {

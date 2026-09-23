@@ -12,15 +12,13 @@
  * authored here. So this panel only ever edits data: names, types, samples, and a
  * sentence saying what each store maps to.
  *
- * The store list lives on the document (`docProxy.meta.stores`); the cells a
- * store holds live on the page that uses them, like every other cell.
+ * The store list lives on the document (`meta.stores`); the cells a store
+ * holds live on the page that uses them, like every other cell.
  */
 
 import { useMemo, useState } from 'react'
-import { useSnapshot } from 'valtio'
 import { cn } from '@/lib/utils'
-import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
-import type { IndexedPage } from '../../worker/types'
+import { pagesInOrder, useCurrentPageId, useField, useMeta } from '../../doc'
 import {
   emptyPageInteractions,
   cellRef,
@@ -238,10 +236,9 @@ function StoreCard({
 }
 
 export function StoresPanel() {
-  const doc = useSnapshot(docProxy)
-  const pid = doc.currentPageId ?? getActiveOrSinglePageId()
-  const ir = (pid ? doc.pageMap.get(pid)?.interactions : undefined) ?? emptyPageInteractions()
-  const stores = doc.meta?.stores ?? []
+  const pid = useCurrentPageId()
+  const ir = useField('page', pid, 'interactions') ?? emptyPageInteractions()
+  const stores = useMeta()?.stores ?? []
 
   const liveIR: LiveIR = () => (pid ? currentInteractions(pid) : undefined) ?? emptyPageInteractions()
   const commit: Commit = (next) => {
@@ -272,8 +269,8 @@ export function StoresPanel() {
   // design-owned values, so nothing wired to them breaks.
   const remove = (id: string) => {
     const pages: { pageId: string; next: PageInteractions }[] = []
-    for (const [pageId, page] of docProxy.pageMap as Map<string, IndexedPage>) {
-      if (page.interactions?.cells.some((c) => c.store === id)) pages.push({ pageId, next: detachStore(page.interactions, id) })
+    for (const page of pagesInOrder()) {
+      if (page.interactions?.cells.some((c) => c.store === id)) pages.push({ pageId: page.id, next: detachStore(page.interactions, id) })
     }
     void commitStores(removeStore(currentStores(), id), pages)
   }

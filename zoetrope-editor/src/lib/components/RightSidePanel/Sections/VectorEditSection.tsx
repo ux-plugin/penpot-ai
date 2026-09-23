@@ -12,11 +12,8 @@ import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { useCanvasActor } from '@/lib/renderer/machine/canvas-actor-context'
 import { isConvertibleToPath, primitiveToPathPartial } from '@/lib/renderer/handlers/primitive-to-path'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '@/lib/renderer/properties/commit-node-properties'
-import { getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
+import { commitNodePartialUpdate } from '@/lib/renderer/properties/commit-node-properties'
+import { getNode } from '@/lib/doc'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
 
 export interface VectorEditSectionProps {
@@ -42,10 +39,9 @@ export function VectorEditSection({ nodeId, initialNode, readOnly }: VectorEditS
     // A primitive bakes into an editable path first (one undoable step), exactly
     // like the double-click entry, so the vector editor has geometry to show.
     if (!isPath) {
-      const before = getCommittedNodeOnActivePage(nodeId)
+      const before = getNode(nodeId)
       const partial = primitiveToPathPartial(before)
-      const pid = getActiveOrSinglePageId()
-      if (before && partial && pid) await commitNodePartialUpdate(nodeId, before, partial, pid)
+      if (before && partial) await commitNodePartialUpdate(nodeId, before, partial)
     }
     canvasActor.send({ type: 'START_PATH_EDIT', shapeId: nodeId })
   }, [canvasActor, editingThis, isPath, nodeId])

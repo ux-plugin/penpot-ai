@@ -5,20 +5,27 @@
  * Copies are not followed yet — a component copy gets no behaviour of its own
  * until the machine stream decides what a copy's cells mean.
  */
+import type { Aspect, DeletedNodes } from '../../../changes/aspects'
+import { get, mod, type LocalChange } from '../../../doc'
+import { dropNodes } from '../ir'
 
-import type { Aspect, AspectEffects, DeletedNodes } from '../../../changes/aspects'
-import { buildSetPageInteractions } from '../../../changes/page-interactions-change'
-import { dropNodes, type AnyPageInteractions } from '../ir'
-import { upgradePageInteractions } from '../upgrade'
-
-function onDeleted({ pageId, page, ids }: DeletedNodes): AspectEffects | null {
-  const stored = page.interactions as AnyPageInteractions | undefined
-  if (!stored) return null
-  const prev = upgradePageInteractions(stored).ir
-  const next = dropNodes(prev, ids)
-  if (next === prev) return null
-  const { redo, undo } = buildSetPageInteractions(pageId, prev, next)
-  return { redoChanges: [redo], undoChanges: [undo] }
+function onDeleted({ ids }: DeletedNodes): LocalChange[] | null {
+  const byPage = new Map<string, Set<string>>()
+  for (const id of ids) {
+    const page = get('node', id)?.page
+    if (!page) continue
+    let set = byPage.get(page)
+    if (!set) byPage.set(page, (set = new Set()))
+    set.add(id)
+  }
+  const out: LocalChange[] = []
+  for (const [pageId, nodeIds] of byPage) {
+    const prev = get('page', pageId)?.interactions
+    if (!prev) continue
+    const next = dropNodes(prev, nodeIds)
+    if (next !== prev) out.push(mod('page', pageId, { interactions: next }))
+  }
+  return out.length ? out : null
 }
 
 export const interactionsAspect: Aspect = { key: 'interactions', onDeleted }

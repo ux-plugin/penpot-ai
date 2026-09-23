@@ -1,166 +1,67 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Change } from 'penpot-exporter/types'
-import type { IndexedPage } from '../../../../src/lib/worker/types'
+import { makeBaseDocument, PAGE_ID, RECT_ID, resetWorkspace, seedDocument } from '../../fixtures'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
-import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
-import { toChanges } from '../../../../src/lib/history/journal/codec'
-import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { commitChanges } from '../../../../src/lib/renderer/store/commit'
-
-const PAGE_ID = 'page1'
-const ROOT = '00000000-0000-0000-0000-000000000000'
-const RECT = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
-
-function makePage(): IndexedPage {
-  const rootSel = { x: 0, y: 0, width: 800, height: 600, x1: 0, y1: 0, x2: 800, y2: 600 }
-  const rSel = { x: 0, y: 0, width: 100, height: 50, x1: 0, y1: 0, x2: 100, y2: 50 }
-  const t = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
-  return {
-    id: PAGE_ID,
-    objects: {
-      [ROOT]: {
-        id: ROOT,
-        type: 'frame',
-        name: 'Root',
-        x: 0,
-        y: 0,
-        width: 800,
-        height: 600,
-        selrect: rootSel,
-        points: [
-          { x: 0, y: 0 },
-          { x: 800, y: 0 },
-          { x: 800, y: 600 },
-          { x: 0, y: 600 },
-        ],
-        shapes: [RECT],
-      },
-      [RECT]: {
-        id: RECT,
-        type: 'rect',
-        parentId: ROOT,
-        frameId: ROOT,
-        x: 0,
-        y: 0,
-        width: 100,
-        height: 50,
-        selrect: rSel,
-        points: [
-          { x: 0, y: 0 },
-          { x: 100, y: 0 },
-          { x: 100, y: 50 },
-          { x: 0, y: 50 },
-        ],
-        transform: t,
-      },
-    },
-  }
-}
+import { canUndo, getNode, mod, registerEffect, addNode, del } from '../../../../src/lib/doc'
+import { resetEffects } from '../../../../src/lib/doc/commit'
+import type { PenpotNode } from 'penpot-exporter/types'
 
 describe('commitChanges pipeline', () => {
-  let page: IndexedPage
-  const order: string[] = []
+  const applied: Array<{ pageId: string; ops: string[] }> = []
 
   beforeEach(() => {
-    order.length = 0
-    page = structuredClone(makePage())
-    useJournalStore.getState().clear()
-
-    docProxy.pageMap.clear()
-    docProxy.pageMap.set(PAGE_ID, page)
-    docProxy.currentPageId = PAGE_ID
-    docProxy.selectedIds.clear()
-
-    const workerClient = {
-      updatePageWithChanges: vi.fn(async () => {
-        order.push('worker')
-        const updated = docProxy.pageMap.get(PAGE_ID)
-        if (updated) page = updated
-      }),
-      updatePage: vi.fn(async () => {
-        order.push('worker-full')
-        const updated = docProxy.pageMap.get(PAGE_ID)
-        if (updated) page = updated
-      }),
-    }
-
+    resetWorkspace()
+    resetEffects()
+    seedDocument(makeBaseDocument())
+    applied.length = 0
     useWorkspaceStore.setState({
-      workerClient: workerClient as never,
+      workerClient: {
+        applyChanges: vi.fn(async (pageId: string, changes: Array<{ op: string }>) => {
+          applied.push({ pageId, ops: changes.map((c) => c.op) })
+        }),
+      } as never,
       renderer: null,
     })
   })
 
-  it('runs local apply before worker update', async () => {
-    const redo: Change[] = [
-      {
-        type: 'mod-obj',
-        id: RECT,
-        operations: [{ type: 'assign', value: { x: 5 } }],
-      },
-    ]
-    await commitChanges({ redoChanges: redo, pageId: PAGE_ID, saveUndo: false })
-    expect(order).toEqual(['worker'])
-    expect(page.objects[RECT].x).toBe(5)
+  it('applies to the store, then feeds the worker the node changes of the page', async () => {
+    await commitChanges({ changes: [mod('node', RECT_ID, { x: 5 })], saveUndo: false })
+    expect(getNode(RECT_ID)?.x).toBe(5)
+    await Promise.resolve()
+    expect(applied).toEqual([{ pageId: PAGE_ID, ops: ['mod'] }])
   })
 
-  it('does not push history when fromHistory is true', async () => {
-    const redo: Change[] = [
-      {
-        type: 'mod-obj',
-        id: RECT,
-        operations: [{ type: 'assign', value: { x: 1 } }],
-      },
-    ]
-    const undo: Change[] = [
-      {
-        type: 'mod-obj',
-        id: RECT,
-        operations: [{ type: 'assign', value: { x: 0 } }],
-      },
-    ]
-    await commitChanges({
-      redoChanges: redo,
-      undoChanges: undo,
-      pageId: PAGE_ID,
-      fromHistory: true,
+  it('does not push history when fromHistory or saveUndo is false', async () => {
+    await commitChanges({ changes: [mod('node', RECT_ID, { x: 1 })], fromHistory: true })
+    await commitChanges({ changes: [mod('node', RECT_ID, { x: 2 })], saveUndo: false })
+    expect(canUndo.value).toBe(false)
+  })
+
+  it('records a frame by default', async () => {
+    await commitChanges({ changes: [mod('node', RECT_ID, { x: 3 })] })
+    expect(canUndo.value).toBe(true)
+  })
+
+  it('effects see the pending changes and add to the same frame; skipped on replay', async () => {
+    const seen: string[] = []
+    registerEffect((changes) => {
+      seen.push(...changes.map((c) => c.op))
+      return [mod('node', RECT_ID, { name: 'by-effect' })]
     })
-    expect(useJournalStore.getState().txns).toHaveLength(0)
+    await commitChanges({ changes: [mod('node', RECT_ID, { x: 4 })] })
+    expect(seen).toEqual(['mod'])
+    expect(getNode(RECT_ID)?.name).toBe('by-effect')
+    await commitChanges({ changes: [mod('node', RECT_ID, { name: 'Rect' })], fromHistory: true })
+    expect(seen).toEqual(['mod'])
   })
 
-  it('records a journal entry when undoChanges provided', async () => {
-    const redo: Change[] = [
-      {
-        type: 'mod-obj',
-        id: RECT,
-        operations: [{ type: 'assign', value: { x: 3 } }],
-      },
-    ]
-    const undo: Change[] = [
-      {
-        type: 'mod-obj',
-        id: RECT,
-        operations: [{ type: 'assign', value: { x: 0 } }],
-      },
-    ]
-    await commitChanges({ redoChanges: redo, undoChanges: undo, pageId: PAGE_ID })
-    const txns = useJournalStore.getState().txns
-    expect(txns).toHaveLength(1)
-    // The entry stores ops, not the change vectors — so assert it round-trips
-    // back to the forward changes rather than reaching for a `redoChanges` field.
-    expect(toChanges(txns[0].ops).changes).toEqual(redo)
-  })
-
-  it('applies commits when explicit pageId omitted but document exposes active page', async () => {
-    docProxy.currentPageId = null
-    const redo: Change[] = [
-      {
-        type: 'mod-obj',
-        id: RECT,
-        operations: [{ type: 'assign', value: { x: 9 } }],
-      },
-    ]
-    await commitChanges({ redoChanges: redo, saveUndo: false })
-    expect(order).toEqual(['worker'])
-    expect(page.objects[RECT].x).toBe(9)
+  it('a delete reaches the worker as one del per record, deepest first', async () => {
+    const frame = { id: 'f', type: 'frame', x: 0, y: 0, width: 1, height: 1 } as unknown as PenpotNode
+    const kid = { id: 'k', type: 'rect', x: 0, y: 0, width: 1, height: 1 } as unknown as PenpotNode
+    await commitChanges({ changes: [addNode(frame, { page: PAGE_ID })], saveUndo: false })
+    await commitChanges({ changes: [addNode(kid, { page: PAGE_ID, parentId: 'f' })], saveUndo: false })
+    applied.length = 0
+    await commitChanges({ changes: [del('node', 'f')], saveUndo: false })
+    expect(applied).toEqual([{ pageId: PAGE_ID, ops: ['del', 'del'] }])
   })
 })

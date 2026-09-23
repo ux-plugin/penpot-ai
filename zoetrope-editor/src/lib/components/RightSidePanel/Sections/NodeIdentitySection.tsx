@@ -1,12 +1,9 @@
 import { useCallback, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '../../../renderer/properties/commit-node-properties'
+import { commitNodePartialUpdate } from '../../../renderer/properties/commit-node-properties'
 import type { RectLikeNode } from '../../../renderer/properties/panel-utils'
-import { getActiveOrSinglePageId } from '../../../renderer/store/doc-proxy'
+import { getNode } from '../../../doc'
 
 export interface NodeIdentitySectionProps {
   nodeId: string
@@ -21,12 +18,11 @@ export function NodeIdentitySection({ nodeId, readOnly, initialNode }: NodeIdent
 
   const commitName = useCallback(async () => {
     if (readOnly || draftName === null) return
-    const before = getCommittedNodeOnActivePage(nodeId)
-    const pid = getActiveOrSinglePageId()
-    if (!before || !pid) return
+    const before = getNode(nodeId)
+    if (!before) return
     const trimmed = draftName.trim()
     if (trimmed !== (before.name ?? '')) {
-      await commitNodePartialUpdate(nodeId, before, { name: trimmed || 'Shape' }, pid)
+      await commitNodePartialUpdate(nodeId, before, { name: trimmed || 'Shape' })
     }
     setDraftName(null)
   }, [readOnly, draftName, nodeId])

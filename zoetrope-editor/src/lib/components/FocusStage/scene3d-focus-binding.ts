@@ -22,7 +22,7 @@
 import { useEffect } from 'react'
 import { useCanvasActor } from '../../renderer/machine/canvas-actor-context'
 import { openFocusStage, closeFocusStage, focusStage } from '../../renderer/signals/focus-stage'
-import { enterScope, exitScope } from '../../history/journal/scope'
+import { fork, merge } from '../../doc'
 
 const SCENE3D_STAGE_ID = 'scene-3d'
 
@@ -42,15 +42,12 @@ function openScene3dSession(exitMachine: () => void, sceneId: string): void {
     // one canvas undo entry.
     onExit: () => {
       exitMachine()
-      exitScope()
+      merge(`scene-3d:${sceneId}`)
     },
   })
-  // Per subject, like the shader stage, so re-entering a scene resumes its
-  // history. Note the machine can cycle which scene is edited WITHOUT
-  // re-opening the session (see the note above), in which case later edits land
-  // under the scene that opened it — acceptable while cycling is rare, but the
-  // reason to revisit this if it stops being.
-  enterScope(`scene-3d:${sceneId}`)
+  // The machine can cycle which scene is edited WITHOUT re-opening the session
+  // (see above), so later edits land in the branch the first scene opened.
+  fork()
 }
 
 /**

@@ -1,10 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { IndexedPage, IndexedShape } from '../../../../src/lib/worker/types'
+import type { PenpotNode } from 'penpot-exporter/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
-import { docProxy, type DocumentMeta } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { commitChanges } from '../../../../src/lib/renderer/store/commit'
-import { undo } from '../../../../src/lib/page-crud'
+import { children, getNode, mod, undo, type Node } from '../../../../src/lib/doc'
+import { makeBaseDocument, resetWorkspace, seedDocument } from '../../fixtures'
 import {
   createComponentFromFrame,
   instantiateComponent,
@@ -16,76 +15,50 @@ import {
 } from '../../../../src/lib/renderer/component/component-overrides'
 
 const PAGE_ID = 'page1'
-const ROOT = '00000000-0000-0000-0000-000000000000'
 
 function rect(x: number, y: number, w: number, h: number) {
   return { x, y, width: w, height: h }
 }
 
-function makePage(): IndexedPage {
-  return {
-    id: PAGE_ID,
-    objects: {
-      [ROOT]: {
-        id: ROOT,
-        type: 'frame',
-        name: 'Root',
-        ...rect(0, 0, 2000, 900),
-        selrect: rect(0, 0, 2000, 900),
-        shapes: ['button'],
+function seedPage(): void {
+  seedDocument({
+    ...makeBaseDocument(),
+    children: [
+      {
+        id: PAGE_ID,
+        name: 'Page',
+        background: '#FFFFFF',
+        children: [
+          {
+            id: 'button',
+            type: 'frame',
+            name: 'Button',
+            ...rect(100, 100, 200, 60),
+            selrect: rect(100, 100, 200, 60),
+            fills: [{ fillColor: '#EEEEEE' }],
+            children: [
+              {
+                id: 'label',
+                type: 'rect',
+                name: 'Label',
+                ...rect(110, 115, 100, 30),
+                selrect: rect(110, 115, 100, 30),
+                fills: [{ fillColor: '#111111' }],
+                opacity: 1,
+              },
+            ],
+          } as unknown as PenpotNode,
+        ],
       },
-      button: {
-        id: 'button',
-        type: 'frame',
-        name: 'Button',
-        ...rect(100, 100, 200, 60),
-        selrect: rect(100, 100, 200, 60),
-        parentId: ROOT,
-        frameId: 'button',
-        shapes: ['label'],
-        fills: [{ fillColor: '#EEEEEE' }],
-      },
-      label: {
-        id: 'label',
-        type: 'rect',
-        name: 'Label',
-        ...rect(110, 115, 100, 30),
-        selrect: rect(110, 115, 100, 30),
-        parentId: 'button',
-        frameId: 'button',
-        fills: [{ fillColor: '#111111' }],
-        opacity: 1,
-      },
-    },
-  } as unknown as IndexedPage
+    ],
+  })
 }
 
-function objects(): Record<string, IndexedShape> {
-  return docProxy.pageMap.get(PAGE_ID)?.objects as Record<string, IndexedShape>
-}
-
-function node(id: string): Record<string, unknown> {
-  return objects()[id] as unknown as Record<string, unknown>
-}
-
-function assign(id: string, value: Record<string, unknown>) {
-  return {
-    type: 'mod-obj' as const,
-    id,
-    pageId: PAGE_ID,
-    operations: [{ type: 'assign' as const, value }],
-  }
-}
+const node = (id: string): Record<string, unknown> => getNode(id) as unknown as Record<string, unknown>
 
 /** Edit a shape the way any ordinary editor path would. */
 async function edit(id: string, value: Record<string, unknown>): Promise<void> {
-  const before: Record<string, unknown> = {}
-  for (const key of Object.keys(value)) before[key] = node(id)[key]
-  await commitChanges({
-    pageId: PAGE_ID,
-    redoChanges: [assign(id, value)],
-    undoChanges: [assign(id, before)],
-  })
+  await commitChanges({ changes: [mod('node', id, value as Partial<Node>)] })
 }
 
 describe('component overrides', () => {
@@ -94,33 +67,13 @@ describe('component overrides', () => {
   let labelCopy: string
 
   beforeEach(async () => {
-    useJournalStore.getState().clear()
-    docProxy.pageMap.clear()
-    docProxy.pageMap.set(PAGE_ID, makePage())
-    docProxy.currentPageId = PAGE_ID
-    docProxy.selectedIds.clear()
-    docProxy.meta = {
-      name: 'Test doc',
-      components: {},
-      images: {},
-      paintStyles: {},
-      textStyles: {},
-      componentProperties: {},
-      externalLibraries: {},
-      missingFonts: [],
-      isShared: false,
-    } as unknown as DocumentMeta
-    useWorkspaceStore.setState({
-      workerClient: {
-        updatePageWithChanges: vi.fn(async () => {}),
-        updatePage: vi.fn(async () => {}),
-      } as never,
-      renderer: null,
-    })
+    resetWorkspace()
+    seedPage()
+    useWorkspaceStore.setState({ workerClient: { applyChanges: vi.fn(async () => {}) } as never, renderer: null })
 
     componentId = (await createComponentFromFrame('button'))!
     copyId = (await instantiateComponent(componentId, { x: 600, y: 100 }))!
-    labelCopy = (node(copyId).shapes as string[])[0]
+    labelCopy = children(copyId)[0]
   })
 
   describe('marking', () => {
@@ -134,7 +87,7 @@ describe('component overrides', () => {
 
     it('leaves the main and sibling copies alone', async () => {
       const copyB = (await instantiateComponent(componentId, { x: 1000, y: 100 }))!
-      const labelB = (node(copyB).shapes as string[])[0]
+      const labelB = children(copyB)[0]
 
       await edit(labelCopy, { fills: [{ fillColor: '#FF0000' }] })
 
@@ -268,8 +221,8 @@ describe('component overrides', () => {
       await edit(labelCopy, { fills: [{ fillColor: '#FF0000' }] })
       await resetOverrides(copyId)
 
-      // The reset writes the main's values onto the copy; without ignoreTouched
-      // the commit pipeline would read that as a fresh user edit.
+      // The reset writes the main's values onto the copy as `system` changes;
+      // otherwise the commit pipeline would read that as a fresh user edit.
       expect(node(labelCopy).touched).toBeUndefined()
     })
 

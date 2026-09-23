@@ -22,7 +22,7 @@
 import * as THREE from 'three'
 import type { WasmModule } from '../wasm-types'
 import { useWorkspaceStore } from '../store/workspace-store'
-import { getNode } from '../store/doc-proxy'
+import { getNode } from '../../doc'
 import { viewport } from '../signals/pointer'
 import { worldToScreen } from '../viewport'
 import { allocBytes, freeBytes, writeUUIDToDataView } from '../utils'

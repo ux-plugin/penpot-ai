@@ -1,7 +1,9 @@
 # History model
 
-Status: decided 2026-09-22. Supersedes `history-redesign-plan.md` (journal,
-lens, rebase) and the per-subject `versions/` store. Nothing below is built yet.
+Status: decided 2026-09-22. Undo/redo built 2026-09-23 (`src/lib/doc/undo.ts`:
+frames, groups, scratch branches); snapshots and the database are not built.
+Supersedes `history-redesign-plan.md` (journal, lens, rebase) and the
+per-subject `versions/` store, both deleted.
 
 ## Two mechanisms, one entry point
 

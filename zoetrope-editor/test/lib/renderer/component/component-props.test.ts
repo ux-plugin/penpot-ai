@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { IndexedPage, IndexedShape } from '../../../../src/lib/worker/types'
+import type { PenpotNode } from 'penpot-exporter/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
-import { docProxy, type DocumentMeta } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
+import { commitChanges } from '../../../../src/lib/renderer/store/commit'
+import { children, getNode, mod, undo, type Node } from '../../../../src/lib/doc'
 import { propId as pid } from '../../../../src/lib/renderer/properties/registry'
-import { undo } from '../../../../src/lib/page-crud'
+import { makeBaseDocument, resetWorkspace, seedDocument } from '../../fixtures'
 import {
   createComponentFromFrame,
   getComponent,
@@ -21,7 +21,6 @@ import {
 import { resetOverrides } from '../../../../src/lib/renderer/component/component-overrides'
 
 const PAGE_ID = 'page1'
-const ROOT = '00000000-0000-0000-0000-000000000000'
 
 function rect(x: number, y: number, w: number, h: number) {
   return { x, y, width: w, height: h }
@@ -43,58 +42,46 @@ function textContent(text: string) {
 }
 
 /** Button main: a label (text) and an icon that a boolean prop can hide. */
-function makePage(): IndexedPage {
-  return {
-    id: PAGE_ID,
-    objects: {
-      [ROOT]: {
-        id: ROOT,
-        type: 'frame',
-        name: 'Root',
-        ...rect(0, 0, 2000, 900),
-        selrect: rect(0, 0, 2000, 900),
-        shapes: ['button'],
+function seedPage(): void {
+  seedDocument({
+    ...makeBaseDocument(),
+    children: [
+      {
+        id: PAGE_ID,
+        name: 'Page',
+        background: '#FFFFFF',
+        children: [
+          {
+            id: 'button',
+            type: 'frame',
+            name: 'Button',
+            ...rect(100, 100, 200, 60),
+            selrect: rect(100, 100, 200, 60),
+            children: [
+              {
+                id: 'label',
+                type: 'text',
+                name: 'Label',
+                ...rect(110, 115, 100, 30),
+                selrect: rect(110, 115, 100, 30),
+                content: textContent('Click me'),
+              },
+              {
+                id: 'icon',
+                type: 'rect',
+                name: 'Icon',
+                ...rect(250, 115, 30, 30),
+                selrect: rect(250, 115, 30, 30),
+              },
+            ],
+          } as unknown as PenpotNode,
+        ],
       },
-      button: {
-        id: 'button',
-        type: 'frame',
-        name: 'Button',
-        ...rect(100, 100, 200, 60),
-        selrect: rect(100, 100, 200, 60),
-        parentId: ROOT,
-        frameId: 'button',
-        shapes: ['label', 'icon'],
-      },
-      label: {
-        id: 'label',
-        type: 'text',
-        name: 'Label',
-        ...rect(110, 115, 100, 30),
-        selrect: rect(110, 115, 100, 30),
-        parentId: 'button',
-        frameId: 'button',
-        content: textContent('Click me'),
-      },
-      icon: {
-        id: 'icon',
-        type: 'rect',
-        name: 'Icon',
-        ...rect(250, 115, 30, 30),
-        selrect: rect(250, 115, 30, 30),
-        parentId: 'button',
-        frameId: 'button',
-      },
-    },
-  } as unknown as IndexedPage
+    ],
+  })
 }
 
-function objects(): Record<string, IndexedShape> {
-  return docProxy.pageMap.get(PAGE_ID)?.objects as Record<string, IndexedShape>
-}
-
-function node(id: string): Record<string, unknown> {
-  return objects()[id] as unknown as Record<string, unknown>
-}
+const node = (id: string): Record<string, unknown> => getNode(id) as unknown as Record<string, unknown>
 
 /** First text run of a node's content. */
 function textOf(id: string): string | undefined {
@@ -107,8 +94,7 @@ function textOf(id: string): string | undefined {
 
 /** The copy node mirroring `mainNodeId` inside `copyRootId`. */
 function twin(copyRootId: string, mainNodeId: string): string {
-  const kids = node(copyRootId).shapes as string[]
-  const found = kids.find((id) => node(id).shapeRef === mainNodeId)
+  const found = children(copyRootId).find((id) => getNode(id)?.shapeRef === mainNodeId)
   if (!found) throw new Error(`no twin of ${mainNodeId}`)
   return found
 }
@@ -118,29 +104,9 @@ describe('declared component props', () => {
   let copyId: string
 
   beforeEach(async () => {
-    useJournalStore.getState().clear()
-    docProxy.pageMap.clear()
-    docProxy.pageMap.set(PAGE_ID, makePage())
-    docProxy.currentPageId = PAGE_ID
-    docProxy.selectedIds.clear()
-    docProxy.meta = {
-      name: 'Test doc',
-      components: {},
-      images: {},
-      paintStyles: {},
-      textStyles: {},
-      componentProperties: {},
-      externalLibraries: {},
-      missingFonts: [],
-      isShared: false,
-    } as unknown as DocumentMeta
-    useWorkspaceStore.setState({
-      workerClient: {
-        updatePageWithChanges: vi.fn(async () => {}),
-        updatePage: vi.fn(async () => {}),
-      } as never,
-      renderer: null,
-    })
+    resetWorkspace()
+    seedPage()
+    useWorkspaceStore.setState({ workerClient: { applyChanges: vi.fn(async () => {}) } as never, renderer: null })
 
     componentId = (await createComponentFromFrame('button'))!
     copyId = (await instantiateComponent(componentId, { x: 600, y: 100 }))!
@@ -249,19 +215,7 @@ describe('declared component props', () => {
       await setPropValue(copyId, propId, 'Save')
 
       // The main's text moves on; the copy keeps the value its prop set.
-      await import('../../../../src/lib/renderer/store/commit').then(({ commitChanges }) =>
-        commitChanges({
-          pageId: PAGE_ID,
-          redoChanges: [
-            {
-              type: 'mod-obj',
-              id: 'label',
-              pageId: PAGE_ID,
-              operations: [{ type: 'assign', value: { content: textContent('Submit') } }],
-            },
-          ],
-        }),
-      )
+      await commitChanges({ changes: [mod('node', 'label', { content: textContent('Submit') } as Partial<Node>)] })
 
       expect(textOf('label')).toBe('Submit')
       expect(textOf(twin(copyId, 'label'))).toBe('Save')

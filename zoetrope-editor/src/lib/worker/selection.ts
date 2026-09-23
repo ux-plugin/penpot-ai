@@ -3,8 +3,8 @@
  * Translated from frontend/src/app/worker/selection.cljs
  */
 
-import type { SelectionIndex, IndexedPage, QueryParams, SelectionIndexShape } from './types'
-import type { IndexedShape } from './types'
+import type { SelectionIndex, QueryParams, SelectionIndexShape } from './types'
+import type { TreeNode } from '../doc'
 import type { PenpotNode, Selrect, Matrix } from 'penpot-exporter/types'
 import { ZERO_UUID, makeSelrect } from './types'
 import * as quadtree from './quadtree'
@@ -275,7 +275,7 @@ function queryIndex(
       continue
     }
 
-    if (isIndexedShape(shape) && !isFrameShape(shape) && (shape as IndexedShape).blocked) {
+    if (isIndexedShape(shape) && !isFrameShape(shape) && (shape as TreeNode).blocked) {
       continue
     }
 
@@ -337,24 +337,21 @@ function queryIndex(
 }
 
 // Public API
-export function addPage(state: Record<string, SelectionIndex>, page: IndexedPage): Record<string, SelectionIndex> {
-  const index = createIndex(page.objects)
-  return {
-    ...state,
-    [page.id]: index,
-  }
+export function addPage(
+  state: Record<string, SelectionIndex>,
+  pageId: string,
+  objects: Record<string, PenpotNode>,
+): Record<string, SelectionIndex> {
+  return { ...state, [pageId]: createIndex(objects) }
 }
 
 export function updatePage(
   state: Record<string, SelectionIndex>,
-  oldPage: IndexedPage,
-  newPage: IndexedPage
+  pageId: string,
+  oldObjects: Record<string, PenpotNode>,
+  newObjects: Record<string, PenpotNode>,
 ): Record<string, SelectionIndex> {
-  const pageId = oldPage.id
   const existingIndex = state[pageId]
-
-  const oldObjects = oldPage.objects
-  const newObjects = newPage.objects
   const oldBounds = existingIndex?.bounds
   const newBounds = objectsBounds(newObjects)
 

@@ -24,7 +24,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSelector } from '@xstate/react'
-import { useSnapshot } from 'valtio'
 import type { PenpotNode } from 'penpot-exporter/types'
 import { useCanvasActor } from '../../renderer/machine/canvas-actor-context'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
@@ -38,17 +37,12 @@ import {
   pathEditNetwork,
 } from '../../renderer/signals/selection'
 import { eraseBrush, eraseLassoAnchors, flattenAnchorLoop } from '../../renderer/handlers/erase'
-import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
+import { del, endGroup, getNode, useNode } from '../../doc'
 import { getSelectedIdsSet, setSelectedIds } from '../../renderer/store/document-selection'
-import { applyChanges } from '../../page-crud'
-import { commitJournalTransaction, discardJournalTransaction } from '../../history/journal/journal-store'
+import { commitChanges } from '../../renderer/store/commit'
 import { PEN_CREATE_TX } from '../../renderer/handlers/draw-path'
-import type { Change } from 'penpot-exporter/types'
 import { useWorkspaceStore } from '../../renderer/store/workspace-store'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '../../renderer/properties/commit-node-properties'
+import { commitNodePartialUpdate } from '../../renderer/properties/commit-node-properties'
 import { screenToWorld, worldToScreen } from '../../renderer/viewport'
 import {
   anchorsToSegments,
@@ -240,8 +234,8 @@ export function PathEditorOverlay() {
   const inEraser = subTool === 'eraser'
   const draftFrom = useSelector(canvasActor, (s) => s.context.pathDraftFromNode)
   const shapeId = useSelector(canvasActor, (s) => s.context.pathEditingShapeId)
-  // Re-render whenever the document changes so committed edits refresh the markers.
-  useSnapshot(docProxy)
+  // Committed edits refresh the markers.
+  const node = useNode(shapeId)
   const viewport = useSignalCoalesced(viewportSignal)
   const liveNet = useSignalCoalesced(pathEditNetwork)
   const pointer = useSignalCoalesced(pointerPos)
@@ -288,8 +282,7 @@ export function PathEditorOverlay() {
     }
   }, [shapeId, isPathEditing])
 
-  const node = shapeId ? getCommittedNodeOnActivePage(shapeId) : null
-  const content = (node as { content?: unknown } | null)?.content
+  const content = (node as { content?: unknown } | undefined)?.content
   const committedVN = useMemo(() => vnFromContent(content), [content])
   const vn = (liveNet as VectorNetwork | null) ?? committedVN
 
@@ -298,8 +291,6 @@ export function PathEditorOverlay() {
   // (matches Penpot/Figma deleting an empty text box). Mirrors text-edit cleanup.
   const deleteSelfShape = useCallback(() => {
     if (!shapeId) return
-    const pid = getActiveOrSinglePageId()
-    if (!pid) return
     pathEditNetwork.value = null
     canvasActor.send({ type: 'STOP_PATH_EDIT' })
     const sel = getSelectedIdsSet()
@@ -308,11 +299,9 @@ export function PathEditorOverlay() {
       next.delete(shapeId)
       setSelectedIds(next)
     }
-    // Abandoned before any edge: drop the open create transaction so the dot's
-    // add-obj leaves no orphan undo frame (the shape is being deleted anyway).
-    // No-op when no transaction is open (e.g. emptying an existing path).
-    discardJournalTransaction()
-    void applyChanges([{ type: 'del-obj', id: shapeId, pageId: pid } as unknown as Change])
+    // Abandoned before any edge: close the open create group (no-op when none).
+    endGroup()
+    void commitChanges({ changes: [del('node', shapeId)] })
   }, [shapeId, canvasActor])
 
   // Commit the whole network as one undoable edit.
@@ -326,20 +315,18 @@ export function PathEditorOverlay() {
         deleteSelfShape()
         return
       }
-      const before = getCommittedNodeOnActivePage(shapeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) {
+      const before = getNode(shapeId)
+      if (!before) {
         pathEditNetwork.value = null
         return
       }
       const { content: c, points, selrect, x, y, width, height } = networkPartial(before, next)
-      void commitNodePartialUpdate(shapeId, before, { content: c, points, selrect, x, y, width, height }, pid).then(
+      void commitNodePartialUpdate(shapeId, before, { content: c, points, selrect, x, y, width, height }).then(
         () => {
           pathEditNetwork.value = null
-          // Close the create transaction: the dot + this first edge become one
-          // undo entry. No-op for every later edit (the transaction is already
-          // committed, and existing paths never opened it).
-          commitJournalTransaction(PEN_CREATE_TX)
+          // Close the create group: the dot + this first edge become one undo
+          // entry. No-op for every later edit.
+          endGroup(PEN_CREATE_TX)
         },
       )
     },
@@ -409,7 +396,7 @@ export function PathEditorOverlay() {
       e.preventDefault()
       e.stopPropagation()
       if (!shapeId) return
-      const node0 = getCommittedNodeOnActivePage(shapeId)
+      const node0 = getNode(shapeId)
       if (!node0) return
       canvasActor.send({ type: 'PATH_GRAB_NODE', node: i })
       setSelected({ shapeId, index: i })
@@ -451,7 +438,7 @@ export function PathEditorOverlay() {
       e.preventDefault()
       e.stopPropagation()
       if (!shapeId) return
-      const node0 = getCommittedNodeOnActivePage(shapeId)
+      const node0 = getNode(shapeId)
       if (!node0) return
       const edge = vn.edges[edgeIdx]
       canvasActor.send({ type: 'PATH_GRAB_HANDLE', node: end === 'a' ? edge.a : edge.b, side: end === 'a' ? 'out' : 'in' })
@@ -529,7 +516,7 @@ export function PathEditorOverlay() {
       e.preventDefault()
       e.stopPropagation()
       if (!shapeId) return
-      const node0 = getCommittedNodeOnActivePage(shapeId)
+      const node0 = getNode(shapeId)
       const vp = viewportSignal.value
       const svg = svgRef.current
       if (!node0 || !vp || !svg) return
@@ -654,10 +641,8 @@ export function PathEditorOverlay() {
     eraseStroke.value = null
     setEraserBuilding(false)
     if (anchors.length < 3 || !shapeId) return
-    const pid = getActiveOrSinglePageId()
-    if (!pid) return
     const zoom = viewportSignal.value?.zoom || 1
-    void eraseLassoAnchors(anchors, shapeId, pid, zoom).then((erasedAway) => {
+    void eraseLassoAnchors(anchors, shapeId, zoom).then((erasedAway) => {
       if (erasedAway) canvasActor.send({ type: 'STOP_PATH_EDIT' })
     })
   }, [shapeId, canvasActor])
@@ -741,9 +726,7 @@ export function PathEditorOverlay() {
         },
         onUp: () => {
           eraseStroke.value = null
-          const pid = getActiveOrSinglePageId()
-          if (!pid) return
-          void eraseBrush(pts, shapeId, pid, radius, zoom, cap).then((erasedAway) => {
+          void eraseBrush(pts, shapeId, radius, zoom, cap).then((erasedAway) => {
             if (erasedAway) canvasActor.send({ type: 'STOP_PATH_EDIT' })
           })
         },
@@ -928,9 +911,8 @@ export function PathEditorOverlay() {
   const commitWidth = useCallback(
     async (pts: WPoint[]) => {
       if (!shapeId) return
-      const before = getCommittedNodeOnActivePage(shapeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(shapeId)
+      if (!before) return
       const beforeStrokes = (before as { strokes?: StrokeWithSettings[] }).strokes ?? []
       const prev = beforeStrokes[0]
       if (!prev) return // nothing to sculpt
@@ -938,7 +920,7 @@ export function PathEditorOverlay() {
       for (const p of [...pts].sort((a, b) => a.t - b.t)) flat.push(p.t, p.l, p.r, WIDTH_MODE_NUM[p.mode])
       // Width is a stroke property — set it, keep the brush exactly as-is.
       const s0: StrokeWithSettings = { ...prev, strokeWidthPoints: flat }
-      await commitNodePartialUpdate(shapeId, before, { strokes: [s0, ...beforeStrokes.slice(1)] }, pid)
+      await commitNodePartialUpdate(shapeId, before, { strokes: [s0, ...beforeStrokes.slice(1)] })
     },
     [shapeId],
   )

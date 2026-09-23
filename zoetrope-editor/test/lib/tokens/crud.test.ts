@@ -8,8 +8,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest'
-import { redo, setDocument, undo } from '../../../src/lib/page-crud'
-import { docProxy } from '../../../src/lib/renderer/store/doc-proxy'
+import { meta, redo, undo } from '../../../src/lib/doc'
 import {
   createToken,
   createTokenSet,
@@ -29,14 +28,14 @@ import {
   reorderSet,
   setActiveThemes,
 } from '../../../src/lib/tokens/crud'
-import { makeBaseDocument, resetWorkspace } from '../fixtures'
+import { makeBaseDocument, resetWorkspace, seedDocument } from '../fixtures'
 
 const SET = 'set-1'
 
 beforeEach(resetWorkspace)
 
 function lib(): TokensLib {
-  return docProxy.meta!.tokens as TokensLib
+  return meta.peek()!.tokens as TokensLib
 }
 function getSet(id: string) {
   return lib().sets.find((s) => s.id === id)
@@ -50,21 +49,21 @@ function setNames(): string[] {
 
 /** Load the base doc, then add an empty set + one color token to it (two frames). */
 async function withSetAndToken(): Promise<void> {
-  await setDocument(makeBaseDocument())
+  seedDocument(makeBaseDocument())
   await addTokenSet(createTokenSet({ id: SET, name: 'core' }))
   await addToken(SET, createToken({ id: 't1', name: 'color.bg', type: 'color', value: '#FFFFFF' }))
 }
 
-describe('loadDocument initialises an empty tokens lib', () => {
+describe('import initialises an empty tokens lib', () => {
   it('coerces meta.tokens to a runtime TokensLib', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     expect(lib()).toEqual({ sets: [], themes: [], activeThemes: [] })
   })
 })
 
 describe('addTokenSet', () => {
   it('undo removes the set; redo restores it', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     await addTokenSet(createTokenSet({ id: SET, name: 'core' }))
     expect(getSet(SET)).toBeDefined()
 
@@ -141,7 +140,7 @@ describe('deleteToken', () => {
 
 describe('deleteTokenSet', () => {
   it('undo restores the set at its original index (order preserved)', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     await addTokenSet(createTokenSet({ id: 'a', name: 'a' }))
     await addTokenSet(createTokenSet({ id: 'b', name: 'b' }))
     await addTokenSet(createTokenSet({ id: 'c', name: 'c' }))
@@ -160,7 +159,7 @@ describe('deleteTokenSet', () => {
 
 describe('reorderSet (precedence)', () => {
   it('moves a set to a new index and undo restores the order', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     await addTokenSet(createTokenSet({ id: 'a', name: 'a' }))
     await addTokenSet(createTokenSet({ id: 'b', name: 'b' }))
     await addTokenSet(createTokenSet({ id: 'c', name: 'c' }))
@@ -177,7 +176,7 @@ describe('reorderSet (precedence)', () => {
   })
 
   it('changes which set wins resolution (later in lib order overrides)', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     const base = createTokenSet({ id: 's-base', name: 'base' })
     base.tokens = [createToken({ id: 't1', name: 'color.bg', type: 'color', value: '#FFFFFF' })]
     const dark = createTokenSet({ id: 's-dark', name: 'dark' })
@@ -194,7 +193,7 @@ describe('reorderSet (precedence)', () => {
   })
 
   it('is a no-op when moving to the same index', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     await addTokenSet(createTokenSet({ id: 'a', name: 'a' }))
     await addTokenSet(createTokenSet({ id: 'b', name: 'b' }))
     await reorderSet('a', 0)
@@ -204,7 +203,7 @@ describe('reorderSet (precedence)', () => {
 
 describe('themes + modes', () => {
   it('setActiveThemes round-trips through undo/redo', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     await addTheme(createTokenTheme({ id: 'th1', name: 'light', group: 'mode' }))
     await addTheme(createTokenTheme({ id: 'th2', name: 'dark', group: 'mode' }))
     await setActiveThemes(['th1'])
@@ -219,7 +218,7 @@ describe('themes + modes', () => {
   })
 
   it('deleting an active theme restores the theme AND its active state in one undo', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     await addTheme(createTokenTheme({ id: 'th-d', name: 'dark', group: 'mode' }))
     await setActiveThemes(['th-d'])
 
@@ -239,7 +238,7 @@ describe('themes + modes', () => {
 
 describe('moveToken', () => {
   it('moves a token to another set; undo restores it in place', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     await addTokenSet(createTokenSet({ id: 'A', name: 'a' }))
     await addTokenSet(createTokenSet({ id: 'B', name: 'b' }))
     await addToken('A', createToken({ id: 't1', name: 'color.bg', type: 'color', value: '#FFFFFF' }))
@@ -259,7 +258,7 @@ describe('moveToken', () => {
 
 describe('duplicate names within a set', () => {
   it('adding the same name twice keeps both entries (a flagged duplicate)', async () => {
-    await setDocument(makeBaseDocument())
+    seedDocument(makeBaseDocument())
     await addTokenSet(createTokenSet({ id: SET, name: 'core' }))
     await addToken(SET, createToken({ id: 'a', name: 'color.bg', type: 'color', value: '#FFFFFF' }))
     await addToken(SET, createToken({ id: 'b', name: 'color.bg', type: 'color', value: '#000000' }))

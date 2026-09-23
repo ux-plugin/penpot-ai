@@ -30,7 +30,7 @@
 
 import type { ExprNode } from './expression'
 
-/** A shape id — the key in `IndexedPage.objects`. */
+/** A shape id — a `Node` id. */
 export type NodeId = string
 
 /** JSON-serializable value. */

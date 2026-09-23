@@ -1,13 +1,11 @@
 /**
- * Worker-specific types. Shared types (Point, Line, Change) come from common.
+ * Worker-specific types. Node and change types come from `doc`.
  */
 
 import type { PenpotNode, Selrect, Matrix } from 'penpot-exporter/types'
-import type { Change } from 'penpot-exporter/types'
 import type { Point } from '@zoetrope-editor/common/types'
 import type { Quadtree } from './quadtree'
-import type { PageInteractions } from '../renderer/interactions/ir'
-import type { Scene3DDocument } from '../renderer/three/scene3d-store'
+import type { Change, PageObjects, TreeNode } from '../doc'
 
 /** Worker configuration (keys logged only; shape extensible). */
 export type WorkerConfig = Record<string, unknown>
@@ -27,29 +25,21 @@ export type WorkerTextRectCacheValue = WorkerTextRectDimensions & {
   selrect?: unknown
 }
 
-/** Payload for configure command. */
 export interface WorkerConfigurePayload {
   config: WorkerConfig
 }
 
-/** Payload for index/initialize command. */
+/** Payload for index/initialize: a whole page. */
 export interface WorkerIndexInitializePayload {
-  page: IndexedPage
+  page: WorkerPage
 }
 
-/** Payload for index/update command (full page replacement). */
-export interface WorkerIndexUpdatePayload {
-  pageId: string
-  page: IndexedPage
-}
-
-/** Payload for index/update command (incremental changes). */
-export interface WorkerIndexUpdateWithChangesPayload {
+/** Payload for index/apply: node changes of one page. */
+export interface WorkerIndexApplyPayload {
   pageId: string
   changes: Change[]
 }
 
-/** Payload for index/update-text-rect command. */
 export interface WorkerUpdateTextRectPayload {
   pageId: string
   shapeId: string
@@ -62,43 +52,23 @@ export interface WorkerHitTransformsPayload {
   transforms: Array<[string, Matrix]>
 }
 
-/** Payload for index/clear-hit-transforms: drop the hit-transform overlay for a page. */
 export interface WorkerClearHitTransformsPayload {
   pageId: string
 }
 
-/** Indexed shape: PenpotNode with optional child-id list (flat structure). Uses camelCase parentId/frameId from ShapeBaseAttributes. */
-export type IndexedShape = PenpotNode & {
-  shapes?: string[]
-  /**
-   * Embedded 3D scene (camera + environment + objects). Serializable, stored on
-   * the scene container node so 3D state lives in the document: undoable via
-   * mod-obj and carried by flatten/unflatten + any future save. Opaque to WASM —
-   * `setObject` reads only known keys, so this field is never forwarded.
-   */
-  scene3d?: Scene3DDocument
+/** The worker's copy of a page: nodes by id with child lists and the synthetic root. */
+export interface WorkerPage {
+  id: string
+  objects: PageObjects
 }
 
-/** Shape payload stored in selection quadtree (IndexedShape + frame, clipParents, parents). */
-export type SelectionIndexShape = IndexedShape & {
+/** Shape payload stored in selection quadtree (node + frame, clipParents, parents). */
+export type SelectionIndexShape = TreeNode & {
   frame?: PenpotNode
   clipParents: PenpotNode[]
   parents: string[]
   /** Modifier-aware hit-test overlay: rest -> animated affine, set while a paused motion preview displaces the shape. */
   hitTransform?: Matrix
-}
-
-/** Alias for IndexedShape; canonical node type in indexed page model. */
-export type IndexedNode = IndexedShape
-
-/** Internal indexed page (flat objects map) used for selection/index state. Carries page metadata like PenpotPage. */
-export interface IndexedPage {
-  id: string
-  name?: string
-  background?: string
-  objects: Record<string, IndexedShape>
-  /** Per-page interactions (Build mode). Carried through flatten/unflatten. */
-  interactions?: PageInteractions
 }
 
 export interface QueryParams {
@@ -120,7 +90,7 @@ export interface SelectionIndex {
 }
 
 export interface WorkerState {
-  pagesIndex: Record<string, IndexedPage>
+  pages: Record<string, WorkerPage>
   selection: Record<string, SelectionIndex>
   textRect?: Record<string, Record<string, WorkerTextRectCacheValue>>
   /** Per-page set of ids currently carrying a hit-transform overlay (to restore on clear/update). */
@@ -144,12 +114,10 @@ export interface SerializedMessage {
 
 export type Line = [Point, Point]
 
-/** Payload shapes for WorkerClient.sendMessage by command. */
 export type WorkerSendPayload =
   | WorkerConfigurePayload
   | WorkerIndexInitializePayload
-  | WorkerIndexUpdatePayload
-  | WorkerIndexUpdateWithChangesPayload
+  | WorkerIndexApplyPayload
   | QueryParams
   | WorkerUpdateTextRectPayload
   | WorkerHitTransformsPayload
@@ -162,12 +130,12 @@ export type WorkerResponse = null | string[]
 export interface WorkerClient {
   sendMessage(cmd: string, payload?: WorkerSendPayload): Promise<WorkerResponse>
   configure(config: WorkerConfig): Promise<void>
-  addPage(page: IndexedPage): Promise<void>
-  updatePage(pageId: string, page: IndexedPage): Promise<void>
-  updatePageWithChanges(pageId: string, changes: Change[]): Promise<void>
+  /** Load or replace a page. */
+  initPage(page: WorkerPage): Promise<void>
+  /** Apply node changes to a loaded page. */
+  applyChanges(pageId: string, changes: Change[]): Promise<void>
   onMessage(callback: (message: WorkerMessage) => void): () => void
   destroy(): void
 }
 
-export { flattenPageToIndexed, unflattenIndexedPageToPage } from './flatten'
 export { ZERO_UUID, makeSelrect } from '@zoetrope-editor/common/conversions'

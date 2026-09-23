@@ -2,37 +2,31 @@
  * Build-mode component tree — the document's shape hierarchy shown as the list
  * of buildable components.
  *
- * Reuses the same data path as the Design-mode LayersPanel (docProxy +
- * orderedNodesWithDepth) and the same shared selection store, so selecting a
- * component here and a layer there stay in sync — one document, two views.
+ * Reuses the same data path as the Design-mode LayersPanel (`treeOf`) and the
+ * same shared selection store, so selecting a component here and a layer there
+ * stay in sync — one document, two views.
  *
  * Selection/navigation only: reparenting is a design-time concern, so unlike
  * LayerRow this has no drag handlers.
  */
 
 import { useCallback, useMemo } from 'react'
-import { useSnapshot } from 'valtio'
+import { computed } from '@preact/signals-core'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import type { IndexedPage } from '../../worker/types'
-import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
-import { setSelectedIds } from '../../renderer/store/document-selection'
-import { orderedNodesWithDepth } from '../../renderer/store/ordered-page-nodes'
+import { getPage, treeOf, useCurrentPageId, useSignal, type DepthNode } from '../../doc'
+import { setSelectedIds, useSelectedIds } from '../../renderer/store/document-selection'
 import { ShapeIcon } from '../shape-icons'
 
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
-
 export function ComponentTree() {
-  const doc = useSnapshot(docProxy)
-  const selectedIds = useMemo(() => new Set(doc.selectedIds), [doc.selectedIds])
+  const selectedIds = useSelectedIds()
+  const pid = useCurrentPageId()
+  const page = pid ? getPage(pid) : undefined
 
-  const pid = doc.currentPageId ?? getActiveOrSinglePageId()
-  const page: IndexedPage | undefined = pid ? doc.pageMap.get(pid) : undefined
-
-  const components = useMemo(() => {
-    if (!page) return []
-    return orderedNodesWithDepth(page).filter(({ node }) => node.id !== ROOT_UUID)
-  }, [page])
+  // A computed tracks every node and child list it reads.
+  const components = useSignal(
+    useMemo(() => computed((): DepthNode[] => (pid ? treeOf(pid) : [])), [pid]),
+  )
 
   const onSelect = useCallback((id: string) => {
     setSelectedIds(new Set([id]))

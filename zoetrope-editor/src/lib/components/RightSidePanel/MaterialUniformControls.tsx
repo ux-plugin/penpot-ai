@@ -15,12 +15,11 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { useSnapshot } from 'valtio'
 import { Link2, Unlink2 } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { NumericField } from './NumericField'
-import { docProxy } from '../../renderer/store/doc-proxy'
+import { useMeta } from '../../doc'
 import { effectiveActiveTokens, type Token, type TokensLib } from '../../tokens/types'
 import { useResolvedTokens } from '../../tokens/use-resolved-tokens'
 import type { ResolvedToken } from '../../tokens/resolve'
@@ -81,8 +80,7 @@ export interface MaterialUniformControlsProps {
 }
 
 export function MaterialUniformControls({ uniforms, material, onCommitUniform }: MaterialUniformControlsProps) {
-  const doc = useSnapshot(docProxy)
-  const lib = doc.meta?.tokens as TokensLib | undefined
+  const lib = useMeta()?.tokens as TokensLib | undefined
   const resolved = useResolvedTokens()
   const [openPicker, setOpenPicker] = useState<string | null>(null)
 

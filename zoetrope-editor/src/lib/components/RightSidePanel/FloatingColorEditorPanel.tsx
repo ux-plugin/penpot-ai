@@ -4,7 +4,7 @@ import { X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { FillEditor } from '../FillEditor/FillEditor'
 import { textEditorActive, refocusTextEditor } from '@/lib/renderer/signals/text-editor'
-import { markJournalInteraction } from '@/lib/history/journal/journal-store'
+import { markInteraction } from '@/lib/doc'
 import { useColorEditor } from './use-color-editor'
 import { useInspectorAnchorRight } from './use-inspector-anchor'
 
@@ -44,9 +44,8 @@ export function FloatingColorEditorPanel() {
   const handleChange = useCallback(
     (next: Fill) => {
       // Keep the live per-event commit (canvas updates while dragging), but
-      // coalesce the burst into ONE undo frame: each change re-arms an idle
-      // history transaction that finalizes ~350ms after the last edit.
-      markJournalInteraction('color-edit')
+      // coalesce the burst into ONE undo frame (idle-closed group).
+      markInteraction('color-edit')
       onChangeRef.current?.(next)
     },
     [onChangeRef],

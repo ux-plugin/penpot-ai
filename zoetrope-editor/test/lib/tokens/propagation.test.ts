@@ -8,8 +8,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { Fill, PenpotDocument, PenpotNode, PenpotPage } from 'penpot-exporter/types'
-import { redo, setDocument, undo } from '../../../src/lib/page-crud'
-import { docProxy } from '../../../src/lib/renderer/store/doc-proxy'
+import { getNode, meta, redo, undo } from '../../../src/lib/doc'
 import {
   deleteToken,
   modifyToken,
@@ -22,7 +21,7 @@ import {
   type Token,
   type TokensLib,
 } from '../../../src/lib/tokens/types'
-import { resetWorkspace } from '../fixtures'
+import { resetWorkspace, seedDocument } from '../fixtures'
 
 const SET = 'set-1'
 const sel = { x: 0, y: 0, width: 100, height: 50, x1: 0, y1: 0, x2: 100, y2: 50 }
@@ -51,27 +50,8 @@ function rect(id: string, fillColor: string, applied: Record<string, string>): P
   } as unknown as PenpotNode
 }
 
-function root(id: string): PenpotNode {
-  return {
-    id,
-    type: 'frame',
-    name: 'Root',
-    x: 0,
-    y: 0,
-    width: 800,
-    height: 600,
-    selrect: { x: 0, y: 0, width: 800, height: 600, x1: 0, y1: 0, x2: 800, y2: 600 },
-    points: [
-      { x: 0, y: 0 },
-      { x: 800, y: 0 },
-      { x: 800, y: 600 },
-      { x: 0, y: 600 },
-    ],
-  } as unknown as PenpotNode
-}
-
 function page(id: string, shapes: PenpotNode[]): PenpotPage {
-  return { id, name: id, background: '#FFFFFF', children: [root(`root-${id}`), ...shapes] }
+  return { id, name: id, background: '#FFFFFF', children: shapes }
 }
 
 function doc(pages: PenpotPage[]): PenpotDocument {
@@ -90,18 +70,22 @@ function doc(pages: PenpotPage[]): PenpotDocument {
 }
 
 function installLib(libOrToken: TokensLib | Token, ...rest: Token[]): void {
-  const lib = 'sets' in libOrToken ? libOrToken : libWith(libOrToken, ...rest)
-  docProxy.meta!.tokens = lib
+  const tokens = 'sets' in libOrToken ? libOrToken : libWith(libOrToken, ...rest)
+  meta.value = { ...meta.peek()!, tokens }
+}
+
+function currentLib(): TokensLib {
+  return meta.peek()!.tokens as TokensLib
 }
 
 /** Edit a token (looked up by name) — CRUD is id-based now. */
 async function editToken(setId: string, name: string, value: string, newName?: string): Promise<void> {
-  const lib = docProxy.meta!.tokens as TokensLib
+  const lib = currentLib()
   const t = lib.sets.find((x) => x.id === setId)!.tokens.find((x) => x.name === name)!
   await modifyToken(setId, t.id, createToken({ id: t.id, name: newName ?? t.name, type: t.type, value }))
 }
 async function removeToken(setId: string, name: string): Promise<void> {
-  const lib = docProxy.meta!.tokens as TokensLib
+  const lib = currentLib()
   const t = lib.sets.find((x) => x.id === setId)!.tokens.find((x) => x.name === name)!
   await deleteToken(setId, t.id)
 }
@@ -115,19 +99,17 @@ function libWith(...tokens: Token[]): TokensLib {
   return { sets: [set], themes: [], activeThemes: [] }
 }
 
-function fillOf(pageId: string, id: string): string | undefined {
-  const node = docProxy.pageMap.get(pageId)?.objects[id] as { fills?: Fill[] } | undefined
+function fillOf(id: string): string | undefined {
+  const node = getNode(id) as { fills?: Fill[] } | undefined
   return node?.fills?.[0]?.fillColor?.toLowerCase()
 }
-function appliedOf(pageId: string, id: string): Record<string, string> | undefined {
-  return (docProxy.pageMap.get(pageId)?.objects[id] as PenpotNode).appliedTokens as
-    | Record<string, string>
-    | undefined
+function appliedOf(id: string): Record<string, string> | undefined {
+  return getNode(id)?.appliedTokens as Record<string, string> | undefined
 }
 
 describe('value edit propagates', () => {
   it('rewrites every shape using the token; unrelated shapes untouched', async () => {
-    await setDocument(
+    seedDocument(
       doc([
         page('page-1', [
           rect('r-a', '#00ff00', { fill: 'color.brand' }),
@@ -144,14 +126,14 @@ describe('value edit propagates', () => {
 
     await editToken(SET, 'color.brand', '#FF0000')
 
-    expect(fillOf('page-1', 'r-a')).toBe('#ff0000')
-    expect(fillOf('page-1', 'r-b')).toBe('#ff0000')
-    expect(fillOf('page-1', 'r-free')).toBe('#aaaaaa') // no token → untouched
-    expect(fillOf('page-1', 'r-other')).toBe('#0000ff') // other token → untouched (diff)
+    expect(fillOf('r-a')).toBe('#ff0000')
+    expect(fillOf('r-b')).toBe('#ff0000')
+    expect(fillOf('r-free')).toBe('#aaaaaa') // no token → untouched
+    expect(fillOf('r-other')).toBe('#0000ff') // other token → untouched (diff)
   })
 
   it('reaches shapes on other pages', async () => {
-    await setDocument(
+    seedDocument(
       doc([
         page('page-1', [rect('r-1', '#00ff00', { fill: 'color.brand' })]),
         page('page-2', [rect('r-2', '#00ff00', { fill: 'color.brand' })]),
@@ -161,14 +143,14 @@ describe('value edit propagates', () => {
 
     await editToken(SET, 'color.brand', '#FF0000')
 
-    expect(fillOf('page-1', 'r-1')).toBe('#ff0000')
-    expect(fillOf('page-2', 'r-2')).toBe('#ff0000')
+    expect(fillOf('r-1')).toBe('#ff0000')
+    expect(fillOf('r-2')).toBe('#ff0000')
   })
 })
 
 describe('aliasing', () => {
   it('editing the base token updates shapes using an alias of it', async () => {
-    await setDocument(doc([page('page-1', [rect('r', '#ff0000', { fill: 'color.fg' })])]))
+    seedDocument(doc([page('page-1', [rect('r', '#ff0000', { fill: 'color.fg' })])]))
     installLib(
       createToken({ name: 'color.base', type: 'color', value: '#FF0000' }),
       createToken({ name: 'color.fg', type: 'color', value: '{color.base}' }),
@@ -176,13 +158,13 @@ describe('aliasing', () => {
 
     await editToken(SET, 'color.base', '#0000FF')
 
-    expect(fillOf('page-1', 'r')).toBe('#0000ff') // transitive
+    expect(fillOf('r')).toBe('#0000ff') // transitive
   })
 })
 
 describe('theme switch', () => {
   it('flips shapes to the dark value when the active theme changes', async () => {
-    await setDocument(doc([page('page-1', [rect('r', '#ffffff', { fill: 'color.bg' })])]))
+    seedDocument(doc([page('page-1', [rect('r', '#ffffff', { fill: 'color.bg' })])]))
     const base = createTokenSet({
       id: 'base',
       name: 'base',
@@ -203,17 +185,17 @@ describe('theme switch', () => {
     })
 
     await setActiveThemes(['th-dark'])
-    expect(fillOf('page-1', 'r')).toBe('#111111')
+    expect(fillOf('r')).toBe('#111111')
 
     await undo()
-    expect(fillOf('page-1', 'r')).toBe('#ffffff')
-    expect((docProxy.meta!.tokens as TokensLib).activeThemes).toEqual(['th-light'])
+    expect(fillOf('r')).toBe('#ffffff')
+    expect(currentLib().activeThemes).toEqual(['th-light'])
   })
 })
 
 describe('atomic undo / redo', () => {
   it('one undo reverts the token value AND every shape it touched', async () => {
-    await setDocument(
+    seedDocument(
       doc([
         page('page-1', [rect('r-1', '#00ff00', { fill: 'color.brand' })]),
         page('page-2', [rect('r-2', '#00ff00', { fill: 'color.brand' })]),
@@ -222,33 +204,33 @@ describe('atomic undo / redo', () => {
     installLib(createToken({ name: 'color.brand', type: 'color', value: '#00FF00' }))
 
     await editToken(SET, 'color.brand', '#FF0000')
-    expect(fillOf('page-1', 'r-1')).toBe('#ff0000')
-    expect(fillOf('page-2', 'r-2')).toBe('#ff0000')
+    expect(fillOf('r-1')).toBe('#ff0000')
+    expect(fillOf('r-2')).toBe('#ff0000')
 
     await undo()
-    expect(fillOf('page-1', 'r-1')).toBe('#00ff00')
-    expect(fillOf('page-2', 'r-2')).toBe('#00ff00')
-    const lib = docProxy.meta!.tokens as TokensLib
+    expect(fillOf('r-1')).toBe('#00ff00')
+    expect(fillOf('r-2')).toBe('#00ff00')
+    const lib = currentLib()
     expect(lib.sets[0].tokens.find((t) => t.name === 'color.brand')!.value).toBe('#00FF00')
 
     await redo()
-    expect(fillOf('page-1', 'r-1')).toBe('#ff0000')
-    expect(fillOf('page-2', 'r-2')).toBe('#ff0000')
+    expect(fillOf('r-1')).toBe('#ff0000')
+    expect(fillOf('r-2')).toBe('#ff0000')
   })
 })
 
 describe('rename fix-up', () => {
   it('rewrites appliedTokens old→new and keeps the value; undo restores the old name', async () => {
-    await setDocument(doc([page('page-1', [rect('r', '#ffffff', { fill: 'color.bg' })])]))
+    seedDocument(doc([page('page-1', [rect('r', '#ffffff', { fill: 'color.bg' })])]))
     installLib(createToken({ name: 'color.bg', type: 'color', value: '#FFFFFF' }))
 
     await editToken(SET, 'color.bg', '#FFFFFF', 'color.background')
 
-    expect(appliedOf('page-1', 'r')?.fill).toBe('color.background')
-    expect(fillOf('page-1', 'r')).toBe('#ffffff') // value preserved
+    expect(appliedOf('r')?.fill).toBe('color.background')
+    expect(fillOf('r')).toBe('#ffffff') // value preserved
 
     await undo()
-    expect(appliedOf('page-1', 'r')?.fill).toBe('color.bg')
+    expect(appliedOf('r')?.fill).toBe('color.bg')
   })
 })
 
@@ -275,14 +257,13 @@ function matRect(
     material: { source: 'half4 main(float2 p){ return half4(1); }', uniforms },
   } as unknown as PenpotNode
 }
-function uniformsOf(pageId: string, id: string): { name: string; value: { type: string; value: unknown }; token?: string }[] {
-  return (docProxy.pageMap.get(pageId)?.objects[id] as unknown as { material?: { uniforms: never[] } })
-    .material!.uniforms
+function uniformsOf(id: string): { name: string; value: { type: string; value: unknown }; token?: string }[] {
+  return (getNode(id) as unknown as { material?: { uniforms: never[] } }).material!.uniforms
 }
 
 describe('material-uniform token binding propagates', () => {
   it('re-materializes a color-bound uniform (shape has NO appliedTokens)', async () => {
-    await setDocument(
+    seedDocument(
       doc([
         page('page-1', [
           matRect('r', [{ name: 'u_col', token: 'color.brand', value: { type: 'vec4', value: [0, 1, 0, 1] } }]),
@@ -293,13 +274,13 @@ describe('material-uniform token binding propagates', () => {
 
     await editToken(SET, 'color.brand', '#FF0000')
 
-    const u = uniformsOf('page-1', 'r')[0]
+    const u = uniformsOf('r')[0]
     expect(u.value).toEqual({ type: 'vec4', value: [1, 0, 0, 1] })
     expect(u.token).toBe('color.brand') // link kept
   })
 
   it('re-materializes a number-bound scalar uniform', async () => {
-    await setDocument(
+    seedDocument(
       doc([
         page('page-1', [
           matRect('r', [{ name: 'u_amt', token: 'num.amt', value: { type: 'f32', value: 0.5 } }]),
@@ -310,11 +291,11 @@ describe('material-uniform token binding propagates', () => {
 
     await editToken(SET, 'num.amt', '0.8')
 
-    expect(uniformsOf('page-1', 'r')[0].value).toEqual({ type: 'f32', value: 0.8 })
+    expect(uniformsOf('r')[0].value).toEqual({ type: 'f32', value: 0.8 })
   })
 
   it('leaves an unbound uniform untouched', async () => {
-    await setDocument(
+    seedDocument(
       doc([
         page('page-1', [
           matRect('r', [
@@ -328,13 +309,13 @@ describe('material-uniform token binding propagates', () => {
 
     await editToken(SET, 'color.brand', '#FF0000')
 
-    const us = uniformsOf('page-1', 'r')
+    const us = uniformsOf('r')
     expect(us[0].value).toEqual({ type: 'vec4', value: [1, 0, 0, 1] })
     expect(us[1].value).toEqual({ type: 'f32', value: 0.25 }) // no token → untouched
   })
 
   it('one undo reverts the token AND the materialized uniform', async () => {
-    await setDocument(
+    seedDocument(
       doc([
         page('page-1', [
           matRect('r', [{ name: 'u_col', token: 'color.brand', value: { type: 'vec4', value: [0, 1, 0, 1] } }]),
@@ -344,20 +325,18 @@ describe('material-uniform token binding propagates', () => {
     installLib(createToken({ name: 'color.brand', type: 'color', value: '#00FF00' }))
 
     await editToken(SET, 'color.brand', '#FF0000')
-    expect(uniformsOf('page-1', 'r')[0].value).toEqual({ type: 'vec4', value: [1, 0, 0, 1] })
+    expect(uniformsOf('r')[0].value).toEqual({ type: 'vec4', value: [1, 0, 0, 1] })
 
     await undo()
-    expect(uniformsOf('page-1', 'r')[0].value).toEqual({ type: 'vec4', value: [0, 1, 0, 1] })
-    expect(
-      (docProxy.meta!.tokens as TokensLib).sets[0].tokens.find((t) => t.name === 'color.brand')!.value,
-    ).toBe('#00FF00')
+    expect(uniformsOf('r')[0].value).toEqual({ type: 'vec4', value: [0, 1, 0, 1] })
+    expect(currentLib().sets[0].tokens.find((t) => t.name === 'color.brand')!.value).toBe('#00FF00')
 
     await redo()
-    expect(uniformsOf('page-1', 'r')[0].value).toEqual({ type: 'vec4', value: [1, 0, 0, 1] })
+    expect(uniformsOf('r')[0].value).toEqual({ type: 'vec4', value: [1, 0, 0, 1] })
   })
 
   it('a rename fixes up the uniform token link', async () => {
-    await setDocument(
+    seedDocument(
       doc([
         page('page-1', [
           matRect('r', [{ name: 'u_col', token: 'color.brand', value: { type: 'vec4', value: [0, 1, 0, 1] } }]),
@@ -368,18 +347,18 @@ describe('material-uniform token binding propagates', () => {
 
     await editToken(SET, 'color.brand', '#00FF00', 'color.primary')
 
-    expect(uniformsOf('page-1', 'r')[0].token).toBe('color.primary')
+    expect(uniformsOf('r')[0].token).toBe('color.primary')
   })
 })
 
 describe('delete leaves a dangling reference', () => {
   it('keeps the concrete value and the (now-dangling) appliedTokens link', async () => {
-    await setDocument(doc([page('page-1', [rect('r', '#ffffff', { fill: 'color.bg' })])]))
+    seedDocument(doc([page('page-1', [rect('r', '#ffffff', { fill: 'color.bg' })])]))
     installLib(createToken({ name: 'color.bg', type: 'color', value: '#FFFFFF' }))
 
     await removeToken(SET, 'color.bg')
 
-    expect(fillOf('page-1', 'r')).toBe('#ffffff') // value kept
-    expect(appliedOf('page-1', 'r')?.fill).toBe('color.bg') // dangling link kept
+    expect(fillOf('r')).toBe('#ffffff') // value kept
+    expect(appliedOf('r')?.fill).toBe('color.bg') // dangling link kept
   })
 })

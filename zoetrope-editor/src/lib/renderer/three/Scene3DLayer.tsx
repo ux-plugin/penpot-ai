@@ -20,7 +20,8 @@ import { viewport, movePreviewWorldDelta } from '../signals/pointer'
 import { wasmSelectionRect } from '../signals/selection'
 import { worldToScreen, screenToWorld } from '../viewport'
 import { useWorkspaceStore } from '../store/workspace-store'
-import { docProxy, getNode } from '../store/doc-proxy'
+import { getNode } from '../../doc'
+import { selectedIds } from '../store/document-selection'
 import {
   scene3dProxy,
   getInstance,
@@ -193,7 +194,7 @@ function renderSceneIntoBox(
 
 /** The single selected scene id (when exactly one 3D scene is selected), else null. */
 function selectedSceneId(): string | null {
-  const sel = docProxy.selectedIds
+  const sel = selectedIds.peek()
   if (sel.size !== 1) return null
   const id = sel.values().next().value as string
   return isScene3D(id) ? id : null
@@ -272,7 +273,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       scheduleDraw()
     })
     const unsubModel = subscribe(scene3dProxy, scheduleDraw)
-    const unsubSel = subscribe(docProxy.selectedIds, scheduleDraw)
+    const unsubSel = selectedIds.subscribe(scheduleDraw)
     return () => {
       disposeVp()
       unsubModel()
@@ -300,14 +301,11 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
   // exit. Making exit a function of *selection state* (not of which widget got the
   // click) is the one rule that covers every path uniformly, so it can't be bypassed
   // by selecting through the Layers panel the way a canvas-only click-away was.
-  // Reads the editing scene fresh from the actor (not a captured value) so a
-  // scene→scene switch — exit A + enter B in the same tick — never races on a stale
-  // id: by the time valtio flushes this microtask, editingSceneId is already B.
+  // Reads the editing scene fresh from the actor (not a captured value).
   useEffect(() => {
-    return subscribe(docProxy.selectedIds, () => {
+    return selectedIds.subscribe((sel) => {
       const editId = actor.getSnapshot().context.scene3dEditingId
       if (!editId) return
-      const sel = docProxy.selectedIds
       if (sel.size === 1 && sel.has(editId)) return // still editing the selected scene
       exit()
     })

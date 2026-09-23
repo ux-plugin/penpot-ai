@@ -24,7 +24,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import type { ShaderPreset } from '../shader-lang/presets'
 import { viewport } from './pointer'
 import { useWorkspaceStore } from '../store/workspace-store'
-import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
+import { ROOT, children, getActiveOrSinglePageId, getNode } from '../../doc'
 import { worldToScreen, screenToWorld } from '../viewport'
 import { applyShaderToNode, createRectWithShader } from '../handlers/shader-drop'
 import {
@@ -33,9 +33,6 @@ import {
   hideShaderPreview,
   type ShaderPreviewNode,
 } from '../handlers/shader-preview-node'
-import type { IndexedPage } from '../../worker/types'
-
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 /** World size of a rectangle created by dropping on empty canvas (matches shader-drop). */
 const NEW_W = 240
 const NEW_H = 160
@@ -105,30 +102,27 @@ interface Selrect {
 }
 
 interface RootInfo {
+  /** The WASM root frame id. */
   rootId: string
-  /** The root's DOCUMENT child list (never includes the transient preview). */
+  /** The page's top-level DOCUMENT child list (never includes the transient preview). */
   rootChildIds: readonly string[]
 }
 
-function getRootInfo(page: IndexedPage): RootInfo | null {
-  const root = Object.values(page.objects).find((o) => o.parentId == null)
-  if (!root?.id) return null
-  return { rootId: root.id, rootChildIds: root.shapes ?? [] }
+function getRootInfo(): RootInfo | null {
+  const pageId = getActiveOrSinglePageId()
+  if (!pageId) return null
+  return { rootId: ROOT, rootChildIds: children(pageId) }
 }
 
 /**
  * Topmost top-level object whose selrect contains the world point, or null. We
- * scan `root.shapes` (draw order, last = top) and keep the last match, so an
+ * scan the top level (draw order, last = top) and keep the last match, so an
  * overlapping shape drawn later wins — mirroring visual stacking.
  */
-function topLevelHit(page: IndexedPage, wx: number, wy: number): string | null {
-  const root = Object.values(page.objects).find((o) => o.parentId == null)
-  const children = root?.shapes
-  if (!children) return null
+function topLevelHit(pageId: string, wx: number, wy: number): string | null {
   let hit: string | null = null
-  for (const id of children) {
-    if (id === ROOT_UUID) continue
-    const s = (page.objects[id] as { selrect?: Selrect } | undefined)?.selrect
+  for (const id of children(pageId)) {
+    const s = (getNode(id) as { selrect?: Selrect } | undefined)?.selrect
     if (s && wx >= s.x && wx <= s.x + s.width && wy >= s.y && wy <= s.y + s.height) {
       hit = id
     }
@@ -136,9 +130,9 @@ function topLevelHit(page: IndexedPage, wx: number, wy: number): string | null {
   return hit
 }
 
-function nodeClientRect(page: IndexedPage, nodeId: string): DragRect | null {
+function nodeClientRect(nodeId: string): DragRect | null {
   const vp = viewport.value
-  const node = page.objects[nodeId] as { selrect?: Selrect } | undefined
+  const node = getNode(nodeId) as { selrect?: Selrect } | undefined
   if (!vp || !node?.selrect) return null
   const s = node.selrect
   const tl = worldToScreen(vp, s.x, s.y)
@@ -175,14 +169,13 @@ function resolveTarget(clientX: number, clientY: number): ShaderDragState['targe
 
   const vp = viewport.value
   const pageId = getActiveOrSinglePageId()
-  const page = pageId ? getPage(pageId) : null
-  if (vp && page) {
+  if (vp && pageId) {
     const world = screenToWorld(vp, sx, sy)
-    const id = topLevelHit(page, world.x, world.y)
+    const id = topLevelHit(pageId, world.x, world.y)
     if (id) {
-      const rect = nodeClientRect(page, id)
+      const rect = nodeClientRect(id)
       if (rect) {
-        const name = (page.objects[id] as { name?: string }).name ?? 'Component'
+        const name = getNode(id)?.name ?? 'Component'
         return { kind: 'component', nodeId: id, name, rect }
       }
     }
@@ -193,13 +186,11 @@ function resolveTarget(clientX: number, clientY: number): ShaderDragState['targe
 /** Drive the transient WASM preview clone to match the resolved target. */
 function syncPreview(target: ShaderDragState['target'], material: ShaderPreset['material']): void {
   const renderer = useWorkspaceStore.getState().renderer
-  const pageId = getActiveOrSinglePageId()
-  const page = pageId ? getPage(pageId) : null
-  const root = page ? getRootInfo(page) : null
-  if (!renderer || !page || !root) return
+  const root = getRootInfo()
+  if (!renderer || !root) return
 
   if (target?.kind === 'component') {
-    const node = page.objects[target.nodeId] as Record<string, unknown> | undefined
+    const node = getNode(target.nodeId) as Record<string, unknown> | undefined
     if (node) {
       preview = showShaderPreviewForNode(
         renderer,
@@ -223,9 +214,7 @@ function syncPreview(target: ShaderDragState['target'], material: ShaderPreset['
 function clearPreview(): void {
   if (!preview) return
   const renderer = useWorkspaceStore.getState().renderer
-  const pageId = getActiveOrSinglePageId()
-  const page = pageId ? getPage(pageId) : null
-  const root = page ? getRootInfo(page) : null
+  const root = getRootInfo()
   if (renderer && root) hideShaderPreview(renderer, root.rootChildIds, preview)
   preview = null
 }

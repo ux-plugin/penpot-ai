@@ -2,7 +2,7 @@
  * nodesToPresentation — the bridge from the document (shapes) to the engine's
  * presentation model.
  *
- * Walks the flat `IndexedPage` shape tree from its root and produces a `PNode`
+ * Walks a page's `pageObjects` view from its root and produces a `PNode`
  * tree: each shape becomes one element carrying its id as the `data-node-id`
  * anchor, nested by the shape hierarchy (`shapes` child-id arrays).
  *
@@ -14,7 +14,7 @@
  * contract, so behavior weaving keeps working unchanged.
  */
 
-import type { IndexedPage, IndexedShape } from '../../../worker/types'
+import { getPage, pageObjects, ROOT, type PageObjects, type TreeNode } from '../../../doc'
 import type { PageInteractions } from '../ir'
 import { editedCell, propRef, REPEAT_PROP } from '../ir'
 import type { ComponentPresentation, PNode, SlotPresentation, NodeRole } from '../compile/emit-react'
@@ -30,7 +30,7 @@ import type { LocalComponent } from '../../../common/component'
  * Order matters: the most specific behaviour wins. A node that both edits a cell
  * and has a press is a field first.
  */
-function deriveRole(shape: IndexedShape, ir: PageInteractions | undefined, childIds: string[]): NodeRole {
+function deriveRole(shape: TreeNode, ir: PageInteractions | undefined, childIds: string[]): NodeRole {
   const id = shape.id
   const onNode = (it: { on: { node: string } }) => it.on.node === id
 
@@ -65,7 +65,7 @@ function extractText(content: unknown): string {
   return ''
 }
 
-function textFor(shape: IndexedShape): string | undefined {
+function textFor(shape: TreeNode): string | undefined {
   const raw = (shape as { content?: unknown }).content
   const t = raw ? extractText(raw).trim() : ''
   if (t) return t
@@ -98,14 +98,14 @@ function withAlpha(color: string, opacity?: number): string {
   return color + Math.round(Math.max(0, opacity) * 255).toString(16).padStart(2, '0')
 }
 
-function firstColor(shape: IndexedShape): string | undefined {
+function firstColor(shape: TreeNode): string | undefined {
   const fill = (shape as { fills?: FillLike[] }).fills?.find((f) => f.fillColor ?? f.n)
   const color = fill?.fillColor ?? fill?.n
   return color ? withAlpha(color, fill?.fillOpacity) : undefined
 }
 
 /** `border` shorthand from the shape's first visible stroke. */
-function borderFor(shape: IndexedShape): string | undefined {
+function borderFor(shape: TreeNode): string | undefined {
   const stroke = (shape as { strokes?: StrokeLike[] }).strokes?.find((s) => s.strokeColor && (s.strokeWidth ?? 0) > 0)
   if (!stroke?.strokeColor) return undefined
   const style = stroke.strokeStyle === 'dotted' || stroke.strokeStyle === 'dashed' ? stroke.strokeStyle : 'solid'
@@ -113,7 +113,7 @@ function borderFor(shape: IndexedShape): string | undefined {
 }
 
 /** Corner radii — collapsed to one value when all four agree. */
-function radiusFor(shape: IndexedShape): string | undefined {
+function radiusFor(shape: TreeNode): string | undefined {
   const s = shape as { r1?: number; r2?: number; r3?: number; r4?: number; rx?: number }
   const corners = [s.r1 ?? s.rx ?? 0, s.r2 ?? s.rx ?? 0, s.r3 ?? s.rx ?? 0, s.r4 ?? s.rx ?? 0]
   if (corners.every((c) => !c)) return undefined
@@ -121,7 +121,7 @@ function radiusFor(shape: IndexedShape): string | undefined {
 }
 
 /** First paragraph's typography — the baseline the whole text shape renders at. */
-function typographyFor(shape: IndexedShape): Record<string, string> {
+function typographyFor(shape: TreeNode): Record<string, string> {
   const content = (shape as { content?: { children?: unknown } }).content
   const para = findParagraph(content)
   if (!para) return {}
@@ -167,7 +167,7 @@ function findParagraph(node: unknown): ParagraphLike | undefined {
  * the canvas pixel-for-pixel. The page root is exempt from sizing — it's the
  * component's outer container, so it adapts to whatever renders it.
  */
-function styleFor(shape: IndexedShape, isRoot: boolean, hasChildren: boolean): Record<string, string> | undefined {
+function styleFor(shape: TreeNode, isRoot: boolean, hasChildren: boolean): Record<string, string> | undefined {
   const style: Record<string, string> = {}
   const isText = shape.type === 'text'
 
@@ -214,7 +214,7 @@ function styleFor(shape: IndexedShape, isRoot: boolean, hasChildren: boolean): R
  */
 function slotPresentation(
   slot: { views: string[]; activeView?: string },
-  objects: Record<string, IndexedShape>,
+  objects: PageObjects,
   ir: PageInteractions | undefined,
   projecting: Set<string>,
   components?: Record<string, LocalComponent>,
@@ -256,9 +256,9 @@ function indexByNodeId(node: PNode, into: Map<string, PNode>): void {
  * subtree the way it did before this existed.
  */
 function componentPresentation(
-  copy: IndexedShape,
+  copy: TreeNode,
   component: LocalComponent,
-  objects: Record<string, IndexedShape>,
+  objects: PageObjects,
   ir: PageInteractions | undefined,
   projecting: Set<string>,
 ): ComponentPresentation | null {
@@ -293,8 +293,8 @@ function componentPresentation(
 }
 
 function toPNode(
-  shape: IndexedShape,
-  objects: Record<string, IndexedShape>,
+  shape: TreeNode,
+  objects: PageObjects,
   ir: PageInteractions | undefined,
   projecting: Set<string> = new Set(),
   components?: Record<string, LocalComponent>,
@@ -337,7 +337,7 @@ function toPNode(
 
   const children = childIds
     .map((id) => objects[id])
-    .filter((c): c is IndexedShape => Boolean(c))
+    .filter((c): c is TreeNode => Boolean(c))
     .map((c) => toPNode(c, objects, ir, projecting, components))
 
   // Style depends on whether this node ends up a container, so it's built after
@@ -355,19 +355,19 @@ function toPNode(
 }
 
 /**
- * Find the page root (the shape with no parent) and walk it into a `PNode` tree.
+ * Walk the page from its root into a `PNode` tree.
  *
  * Pass `components` (the document's library) to have copies emit as component
  * calls; without it they inline their own subtrees, which is what every caller
  * did before components existed.
  */
 export function nodesToPresentation(
-  page: IndexedPage,
+  pageId: string,
   components?: Record<string, LocalComponent>,
 ): PNode | null {
-  const objects = page.objects
-  const root = Object.values(objects).find((o) => o.parentId == null)
-  return root ? toPNode(root, objects, page.interactions, new Set(), components) : null
+  const objects = pageObjects(pageId)
+  const root = objects[ROOT]
+  return root ? toPNode(root, objects, getPage(pageId)?.interactions, new Set(), components) : null
 }
 
 /**

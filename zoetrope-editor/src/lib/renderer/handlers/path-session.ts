@@ -9,13 +9,10 @@
  * `isPathEditing && !inPen` state), which the "done" exit jumped past.
  */
 
-import type { Change } from 'penpot-exporter/types'
-import { getActiveOrSinglePageId } from '../store/doc-proxy'
+import { del, endGroup, getNode } from '../../doc'
 import { getSelectedIdsSet, setSelectedIds } from '../store/document-selection'
-import { getCommittedNodeOnActivePage } from '../properties/commit-node-properties'
 import { vnFromContent } from '../geom/vn-from-content'
 import { applyChanges } from '../../page-crud'
-import { discardJournalTransaction } from '../../history/journal/journal-store'
 
 /**
  * Remove the just-edited path if it ended the session with no edges. Reads the
@@ -25,20 +22,18 @@ import { discardJournalTransaction } from '../../history/journal/journal-store'
  */
 export function dropDegeneratePathOnExit(shapeId: string | null): void {
   if (!shapeId) return
-  const node = getCommittedNodeOnActivePage(shapeId)
+  const node = getNode(shapeId)
   if (!node) return
   if (vnFromContent((node as { content?: unknown }).content).edges.length > 0) return
 
-  const pid = getActiveOrSinglePageId()
-  if (!pid) return
   // A pen-create dot abandoned before any edge still holds its open undo
-  // transaction — drop it so the deleted shape leaves no orphan undo frame.
-  discardJournalTransaction()
+  // group — close it so the delete stands on its own.
+  endGroup()
   const sel = getSelectedIdsSet()
   if (sel.has(shapeId)) {
     const next = new Set(sel)
     next.delete(shapeId)
     setSelectedIds(next)
   }
-  void applyChanges([{ type: 'del-obj', id: shapeId, pageId: pid } as unknown as Change])
+  void applyChanges([del('node', shapeId)])
 }

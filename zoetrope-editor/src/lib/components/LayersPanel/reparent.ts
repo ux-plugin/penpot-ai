@@ -1,12 +1,12 @@
 /**
  * Pure helpers for drag-to-reparent: both in the Layers panel (zone-based)
  * and on the canvas (point-in-frame drop). Mirrors Penpot's drop-side geometry
- * (dnd.cljs) and on-drop dispatch (layer_item.cljs), emitting Penpot-shaped
- * MovObjectsChange records for the commit pipeline.
+ * (dnd.cljs) and on-drop dispatch (layer_item.cljs). The move itself is
+ * `moveNodes` from doc.
  */
 
-import type { Change, MovObjectsChange, Point } from 'penpot-exporter/types'
-import type { IndexedShape } from '../../worker/types'
+import type { PenpotNode, Point } from 'penpot-exporter/types'
+import { ancestors, getNode, siblingIndex, type PageObjects } from '../../doc'
 import {
   isBoolShape,
   isComponentShape,
@@ -46,53 +46,43 @@ export function computeDropSide(
  * `resolveDropTarget` (never a reparent), preserving the one-geometric-parent
  * invariant. Slot drops are instead surfaced by `resolveSlotDrop`.
  */
-export function isContainer(node: IndexedShape | null | undefined): boolean {
+export function isContainer(node: PenpotNode | null | undefined): boolean {
   return isFrameShape(node) || isGroupShape(node) || isBoolShape(node) || isComponentShape(node)
 }
 
-/** Walk the parent chain from `descendantId` up — returns true if `ancestorId` is encountered. */
-export function isAncestor(
-  objects: Record<string, IndexedShape>,
-  ancestorId: string,
-  descendantId: string,
-): boolean {
-  let current: string | undefined = descendantId
-  while (current) {
-    if (current === ancestorId) return true
-    current = objects[current]?.parentId
-  }
-  return false
+/** True when `ancestorId` is `descendantId` or above it. */
+export function isAncestor(ancestorId: string, descendantId: string): boolean {
+  return ancestorId === descendantId || ancestors(descendantId).includes(ancestorId)
 }
 
 export interface ResolveDropTargetParams {
   targetId: string
   side: DropSide
   draggedIds: readonly string[]
-  objects: Record<string, IndexedShape>
 }
 
 export interface ResolvedDropTarget {
-  parentId: string
+  /** Absent: the page's top level. */
+  parentId: string | undefined
   index: number
 }
 
 /**
- * Resolve a (targetId, side) gesture to a (parentId, index) commit.
+ * Resolve a (targetId, side) gesture to a (parentId, index) placement.
  * Returns null for invalid or no-op drops.
  */
 export function resolveDropTarget(
   params: ResolveDropTargetParams,
 ): ResolvedDropTarget | null {
-  const { targetId, side, draggedIds, objects } = params
+  const { targetId, side, draggedIds } = params
   if (draggedIds.length === 0) return null
 
   if (draggedIds.some((id) => id === targetId)) return null
 
-  const target = objects[targetId]
+  const target = getNode(targetId)
   if (!target) return null
 
-  const targetParentId = target.parentId
-  let parentId: string
+  let parentId: string | undefined
   let index: number
 
   if (side === 'center') {
@@ -100,23 +90,15 @@ export function resolveDropTarget(
     parentId = targetId
     index = 0
   } else {
-    if (!targetParentId) return null
-    parentId = targetParentId
-    const parent = objects[parentId]
-    const siblings = parent?.shapes ?? []
-    const currentIndex = siblings.indexOf(targetId)
+    parentId = target.parentId
+    const currentIndex = siblingIndex(targetId)
     if (currentIndex < 0) return null
     index = side === 'top' ? currentIndex : currentIndex + 1
   }
 
-  if (draggedIds.some((id) => isAncestor(objects, id, parentId))) return null
+  if (parentId && draggedIds.some((id) => isAncestor(id, parentId!))) return null
 
-  const parent = objects[parentId]
-  if (!parent || (parent.shapes === undefined && !isContainer(parent))) {
-    return null
-  }
-
-  if (isNoOpDrop(draggedIds, objects, parentId, index)) return null
+  if (isNoOpDrop(draggedIds, parentId, index)) return null
 
   return { parentId, index }
 }
@@ -136,19 +118,18 @@ export interface ResolvedSlotDrop {
  * Only frames are valid views; non-frame drags (and the slot itself) are ignored.
  * Returns null when the gesture is not a frame-onto-slot center-drop.
  *
- * NOTE: this is the pure intent only. Committing the assignment (mod-obj on the
- * slot's `views`/`activeView`, with undo) is handled by the shared slot write-path
- * in Phase C, so drop and `show-in-slot` authoring stay DRY.
+ * NOTE: this is the pure intent only. Committing the assignment is the shared
+ * slot write-path (slot-edit.ts), so drop and `show-in-slot` authoring stay DRY.
  */
 export function resolveSlotDrop(
   params: ResolveDropTargetParams,
 ): ResolvedSlotDrop | null {
-  const { targetId, side, draggedIds, objects } = params
+  const { targetId, side, draggedIds } = params
   if (side !== 'center') return null
-  if (!isSlotShape(objects[targetId])) return null
+  if (!isSlotShape(getNode(targetId))) return null
 
   const viewIds = draggedIds.filter(
-    (id) => id !== targetId && isFrameShape(objects[id]),
+    (id) => id !== targetId && isFrameShape(getNode(id)),
   )
   if (viewIds.length === 0) return null
 
@@ -157,17 +138,14 @@ export function resolveSlotDrop(
 
 function isNoOpDrop(
   draggedIds: readonly string[],
-  objects: Record<string, IndexedShape>,
-  parentId: string,
+  parentId: string | undefined,
   index: number,
 ): boolean {
-  const parent = objects[parentId]
-  const siblings = parent?.shapes ?? []
   for (const id of draggedIds) {
-    const shape = objects[id]
+    const shape = getNode(id)
     if (!shape) return false
     if (shape.parentId !== parentId) return false
-    const currentIndex = siblings.indexOf(id)
+    const currentIndex = siblingIndex(id)
     if (currentIndex !== index && currentIndex !== index - 1) {
       return false
     }
@@ -175,76 +153,14 @@ function isNoOpDrop(
   return true
 }
 
-export interface BuildReparentChangesParams {
-  pageId: string
-  parentId: string
-  index: number
-  shapeIds: readonly string[]
-  objects: Record<string, IndexedShape>
-}
-
-export interface ReparentChanges {
-  redoChanges: Change[]
-  undoChanges: Change[]
-}
-
-/**
- * Redo = single `mov-objects` to (parentId, index).
- * Undo = one `mov-objects` per original parent group, using `afterShape` so
- * the inverse is robust against intermediate sibling shifts.
- */
-export function buildReparentChanges(
-  params: BuildReparentChangesParams,
-): ReparentChanges {
-  const { pageId, parentId, index, shapeIds, objects } = params
-
-  const redo: MovObjectsChange = {
-    type: 'mov-objects',
-    pageId,
-    parentId,
-    shapes: [...shapeIds],
-    index,
-  }
-
-  const undoByParent = new Map<string, MovObjectsChange>()
-  for (const id of shapeIds) {
-    const shape = objects[id]
-    const oldParentId = shape?.parentId
-    if (!oldParentId) continue
-    const oldParent = objects[oldParentId]
-    const siblings = oldParent?.shapes ?? []
-    const oldIdx = siblings.indexOf(id)
-    const afterShape = oldIdx > 0 ? siblings[oldIdx - 1] : null
-
-    const existing = undoByParent.get(oldParentId)
-    if (existing) {
-      existing.shapes.push(id)
-    } else {
-      const entry: MovObjectsChange = {
-        type: 'mov-objects',
-        pageId,
-        parentId: oldParentId,
-        shapes: [id],
-        ...(afterShape != null ? { afterShape } : { index: oldIdx >= 0 ? oldIdx : 0 }),
-      }
-      undoByParent.set(oldParentId, entry)
-    }
-  }
-
-  return {
-    redoChanges: [redo],
-    undoChanges: Array.from(undoByParent.values()),
-  }
-}
-
 /**
  * Innermost container whose selrect contains `point`, excluding `excludeIds` and
  * their descendants (so a shape can't be reparented into itself or another shape
- * being moved together). Returns the root frame (id where parentId == null) as a
- * fallback only when the point lies inside it — never returns a non-container.
+ * being moved together). Returns the root frame as a fallback only when the
+ * point lies inside it — never returns a non-container.
  */
 export function findContainerAtPoint(
-  objects: Record<string, IndexedShape>,
+  objects: PageObjects,
   point: Point,
   excludeIds: readonly string[],
 ): string | null {
@@ -276,7 +192,7 @@ export function findContainerAtPoint(
  * used to detect a "drop a view frame onto a slot" gesture on the canvas.
  */
 export function findSlotAtPoint(
-  objects: Record<string, IndexedShape>,
+  objects: PageObjects,
   point: Point,
   excludeIds: readonly string[],
 ): string | null {
@@ -298,7 +214,7 @@ export function findSlotAtPoint(
 }
 
 function collectDescendants(
-  objects: Record<string, IndexedShape>,
+  objects: PageObjects,
   rootId: string,
   acc: Set<string>,
 ): void {

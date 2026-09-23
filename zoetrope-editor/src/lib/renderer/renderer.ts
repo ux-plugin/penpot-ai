@@ -6,7 +6,12 @@
 import type { WasmModule } from './wasm-types'
 import type { RendererOptions, SelectionRectResult } from './types'
 import type { PenpotNode } from 'penpot-exporter/types'
-import type { IndexedPage } from '../worker/types'
+
+/** What `initPage` loads: a background and every node of the page by id, root included. */
+export interface RendererPage {
+  background?: string
+  objects: Record<string, PenpotNode>
+}
 import type { Matrix, Fill } from 'penpot-exporter/types'
 import { getDPR } from './utils'
 import { Viewport } from './viewport'
@@ -144,7 +149,7 @@ export class Renderer {
   /**
    * Initializes or re-initializes the context and loads the given page (first load or page change).
    */
-  async initPage(indexedPage: IndexedPage): Promise<void> {
+  async initPage(indexedPage: RendererPage): Promise<void> {
     if (!this.module || !this.canvas) {
       throw new Error('Renderer not built. Use Renderer.builder() first.')
     }

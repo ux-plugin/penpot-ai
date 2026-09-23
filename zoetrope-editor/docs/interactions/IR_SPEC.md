@@ -17,9 +17,9 @@ stored sugar  ──(normalize)──►  reactive graph  ──(emit-react)─�
   compile artifact** (never stored). Expressions are stored as **trees whose
   references are ids** (`Expr` / `Ref`); text is a projection made at the edge
   (`expr.ts`), so renaming a cell never breaks a wire.
-- **Storage**: page-scoped — a `PageInteractions` block (`version: 3`) per
-  `IndexedPage` (shape/render model untouched; nodes referenced by id, the
-  `objects` key). Stores are document-wide: `DocumentMeta.stores`.
+- **Storage**: page-scoped — a `PageInteractions` block (`version: 3`) on the
+  page record (`Page.interactions`, see `docs/state-model.md`; nodes referenced
+  by id). Stores are document-wide: `DocumentMeta.stores`.
 - **Upgrade**: a stored `version: 1` (variables / derived / bindings / states /
   repeaters / editable) or `version: 2` (expressions as text, cells by name)
   block is converted on read by `upgradePageInteractions` (`upgrade.ts`); a

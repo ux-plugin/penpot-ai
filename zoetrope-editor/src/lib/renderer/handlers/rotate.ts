@@ -17,7 +17,7 @@ import { querySelectionRect, wasmSelectionRect as wasmSelRect } from '../signals
 import { dragStopper } from '../streams/drag-stopper'
 import { getSelectedIdsSet } from '../store/document-selection'
 import { useWorkspaceStore } from '../store/workspace-store'
-import { getCurrentPage } from '../store/doc-proxy'
+import { getNode, type Node } from '../../doc'
 import { screenToWorld } from '../viewport'
 import { applyModifiersAndCommit } from './utils'
 import { DRAG_RENDER_INTERVAL_MS } from './drag-render-interval'
@@ -32,7 +32,6 @@ import { getWorkspaceWasmTransform } from '../store/modifier-overlay'
 import { motionAnimatedMatrix, recordRotateKeyframe } from '../motion/motion-store'
 import type { Point } from '../types'
 import type { Matrix } from 'penpot-exporter/types'
-import type { IndexedNode } from '../../worker/types'
 
 function angleDegFromCenter(cx: number, cy: number, wx: number, wy: number): number {
   return Math.atan2(wy - cy, wx - cx) * (180 / Math.PI)
@@ -52,10 +51,7 @@ export function startRotateSelected(initialPosition: Point): Observable<void> {
     wasmSelRect.value = querySelectionRect(renderer, ids)
   }
   const isSingle = ids.length === 1
-  const pageObjects = getCurrentPage()?.objects
-  const selectedNodes = ids
-    .map((id) => pageObjects?.[id])
-    .filter((node): node is IndexedNode => node !== undefined)
+  const selectedNodes = ids.map((id) => getNode(id)).filter((node): node is Node => node !== undefined)
   const singleNode = selectedNodes[0]
 
   if (isSingle) {

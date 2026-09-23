@@ -40,12 +40,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '@/lib/renderer/properties/commit-node-properties'
+import { commitNodePartialUpdate } from '@/lib/renderer/properties/commit-node-properties'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
-import { getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
+import { getNode } from '@/lib/doc'
 import {
   patchContent,
   readTypographyDisplay,
@@ -293,9 +290,8 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
         requestRender(module, 'apply-styles')
         return
       }
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(nodeId)
+      if (!before) return
       const content = patchContent((before as { content?: TextContent }).content, patch)
 
       // Push the patched content to WASM first so its text layout is current,
@@ -317,7 +313,6 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
         nodeId,
         before,
         { content, ...geom } as Partial<PenpotNode>,
-        pid,
       )
     },
     [nodeId, readOnly],

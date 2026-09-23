@@ -2,12 +2,13 @@
  * Worker client for typed, promise-based communication with the worker
  */
 
-import type { Change } from 'penpot-exporter/types'
+import type { Change } from './doc'
 import type {
   WorkerMessage,
   SerializedMessage,
   WorkerClient as WorkerClientInterface,
   WorkerConfig,
+  WorkerPage,
   WorkerResponse,
   WorkerSendPayload,
 } from './worker/types'
@@ -95,28 +96,14 @@ export class WorkerClient implements WorkerClientInterface {
     await this.sendMessage('configure', { config })
   }
 
-  /**
-   * Add a single page to the worker index
-   */
-  async addPage(page: Parameters<WorkerClientInterface['addPage']>[0]): Promise<void> {
+  /** Load or replace a page in the worker index. */
+  async initPage(page: WorkerPage): Promise<void> {
     await this.sendMessage('index/initialize', { page })
   }
 
-  /**
-   * Update an existing page in the worker index (full page replacement)
-   */
-  async updatePage(
-    pageId: string,
-    page: Parameters<WorkerClientInterface['updatePage']>[1]
-  ): Promise<void> {
-    await this.sendMessage('index/update', { pageId, page })
-  }
-
-  /**
-   * Update an existing page in the worker index using incremental changes
-   */
-  async updatePageWithChanges(pageId: string, changes: Change[]): Promise<void> {
-    await this.sendMessage('index/update', { pageId, changes })
+  /** Apply node changes to a loaded page. */
+  async applyChanges(pageId: string, changes: Change[]): Promise<void> {
+    await this.sendMessage('index/apply', { pageId, changes })
   }
 
   /**

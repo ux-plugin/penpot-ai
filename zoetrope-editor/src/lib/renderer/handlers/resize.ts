@@ -10,7 +10,7 @@ import { querySelectionRect, wasmSelectionRect as wasmSelRect } from '../signals
 import { dragStopper } from '../streams/drag-stopper'
 import { getSelectedIdsSet } from '../store/document-selection'
 import { useWorkspaceStore } from '../store/workspace-store'
-import { getCurrentPage } from '../store/doc-proxy'
+import { getNode } from '../../doc'
 import { getModifierKeys } from '../store/shortcuts-store'
 import { isSnapPixelGridEnabled } from '../store/workspace-settings'
 import { applyModifiersAndCommit } from './utils'
@@ -104,10 +104,7 @@ export function startResizeSelected(
   // preview scales like any other shape; the commit writes the final per-axis
   // grow type, and a no-op release restores the originals.
   const module = renderer.getModule?.()
-  const startPage = getCurrentPage()
-  const originalTextGrow = startPage
-    ? collectTextGrowTypes(selectedIds, startPage)
-    : new Map<string, string | undefined>()
+  const originalTextGrow = collectTextGrowTypes(selectedIds)
   if (module) {
     for (const [id, grow] of originalTextGrow) {
       if (grow === 'auto-width' || grow === 'auto-height') {
@@ -118,7 +115,7 @@ export function startResizeSelected(
   }
 
   const selectedId = selectedIds.size === 1 ? Array.from(selectedIds)[0] : null
-  const singleNode = selectedId ? getCurrentPage()?.objects[selectedId] ?? null : null
+  const singleNode = selectedId ? getNode(selectedId) ?? null : null
   const nodeSr = singleNode ? singleNode.selrect : null
 
   const T = singleNode?.transform ?? IDENTITY_MATRIX

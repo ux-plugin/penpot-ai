@@ -1,208 +1,135 @@
 /**
- * DocumentModel orchestrates document/page lifecycle and sync with worker/renderer.
- * Persistent document state lives in docProxy (Valtio).
+ * DocumentModel orchestrates document and page lifecycle: load, page switch,
+ * add and delete pages, and the renderer / worker handoff for each.
  */
-
 import type { PenpotDocument } from 'penpot-exporter/types'
-import type { Change } from 'penpot-exporter/types'
-import type { IndexedPage, IndexedNode } from '../../worker/types'
-import { flattenPageToIndexed, unflattenIndexedPageToPage } from '../../worker/types'
+import { applyAll } from '../../doc/apply'
+import { rebuildDerived } from '../../doc/derived'
+import {
+  add,
+  clearHistory,
+  clearTables,
+  count,
+  currentPageId,
+  del,
+  exportDocument,
+  get,
+  getNode,
+  ids,
+  importDocument,
+  meta,
+  nodesOfPage,
+  pageObjects,
+  pagesInOrder,
+  tables,
+  type LocalChange,
+  type Node,
+  type Page,
+  type PageId,
+} from '../../doc'
 import { useWorkspaceStore } from './workspace-store'
 import { viewport } from '../signals/pointer'
 import { commitChanges } from './commit'
-import { useJournalStore } from '../../history/journal/journal-store'
-import { enrichPageWithPositionData } from './enrich-position-data'
-import { setSelectedIds } from './document-selection'
-import { docProxy, getActiveOrSinglePageId, type DocumentMeta } from './doc-proxy'
-import { emptyTokensLib } from '../../tokens/types'
+import { positionDataChanges } from './enrich-position-data'
+import { clearSelection } from './document-selection'
 import { hydrateScene3dFromDocument } from '../three/scene3d-sync'
-import type { AnyPageInteractions, Store } from '../interactions/ir'
-import { upgradePageInteractions } from '../interactions/upgrade'
-
-function buildPageMap(children: PenpotDocument['children']): Map<string, IndexedPage> {
-  const map = new Map<string, IndexedPage>()
-  if (!children?.length) return map
-  for (const page of children) {
-    const key = page.id ?? crypto.randomUUID()
-    const indexed = flattenPageToIndexed({ ...page, id: page.id ?? key })
-    map.set(key, indexed)
-  }
-  return map
-}
 
 export class DocumentModel {
-
   getDocument(): PenpotDocument | null {
-    if (!docProxy.meta) return null
-    return {
-      ...docProxy.meta,
-      children: Array.from(docProxy.pageMap.values()).map(unflattenIndexedPageToPage),
-    }
+    return exportDocument()
   }
 
-  getPage(id: string): IndexedPage | undefined {
-    return docProxy.pageMap.get(id)
+  getPage(id: string): Page | undefined {
+    return get('page', id)
   }
 
-  getActiveOrSinglePageId(): string | null {
-    return getActiveOrSinglePageId()
+  /** The page shown, or the only one. */
+  getActiveOrSinglePageId(): PageId | null {
+    const current = currentPageId.peek()
+    if (current) return current
+    if (count('page') === 1) return ids('page').next().value ?? null
+    return null
   }
 
-  /**
-   * Internal: used only by commit to write updated page into the model.
-   * Not on IDocumentModel.
-   */
-  applyPageUpdate(pageId: string, updatedPage: IndexedPage): void {
-    docProxy.pageMap.set(pageId, updatedPage)
+  getNode(id: string): Node | undefined {
+    return getNode(id)
   }
 
-  getNode(id: string): IndexedNode | undefined {
-    return docProxy.pageMap.get(docProxy.currentPageId ?? '')?.objects[id]
-  }
-
-  getSelectedNodes(selectedIds: Set<string>): IndexedNode[] {
-    const objects = docProxy.pageMap.get(docProxy.currentPageId ?? '')?.objects
-    if (!objects) return []
-    const result: IndexedNode[] = []
+  getSelectedNodes(selectedIds: Iterable<string>): Node[] {
+    const out: Node[] = []
     for (const id of selectedIds) {
-      const node = objects[id]
-      if (node) result.push(node)
+      const n = getNode(id)
+      if (n) out.push(n)
     }
-    return result
+    return out
+  }
+
+  /** Push a page to the renderer and worker, then store its text layout. */
+  private async showPage(pageId: PageId): Promise<void> {
+    const state = useWorkspaceStore.getState()
+    const page = get('page', pageId)
+    if (!page || !state.renderer) return
+    await state.renderer.initPage({ background: page.background, objects: pageObjects(pageId) })
+    viewport.value = { panX: 0, panY: 0, zoom: 1 }
+    if (state.wasmModule) {
+      const changes = positionDataChanges(state.wasmModule, nodesOfPage(pageId))
+      if (changes.length) await commitChanges({ changes, saveUndo: false, ignoreRendererSync: true })
+    }
   }
 
   async loadDocument(doc: PenpotDocument): Promise<void> {
-    useJournalStore.getState().clear()
-    const { children, ...meta } = doc
-    docProxy.meta = meta as DocumentMeta
-    // Stores are document-wide. A document saved before that carried them per
-    // page (version-1 interactions); adopt those onto the document, by id.
-    const stores: Store[] = [...(docProxy.meta.stores ?? [])]
-    for (const page of children ?? []) {
-      const stored = (page as { interactions?: AnyPageInteractions }).interactions
-      if (!stored) continue
-      for (const s of upgradePageInteractions(stored).stores) if (!stores.some((x) => x.id === s.id)) stores.push(s)
-    }
-    docProxy.meta.stores = stores
-    // Tokens live as a runtime TokensLib at the editor layer. Coerce away any
-    // serialized DTCG container (import is deferred) and guarantee the slot exists.
-    if (!Array.isArray((docProxy.meta.tokens as { sets?: unknown } | undefined)?.sets)) {
-      docProxy.meta.tokens = emptyTokensLib()
-    }
-    const pageMap = buildPageMap(children)
-    docProxy.pageMap.clear()
-    for (const [pageId, page] of pageMap) {
-      docProxy.pageMap.set(pageId, page)
-    }
-    const firstPageId =
-      children?.[0]?.id ?? (docProxy.pageMap.size ? docProxy.pageMap.keys().next().value ?? null : null)
-    docProxy.currentPageId = firstPageId
+    clearHistory()
+    const imported = importDocument(doc)
+    clearTables()
+    applyAll(tables, [...imported.pages.map((p) => add('page', p)), ...imported.nodes.map((n) => add('node', n))])
+    rebuildDerived()
+    meta.value = imported.meta
+    const firstPageId = imported.pages[0]?.id ?? null
+    currentPageId.value = firstPageId
 
-    // Rebuild the 3D read-cache from `node.scene3d` on the freshly loaded pages
-    // (disposes any prior instances). No-op for a blank document.
     hydrateScene3dFromDocument()
+    clearSelection()
 
     const state = useWorkspaceStore.getState()
-    setSelectedIds(new Set())
-
-    for (const page of docProxy.pageMap.values()) {
-      await state.workerClient?.addPage(page)
+    for (const page of imported.pages) {
+      await state.workerClient?.initPage({ id: page.id, objects: pageObjects(page.id) })
     }
-    if (firstPageId && state.renderer) {
-      const page = docProxy.pageMap.get(firstPageId)
-      if (page) {
-        await state.renderer.initPage(page)
-        viewport.value = { panX: 0, panY: 0, zoom: 1 }
-        if (state.wasmModule && state.workerClient) {
-          const penpotPage = unflattenIndexedPageToPage(page)
-          const enrichedPenpot = enrichPageWithPositionData(state.wasmModule, penpotPage)
-          const enrichedIndexed = flattenPageToIndexed(enrichedPenpot)
-          docProxy.pageMap.set(firstPageId, enrichedIndexed)
-          await state.workerClient.updatePage(firstPageId, enrichedIndexed)
-        }
-      }
-    }
+    if (firstPageId) await this.showPage(firstPageId)
   }
 
   async setActivePage(pageId: string): Promise<void> {
-    useJournalStore.getState().clear()
-    const page = docProxy.pageMap.get(pageId)
-    if (!page) return
-    const state = useWorkspaceStore.getState()
-    if (!state.workerClient || !state.renderer) return
-
-    docProxy.currentPageId = pageId
-    setSelectedIds(new Set())
-
-    await state.renderer.initPage(page)
-    viewport.value = { panX: 0, panY: 0, zoom: 1 }
-    if (state.wasmModule && state.workerClient) {
-      const penpotPage = unflattenIndexedPageToPage(page)
-      const enrichedPenpot = enrichPageWithPositionData(state.wasmModule, penpotPage)
-      const enrichedIndexed = flattenPageToIndexed(enrichedPenpot)
-      docProxy.pageMap.set(pageId, enrichedIndexed)
-      await state.workerClient.updatePage(pageId, enrichedIndexed)
-    }
+    if (!get('page', pageId)) return
+    clearHistory()
+    currentPageId.value = pageId
+    clearSelection()
+    await this.showPage(pageId)
   }
 
-  async addPage(page: IndexedPage): Promise<void> {
-    if (!docProxy.meta) return
-    const state = useWorkspaceStore.getState()
-    const key = page.id ?? crypto.randomUUID()
-    const pageWithId = { ...page, id: page.id ?? key }
-    docProxy.pageMap.set(key, pageWithId)
-
-    if (state.workerClient) await state.workerClient.addPage(pageWithId)
-    if (getActiveOrSinglePageId() == null && state.renderer?.isInitialized()) {
-      await this.setActivePage(key)
+  async addPage(page: Page, nodes: readonly Node[] = []): Promise<void> {
+    if (!meta.peek()) return
+    const changes: LocalChange[] = [add('page', page), ...nodes.map((n) => add('node', n))]
+    await commitChanges({ changes, saveUndo: false, ignoreRendererSync: true })
+    await useWorkspaceStore.getState().workerClient?.initPage({ id: page.id, objects: pageObjects(page.id) })
+    if (this.getActiveOrSinglePageId() == null && useWorkspaceStore.getState().renderer?.isInitialized()) {
+      await this.setActivePage(page.id)
     }
   }
 
   async deletePage(pageId: string): Promise<void> {
-    if (!docProxy.meta) return
-    useJournalStore.getState().clear()
-    const state = useWorkspaceStore.getState()
-    docProxy.pageMap.delete(pageId)
-    const nextPageId =
-      docProxy.currentPageId === pageId
-        ? docProxy.pageMap.keys().next().value ?? null
-        : docProxy.currentPageId
-
-    if (docProxy.currentPageId === pageId && nextPageId) {
-      docProxy.currentPageId = nextPageId
-      const page = docProxy.pageMap.get(nextPageId)
-      setSelectedIds(new Set())
-      if (state.renderer?.isInitialized() && page) {
-        await state.renderer.initPage(page)
-        viewport.value = { panX: 0, panY: 0, zoom: 1 }
-        if (state.wasmModule && state.workerClient) {
-          const penpotPage = unflattenIndexedPageToPage(page)
-          const enrichedPenpot = enrichPageWithPositionData(state.wasmModule, penpotPage)
-          const enrichedIndexed = flattenPageToIndexed(enrichedPenpot)
-          docProxy.pageMap.set(nextPageId, enrichedIndexed)
-          await state.workerClient.updatePage(nextPageId, enrichedIndexed)
-        }
-      }
-    } else {
-      docProxy.currentPageId = nextPageId
-    }
+    if (!get('page', pageId)) return
+    clearHistory()
+    const wasCurrent = currentPageId.peek() === pageId
+    await commitChanges({ changes: [del('page', pageId)], saveUndo: false, ignoreRendererSync: true })
+    if (!wasCurrent) return
+    const next = pagesInOrder()[0]?.id ?? null
+    currentPageId.value = next
+    clearSelection()
+    if (next) await this.showPage(next)
   }
 
-  async applyChanges(
-    changes: Change[],
-    options?: { pageId?: string; undoChanges?: Change[] }
-  ): Promise<void> {
+  async applyChanges(changes: readonly LocalChange[]): Promise<void> {
     if (changes.length === 0) return
-    const pageId =
-      options?.pageId ??
-      (changes[0] as { pageId?: string }).pageId ??
-      this.getActiveOrSinglePageId()
-    if (!pageId || !docProxy.pageMap.get(pageId)) return
-    await commitChanges({
-      redoChanges: changes,
-      undoChanges: options?.undoChanges ?? [],
-      pageId,
-    })
+    await commitChanges({ changes })
   }
 }
 

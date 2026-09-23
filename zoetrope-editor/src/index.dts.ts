@@ -49,24 +49,14 @@ export {
   redo,
 } from './lib/page-crud'
 
-export type { CommitChangesParams } from './lib/changes/commit-types'
-export {
-  emptyChangesBuilder,
-  appendModObjPair,
-  snapshotGeometryForUndo,
-  buildTransformModObjPair,
-  mergeBundle,
-  toCommitBundle,
-} from './lib/changes/changes-builder'
-export { useJournalStore } from './lib/history/journal/journal-store'
+export type { CommitParams } from './lib/doc/commit'
+export { emptyChangesBuilder, appendMod, appendChange, mergeBundle, toCommitBundle } from './lib/changes/changes-builder'
 
 // Document selection
 export { setSelectedIds, clearSelection, getSelectedIdsSet } from './lib/renderer/store/document-selection'
 
-// Document state (Valtio proxy)
-export { docProxy, getActiveOrSinglePageId, getCurrentPage, getPage } from './lib/renderer/store/doc-proxy'
-export type { DocState, DocumentMeta } from './lib/renderer/store/doc-proxy'
-export { useSnapshot, subscribe } from 'valtio'
+// Document state (records in signals)
+export * from './lib/doc'
 
 // Document model singleton
 export { documentModel } from './lib/renderer/store/document-model'

@@ -3,10 +3,7 @@ import type { Blur, Glass, PenpotNode, Shadow } from 'penpot-exporter/types'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '../../../renderer/properties/commit-node-properties'
+import { commitNodePartialUpdate } from '../../../renderer/properties/commit-node-properties'
 import {
   DEFAULT_MATERIAL,
   DEFAULT_SHADOW,
@@ -17,7 +14,7 @@ import {
 } from '../../../renderer/properties/panel-utils'
 import { ShaderPresetGallery } from '../ShaderPresetGallery'
 import type { Material } from '../../../renderer/api/material'
-import { getActiveOrSinglePageId } from '../../../renderer/store/doc-proxy'
+import { getNode } from '../../../doc'
 import { openShaderStage } from '../../FocusStage/open-shader-stage'
 import { EffectRow } from './EffectRow'
 import { useColorEditor } from '../use-color-editor'
@@ -116,9 +113,8 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
   const commitEffects = useCallback(
     async (next: EffectItem[]) => {
       if (readOnly) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(nodeId)
+      if (!before) return
       const { shadow, layerBlur, backgroundBlur, glass, texture, material } = splitEffects(next)
       const partial: Record<string, unknown> = { shadow }
       // Include blur fields when they have a value or when clearing a
@@ -146,7 +142,7 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
       if (material !== undefined || hadMaterial) {
         partial.material = material ?? null
       }
-      await commitNodePartialUpdate(nodeId, before, partial as Partial<PenpotNode>, pid)
+      await commitNodePartialUpdate(nodeId, before, partial as Partial<PenpotNode>)
     },
     [readOnly, nodeId],
   )

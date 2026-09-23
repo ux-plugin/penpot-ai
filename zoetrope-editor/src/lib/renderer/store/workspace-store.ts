@@ -7,8 +7,8 @@ import { create } from 'zustand'
 import type { WasmModule } from '../wasm-types'
 import { Renderer } from '../renderer'
 import type { WorkerClient } from '../../worker/types'
-import { docProxy } from './doc-proxy'
 import { querySelectionRect, wasmSelectionRect } from '../signals/selection'
+import { selectedIds } from './document-selection'
 
 export interface WorkspaceState {
   renderer: Renderer | null
@@ -38,7 +38,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set) => ({
 
   setRenderer: (renderer) => {
     set({ renderer })
-    const ids = docProxy.selectedIds
+    const ids = selectedIds.peek()
     if (ids.size > 0) {
       wasmSelectionRect.value = querySelectionRect(renderer, ids)
     } else {

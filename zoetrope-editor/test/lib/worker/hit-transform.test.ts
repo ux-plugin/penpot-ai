@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { overlaps } from '@/lib/worker/geometry/intersect'
 import * as selection from '@/lib/worker/selection'
 import { makeSelrect } from '@/lib/common/conversions'
-import type { IndexedPage } from '@/lib/worker/types'
 import type { Matrix, PenpotNode } from 'penpot-exporter/types'
 
 const translate = (dx: number, dy: number): Matrix => ({ a: 1, b: 0, c: 0, d: 1, e: dx, f: dy })
@@ -41,9 +40,8 @@ describe('overlaps — modifier-aware (hitTransform) inverse-maps the query', ()
 describe('selection index — hit-transform overlay routes broad + narrow phase', () => {
   it('finds the shape at its animated position after updateIndexSingle', () => {
     const objects = { s1: rectShape() } as unknown as Record<string, PenpotNode>
-    const page = { id: 'p1', objects } as unknown as IndexedPage
 
-    let state = selection.addPage({}, page)
+    let state = selection.addPage({}, 'p1', objects)
     // Rest: hit at the shape, miss at the future animated spot.
     expect([...selection.query(state, { pageId: 'p1', rect: at(5, 5) })]).toEqual(['s1'])
     expect([...selection.query(state, { pageId: 'p1', rect: at(105, 105) })]).toEqual([])

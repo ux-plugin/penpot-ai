@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSelector } from '@xstate/react'
-import { useSnapshot } from 'valtio'
 import type { GridCell, GridTrack, PenpotNode } from 'penpot-exporter/types'
 import {
   AlignCenterHorizontal,
@@ -22,9 +21,8 @@ import { useCanvasActor } from '@/lib/renderer/machine/canvas-actor-context'
 import {
   commitNodePartialUpdate,
   commitNodeGeometry,
-  getCommittedNodeOnActivePage,
 } from '@/lib/renderer/properties/commit-node-properties'
-import { docProxy, getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
+import { getNode, useNode } from '@/lib/doc'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
 import { rotatePreviewDeltaDeg as rotatePreviewDeltaDegSignal } from '@/lib/renderer/signals/pointer'
 import { useSignalCoalesced } from '@/lib/renderer/signals/use-signal-coalesced'
@@ -123,22 +121,17 @@ export function PositionSection({ nodeId, initialNode, readOnly }: PositionSecti
   const commitGeomAxis = useCallback(
     async (axis: 'x' | 'y' | 'rotation', value: number) => {
       if (readOnly) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(nodeId)
+      if (!before) return
       const target = axis === 'x' ? { x: value } : axis === 'y' ? { y: value } : { rotation: value }
-      await commitNodeGeometry(nodeId, before, target, pid)
+      await commitNodeGeometry(nodeId, before, target)
     },
     [readOnly, nodeId],
   )
 
   // Parent layout state — drives optional grid-placement + align-self UI.
-  const doc = useSnapshot(docProxy)
   const parentId = (initialNode as { parentId?: string }).parentId
-  const parentNode =
-    parentId && doc.currentPageId
-      ? (doc.pageMap.get(doc.currentPageId)?.objects[parentId] as PenpotNode | undefined)
-      : undefined
+  const parentNode = useNode(parentId) as PenpotNode | undefined
   const parentMode: LayoutMode | null = parentNode
     ? getLayoutMode(parentNode as RectLikeNode)
     : null
@@ -165,9 +158,8 @@ export function PositionSection({ nodeId, initialNode, readOnly }: PositionSecti
   const commitGridCell = useCallback(
     async (patch: Partial<GridCell>) => {
       if (readOnly || !parentId || parentMode !== 'grid') return
-      const parentBefore = getCommittedNodeOnActivePage(parentId)
-      const pid = getActiveOrSinglePageId()
-      if (!parentBefore || !pid) return
+      const parentBefore = getNode(parentId)
+      if (!parentBefore) return
       const parentRec = parentBefore as { layoutGridCells?: Record<string, GridCell> }
       const cells: Record<string, GridCell> = { ...(parentRec.layoutGridCells ?? {}) }
       const existing = findCellForChild(cells, nodeId)
@@ -188,7 +180,6 @@ export function PositionSection({ nodeId, initialNode, readOnly }: PositionSecti
         parentId,
         parentBefore,
         { layoutGridCells: cells } as Partial<PenpotNode>,
-        pid,
       )
     },
     [readOnly, parentId, parentMode, nodeId],
@@ -234,14 +225,12 @@ export function PositionSection({ nodeId, initialNode, readOnly }: PositionSecti
         await commitGridCell({ alignSelf: v as GridCell['alignSelf'] })
         return
       }
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(nodeId)
+      if (!before) return
       await commitNodePartialUpdate(
         nodeId,
         before,
         { layoutItemAlignSelf: v } as unknown as Partial<PenpotNode>,
-        pid,
       )
     },
     [readOnly, parentMode, nodeId, commitGridCell],
@@ -276,14 +265,12 @@ export function PositionSection({ nodeId, initialNode, readOnly }: PositionSecti
     if (readOnly || parentMode == null) return
     const next = !absoluteDraft
     setAbsoluteDraft(next)
-    const before = getCommittedNodeOnActivePage(nodeId)
-    const pid = getActiveOrSinglePageId()
-    if (!before || !pid) return
+    const before = getNode(nodeId)
+    if (!before) return
     await commitNodePartialUpdate(
       nodeId,
       before,
       { layoutItemAbsolute: next } as Partial<PenpotNode>,
-      pid,
     )
   }, [readOnly, parentMode, nodeId, absoluteDraft])
 

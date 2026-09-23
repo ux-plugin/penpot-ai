@@ -3,16 +3,13 @@ import type { Stroke } from 'penpot-exporter/types'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
-import {
-  commitNodePartialUpdate,
-  getCommittedNodeOnActivePage,
-} from '../../../renderer/properties/commit-node-properties'
+import { commitNodePartialUpdate } from '../../../renderer/properties/commit-node-properties'
 import {
   DEFAULT_STROKE,
   MAX_STROKES,
   type RectLikeNode,
 } from '../../../renderer/properties/panel-utils'
-import { getActiveOrSinglePageId } from '../../../renderer/store/doc-proxy'
+import { getNode } from '../../../doc'
 import { StrokeRow } from './StrokeRow'
 import { TokenBinding } from '../tokens/TokenBinding'
 import { useColorEditor } from '../use-color-editor'
@@ -40,14 +37,12 @@ export function StrokesSection({ nodeId, readOnly, initialNode }: StrokesSection
   const commitStrokes = useCallback(
     async (next: Stroke[]) => {
       if (readOnly) return
-      const before = getCommittedNodeOnActivePage(nodeId)
-      const pid = getActiveOrSinglePageId()
-      if (!before || !pid) return
+      const before = getNode(nodeId)
+      if (!before) return
       await commitNodePartialUpdate(
         nodeId,
         before,
         { strokes: next },
-        pid,
       )
     },
     [readOnly, nodeId],

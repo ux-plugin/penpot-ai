@@ -5,12 +5,11 @@
  * The editing *mode* lives in the canvas machine (`textEditing` state). These
  * helpers drive the low-level signals the render loop reads (`textEditorActive`
  * etc.), focus/dispose the WASM editor, and on exit export the edited content
- * back into the JS document model via the normal `applyChanges` pipeline so
- * docProxy / worker / history stay consistent.
+ * back into the document via the normal `applyChanges` pipeline so
+ * records / worker / history stay consistent.
  */
 
 import type { WasmModule } from '../wasm-types'
-import type { Change } from 'penpot-exporter/types'
 import {
   textEditorFocus,
   textEditorBlur,
@@ -38,7 +37,7 @@ import {
   currentStyles,
   textEditorIsEmpty,
 } from '../signals/text-editor'
-import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
+import { del, getNode, mod, type Node } from '../../doc'
 import { getSelectedIdsSet, setSelectedIds } from '../store/document-selection'
 import { viewport as viewportSignal } from '../signals/pointer'
 import { applyChanges } from '../../page-crud'
@@ -99,11 +98,7 @@ export function startTextEdit(module: WasmModule, shapeId: string): boolean {
 
 /** Read a shape's selrect (world coords) + rotation from the document model. */
 function getShapeGeom(shapeId: string): { selrect: Selrect; rotation: number } | null {
-  const pageId = getActiveOrSinglePageId()
-  if (!pageId) return null
-  const node = getPage(pageId)?.objects[shapeId] as
-    | { selrect?: Selrect; rotation?: number }
-    | undefined
+  const node = getNode(shapeId) as { selrect?: Selrect; rotation?: number } | undefined
   if (!node?.selrect) return null
   return { selrect: node.selrect, rotation: node.rotation ?? 0 }
 }
@@ -206,7 +201,7 @@ interface Selrect {
  * clip bounds both follow the selrect, so without this, text typed past the
  * original box is clipped at a tile edge and the caret falls outside the rendered
  * region (invisible). We read the laid-out size from the WASM editor and push a
- * geometry-only `mod-obj` (selrect/points/width/height) — no `content`, so the
+ * geometry-only `mod` (selrect/points/width/height) — no `content`, so the
  * live editor buffer and cursor are untouched. Content is synced on commit.
  */
 /** Selrect plus the derived corner coords the document model stores. */
@@ -231,11 +226,7 @@ interface AutoSize {
  * grow and to re-assert the final size on commit.
  */
 export function computeAutoSize(module: WasmModule, shapeId: string): AutoSize | null {
-  const pageId = getActiveOrSinglePageId()
-  if (!pageId) return null
-  const node = getPage(pageId)?.objects[shapeId] as
-    | { selrect?: Selrect; growType?: string }
-    | undefined
+  const node = getNode(shapeId) as { selrect?: Selrect; growType?: string } | undefined
   const sel = node?.selrect
   if (!sel) return null
   const growType = node.growType ?? 'fixed'
@@ -258,23 +249,15 @@ export function computeAutoSize(module: WasmModule, shapeId: string): AutoSize |
 }
 
 export function syncTextEditGeometry(module: WasmModule, shapeId: string): void {
-  const pageId = getActiveOrSinglePageId()
-  if (!pageId) return
   const geom = computeAutoSize(module, shapeId)
   if (!geom) return
-  const sel = (getPage(pageId)?.objects[shapeId] as { selrect?: Selrect } | undefined)?.selrect
+  const sel = (getNode(shapeId) as { selrect?: Selrect } | undefined)?.selrect
 
   // Skip when nothing changed, to avoid per-frame applyChanges churn.
   if (sel && Math.abs(geom.width - sel.width) < 0.5 && Math.abs(geom.height - sel.height) < 0.5) {
     return
   }
-  const change = {
-    type: 'mod-obj',
-    id: shapeId,
-    pageId,
-    operations: [{ type: 'assign', value: geom }],
-  } as unknown as Change
-  void applyChanges([change])
+  void applyChanges([mod('node', shapeId, geom)])
 }
 
 /** Minimal shape view of a text leaf/paragraph style we carry across a commit. */
@@ -446,16 +429,15 @@ export function commitTextEdit(module: WasmModule, shapeId: string): void {
   // editor against cross-shape corruption.
   if (textEditorShapeId.peek() !== shapeId) return
   const exported = textEditorExportContent(module)
-  const pageId = getActiveOrSinglePageId()
+  const node = getNode(shapeId) as { content?: unknown } | undefined
 
-  if (pageId) {
+  if (node) {
     // Concatenate everything typed; an empty result means the user created the
     // box and left without typing (or deleted all text) — remove the shape
     // rather than leaving an empty box behind (matches Penpot/Figma).
     const typed = (exported ?? []).flat().join('')
     if (typed.length === 0) {
-      const change = { type: 'del-obj', id: shapeId, pageId } as unknown as Change
-      void applyChanges([change])
+      void applyChanges([del('node', shapeId)])
       const selected = getSelectedIdsSet()
       if (selected.has(shapeId)) {
         const next = new Set(selected)
@@ -463,13 +445,12 @@ export function commitTextEdit(module: WasmModule, shapeId: string): void {
         setSelectedIds(next)
       }
     } else if (exported) {
-      const node = getPage(pageId)?.objects[shapeId] as { content?: unknown } | undefined
       // Prefer the styled export (per-range styling survives the commit); fall
       // back to the text-only rebuild if it's unavailable.
       const styled = textEditorExportStyled(module)
       const content = styled
-        ? buildContentFromStyled(styled, node?.content)
-        : rebuildTextContent(node?.content, exported)
+        ? buildContentFromStyled(styled, node.content)
+        : rebuildTextContent(node.content, exported)
       // Re-assert the final auto-size geometry with the content. The commit only
       // wrote `content` before, so re-serializing it reverted the box to a stale
       // single-line size and clipped any lines added after a break (auto-width/
@@ -477,13 +458,7 @@ export function commitTextEdit(module: WasmModule, shapeId: string): void {
       const value: Record<string, unknown> = { content }
       const geom = computeAutoSize(module, shapeId)
       if (geom) Object.assign(value, geom)
-      const change = {
-        type: 'mod-obj',
-        id: shapeId,
-        pageId,
-        operations: [{ type: 'assign', value }],
-      } as unknown as Change
-      void applyChanges([change])
+      void applyChanges([mod('node', shapeId, value as Partial<Node>)])
     }
   }
 

@@ -12,12 +12,10 @@
  */
 
 import { useCallback, useState } from 'react'
-import { useSnapshot } from 'valtio'
 import { ChevronDown, ChevronRight, RotateCcw, Unlink } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
-import { getCommittedNodeOnActivePage } from '@/lib/renderer/properties/commit-node-properties'
-import { docProxy } from '@/lib/renderer/store/doc-proxy'
+import { useNode } from '@/lib/doc'
 import { isComponentCopyRoot, isComponentMain } from '@/lib/worker/geometry/shapes'
 import {
   createComponentFromFrame,
@@ -97,9 +95,7 @@ function PropControl({
 }
 
 export function ComponentSection({ nodeId, readOnly }: ComponentSectionProps) {
-  // Track doc changes so props, overrides and role reflect undo/redo + edits.
-  useSnapshot(docProxy)
-  const node = getCommittedNodeOnActivePage(nodeId)
+  const node = useNode(nodeId)
   const [collapsed, setCollapsed] = useState(false)
 
   const isMain = isComponentMain(node)

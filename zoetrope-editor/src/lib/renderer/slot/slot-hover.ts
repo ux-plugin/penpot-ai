@@ -13,7 +13,7 @@
  * round-trip and stays in step with the pointer.
  */
 import { findSlotAtPoint } from '../../components/LayersPanel/reparent'
-import type { IndexedShape } from '../../worker/types'
+import type { PageObjects } from '../../doc'
 import type { Point } from 'penpot-exporter/types'
 
 export interface HoveredSlot {
@@ -33,7 +33,7 @@ export interface HoveredSlot {
  * in place for the content — so there is no separate emptiness test.
  */
 export function resolveHoveredSlot(
-  objects: Record<string, IndexedShape> | undefined,
+  objects: PageObjects | undefined,
   point: Point | null | undefined,
   isDragging: boolean,
 ): HoveredSlot | null {

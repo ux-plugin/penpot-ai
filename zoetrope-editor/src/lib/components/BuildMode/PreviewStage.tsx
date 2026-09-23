@@ -20,11 +20,10 @@
 
 import { CodeBlock } from '../CodeBlock'
 import { useCallback, useMemo, useState } from 'react'
-import { useSnapshot } from 'valtio'
+import { computed } from '@preact/signals-core'
 import { cn } from '@/lib/utils'
-import type { IndexedPage } from '../../worker/types'
-import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
-import { setSelectedIds } from '../../renderer/store/document-selection'
+import { getNode, useCurrentPageId, useField, useNode, useSignal } from '../../doc'
+import { setSelectedIds, useSelectedIds } from '../../renderer/store/document-selection'
 import { nodesToPresentation, findPNode } from '../../renderer/interactions/document/nodes-to-presentation'
 import { emptyPageInteractions, cellRef, type PageInteractions } from '../../renderer/interactions/ir'
 import { emitReactComponent } from '../../renderer/interactions/compile/emit-react'
@@ -37,8 +36,6 @@ import {
   type ActivityEntry,
 } from '../../renderer/interactions/preview/runtime'
 import { StatePanel } from './StatePanel'
-
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
 /**
  * The preview surface contributes NOTHING visual. Appearance comes from the
@@ -64,31 +61,31 @@ function componentNameFor(raw: string | undefined): string {
 }
 
 export function PreviewStage() {
-  const doc = useSnapshot(docProxy)
   const [tab, setTab] = useState<'preview' | 'code'>('preview')
 
-  const pid = doc.currentPageId ?? getActiveOrSinglePageId()
-  const page = (pid ? doc.pageMap.get(pid) : undefined) as IndexedPage | undefined
+  const pid = useCurrentPageId()
+  const pageName = useField('page', pid, 'name')
 
-  const full = useMemo(() => (page ? nodesToPresentation(page) : null), [page])
-  const ir: PageInteractions = useMemo(() => page?.interactions ?? emptyPageInteractions(), [page])
+  // A computed tracks every node and child list the walk reads.
+  const full = useSignal(useMemo(() => computed(() => (pid ? nodesToPresentation(pid) : null)), [pid]))
+  const stored = useField('page', pid, 'interactions')
+  const ir: PageInteractions = useMemo(() => stored ?? emptyPageInteractions(), [stored])
 
   // Selection DRIVES the stage: you see a component's contents by selecting it.
   // There is no whole-page fallback — with nothing (or several things) selected
   // the stage stays empty and says so, rather than quietly showing the page.
-  const selectedIds = useMemo(() => new Set(doc.selectedIds), [doc.selectedIds])
+  const selectedIds = useSelectedIds()
   const selectedId = selectedIds.size === 1 ? Array.from(selectedIds)[0] : null
   const root = useMemo(
     () => (full && selectedId ? findPNode(full, selectedId) : null),
     [full, selectedId],
   )
 
-  const selectedShape = selectedId ? page?.objects[selectedId] : undefined
+  const selectedShape = useNode(selectedId)
   const scopeName = root ? (selectedShape?.name ?? 'selection') : null
-  // Parent to step back out to. The root frame isn't offered — it IS the page,
-  // and "select the page" is what the empty state already covers.
-  const parentId = selectedShape?.parentId
-  const parent = parentId && parentId !== ROOT_UUID ? page?.objects[parentId] : undefined
+  // Parent to step back out to. A top-level node has none — the page is what
+  // the empty state already covers.
+  const parent = useNode(selectedShape?.parentId)
 
   /** Why the stage is empty — a selection prompt, not a "nothing here" dead end. */
   const emptyReason = !full
@@ -101,7 +98,7 @@ export function PreviewStage() {
 
   // The emitted component takes the SELECTED layer's name — selecting "Card"
   // should produce `export function Card()`, not the page name.
-  const name = componentNameFor(selectedShape?.name ?? page?.name)
+  const name = componentNameFor(selectedShape?.name ?? pageName)
   const code = useMemo(() => {
     if (!root) return ''
     try {
@@ -134,10 +131,7 @@ export function PreviewStage() {
   const env = useMemo(() => (rt ? buildEnv(ir, rt) : {}), [ir, rt])
 
   const inView = useCallback((nodeId: string) => !!root && !!findPNode(root, nodeId), [root])
-  const nameOf = useCallback(
-    (nodeId: string) => page?.objects[nodeId]?.name ?? nodeId.slice(0, 8),
-    [page],
-  )
+  const nameOf = useCallback((nodeId: string) => getNode(nodeId)?.name ?? nodeId.slice(0, 8), [])
 
   /**
    * The preview is a RUNNING app, so a plain click belongs to the app: it falls

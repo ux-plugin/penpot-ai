@@ -1,8 +1,10 @@
 # State Architecture: Zustand + Valtio + Signals + XState
 
-This document describes the intended state architecture for the
-`zoetrope-editor` workspace layer and where each piece of functionality
-lands today vs. where it is headed.
+> 2026-09-23: the document layer described below (`docProxy`, valtio,
+> `IndexedPage`, `processChanges`) is gone. The document is flat records in
+> signals under `src/lib/doc/` — see `state-model.md`, `history-model.md` and
+> `state-cut-plan.md`. Valtio remains only for `scene3dProxy` and the width
+> edit bridge. The rest of this document (zustand, signals, XState) stands.
 
 ---
 
