@@ -37,13 +37,28 @@ const MODE_TABS: ModeTab[] = [
   { mode: 'build', label: 'Build', Icon: Blocks },
 ]
 
-/** Compact zoom widget: − / current % / +. The percentage reads the live viewport
+/** Compact zoom widget: X / Y of the viewport's top-left in document
+ *  coordinates, then − / current % / +. The percentage reads the live viewport
  *  zoom and, when clicked, resets to 100%. Zooms about the canvas centre. */
 function ZoomControl() {
   const vp = useSignalCoalesced(viewport)
   const pct = Math.round((vp?.zoom ?? 1) * 100)
+  const x = Math.round(vp?.panX ?? 0)
+  const y = Math.round(vp?.panY ?? 0)
   return (
     <div className="flex items-center" role="group" aria-label="Zoom">
+      <span
+        className="mr-1 flex gap-2 text-sm tabular-nums text-muted-foreground"
+        aria-label={`Viewport at X ${x}, Y ${y}`}
+        title="Viewport top-left, in document coordinates"
+      >
+        <span>
+          X <span className="text-foreground">{x}</span>
+        </span>
+        <span>
+          Y <span className="text-foreground">{y}</span>
+        </span>
+      </span>
       <Button
         type="button"
         variant="ghost"

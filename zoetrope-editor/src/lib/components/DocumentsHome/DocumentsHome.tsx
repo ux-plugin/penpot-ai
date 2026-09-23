@@ -11,7 +11,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { FilePlus2, MoreHorizontal, Search } from 'lucide-react'
+import { FilePlus2, MoreHorizontal, Search, Sparkles } from 'lucide-react'
+import type { PenpotDocument } from 'penpot-exporter/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -192,8 +193,8 @@ export function DocumentsHome() {
 
   const open = useCallback((id: string) => navigate({ kind: 'doc', id }), [])
 
-  const onNew = useCallback(async () => {
-    const summary = await createDocument()
+  const onNew = useCallback(async (doc?: PenpotDocument) => {
+    const summary = await createDocument(doc)
     // A document made while a project is selected lands in that project, which
     // is what "New document" inside a folder is expected to mean.
     if (scope.kind === 'project') {
@@ -201,6 +202,11 @@ export function DocumentsHome() {
     }
     navigate({ kind: 'doc', id: summary.id })
   }, [scope])
+
+  const onShowcase = useCallback(async () => {
+    const { showcaseDocument } = await import('../../dev/showcase-document')
+    await onNew(showcaseDocument())
+  }, [onNew])
 
   const onArchive = useCallback(
     async (doc: DocumentSummary, archived: boolean) => {
@@ -324,7 +330,13 @@ export function DocumentsHome() {
             className="pl-8"
           />
         </div>
-        <Button type="button" className="ml-auto" onClick={() => void onNew()}>
+        {import.meta.env.DEV && (
+          <Button type="button" variant="outline" className="ml-auto" onClick={() => void onShowcase()}>
+            <Sparkles className="size-4" />
+            Showcase
+          </Button>
+        )}
+        <Button type="button" className={import.meta.env.DEV ? undefined : 'ml-auto'} onClick={() => void onNew()}>
           <FilePlus2 className="size-4" />
           New document
         </Button>

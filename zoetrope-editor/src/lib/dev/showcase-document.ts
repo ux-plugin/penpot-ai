@@ -1,10 +1,9 @@
 /**
- * Dev-only showcase seeder (`?seed=showcase`).
+ * Dev-only showcase document, offered as "Showcase" on the documents screen.
  *
- * Materialises the render-core parity fixture `build_showcase_scene`
- * (render-core/src/parity.rs) into a REAL, editable, persisted zoetrope-editor
- * document via the normal store pipeline (`applyChanges` → commit → records →
- * renderer sync). The point is a single complex document — shapes at different
+ * The render-core parity fixture `build_showcase_scene`
+ * (render-core/src/parity.rs) as a REAL, editable zoetrope-editor document,
+ * stored like any other. The point is a single complex document — shapes at different
  * depths carrying every effect (gradients, layer/background blur, multiply
  * blend, drop/inner shadow, strokes, masks, clip frames, glass) — that both the
  * classic (WebGPU) and hybrid (WebGL2) vello backends render, so the two can be
@@ -16,8 +15,7 @@
  * `x/y/width/height`.
  */
 
-import { applyChanges, createNewDocument, setDocument } from '../page-crud'
-import { addSubtree, beginGroup, endGroup, getActiveOrSinglePageId } from '../doc'
+import { createNewDocument } from '../page-crud'
 import {
   createRect,
   createCircle,
@@ -26,13 +24,10 @@ import {
   createPolyline,
   createText,
 } from '../renderer/node-factory'
-import type { PenpotNode, Fill, Stroke, Shadow, Blur } from 'penpot-exporter/types'
+import type { PenpotDocument, PenpotNode, Fill, Stroke, Shadow, Blur } from 'penpot-exporter/types'
 
 /** Loose handle for spreading effect fields the factory options don't cover. */
 type AnyNode = PenpotNode & Record<string, unknown>
-
-/** Undo group: the whole seed is one frame. */
-const SEED_TX = 'seed-showcase'
 
 // ── Gradients (mirror render-core parity.rs linear/radial/angular) ──────────
 const linearGrad = () => ({
@@ -94,19 +89,8 @@ const showcaseGlass = () => ({
   hidden: false,
 })
 
-/**
- * Build the 13 showcase shapes and commit them at the page's top level, one
- * subtree per commit (so each lands after the previous), grouped into one undo
- * frame. Returns the number of top-level shapes added.
- */
-export async function seedShowcaseDocument(): Promise<number> {
-  // Deterministic: reset to a blank document first so `?seed=showcase` always
-  // yields exactly the showcase, never a second copy stacked on a persisted one.
-  await setDocument(createNewDocument())
-
-  const page = getActiveOrSinglePageId()
-  if (!page) return 0
-
+/** A new document named "Showcase" whose one page holds the 13 showcase shapes at its top level. */
+export function showcaseDocument(): PenpotDocument {
   const tops: PenpotNode[] = []
 
   /** Queue a top-level subtree (`children` nest). */
@@ -249,9 +233,7 @@ export async function seedShowcaseDocument(): Promise<number> {
     add(n)
   }
 
-  // One commit per subtree: each placement reads the siblings already committed.
-  beginGroup(SEED_TX)
-  for (const top of tops) await applyChanges(addSubtree(top, { page }))
-  endGroup(SEED_TX)
-  return tops.length
+  const doc = createNewDocument()
+  const [page] = doc.children ?? []
+  return { ...doc, name: 'Showcase', children: [{ ...page, children: tops }] }
 }

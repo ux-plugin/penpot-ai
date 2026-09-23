@@ -23,6 +23,7 @@ import {
 } from '../doc'
 import type { CommitInfo } from '../doc/commits'
 import { encode, splitKey } from '../doc/commits'
+import type { PenpotDocument } from 'penpot-exporter/types'
 import { createNewDocument } from '../page-crud'
 import { documentModel } from '../renderer/store/document-model'
 import { summarizeImported, type DocumentSummary } from './document-summary'
@@ -66,12 +67,12 @@ export async function openDocument(id: string): Promise<boolean> {
 }
 
 /**
- * Add a blank document to the library. It is deliberately *not* opened here —
- * callers navigate to its id and the route effect loads it, so there is
- * exactly one path into a document.
+ * Add `doc` (a blank one by default) to the library. It is deliberately *not*
+ * opened here — callers navigate to its id and the route effect loads it, so
+ * there is exactly one path into a document.
  */
-export async function createDocument(): Promise<DocumentSummary> {
-  const im = importDocument(createNewDocument())
+export async function createDocument(doc: PenpotDocument = createNewDocument()): Promise<DocumentSummary> {
+  const im = importDocument(doc)
   return getPersistenceProvider().create(entriesOfImported(im), summarizeImported(im))
 }
 

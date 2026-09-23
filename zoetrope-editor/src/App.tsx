@@ -39,18 +39,6 @@ function readDebugPipFromUrl(): boolean {
   return v === '1' || v === 'true'
 }
 
-/**
- * `?seed=showcase` (dev only): after the initial document loads, materialise the
- * render-core showcase fixture as real, editable shapes so classic (WebGPU) and
- * hybrid (WebGL2) vello can be A/B-compared on identical content. Drops out of
- * production builds entirely.
- */
-function readSeedFromUrl(): string | null {
-  if (!import.meta.env.DEV) return null
-  if (typeof window === 'undefined') return null
-  return new URLSearchParams(window.location.search).get('seed')
-}
-
 const BUILD_TABS = [
   { id: 'components', label: 'Components' },
   { id: 'data', label: 'Data' },
@@ -147,11 +135,6 @@ function Editor() {
         return
       }
       if (import.meta.env.DEV) console.debug(`[boot] document ${id} loaded at ${Math.round(performance.now())}ms`)
-      if (import.meta.env.DEV && readSeedFromUrl() === 'showcase') {
-        const { seedShowcaseDocument } = await import('./lib/dev/seed-showcase')
-        await seedShowcaseDocument()
-        console.debug(`[boot] showcase seeded at ${Math.round(performance.now())}ms`)
-      }
     })()
   }, [renderer, currentRoute])
 
