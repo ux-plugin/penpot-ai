@@ -74,6 +74,7 @@ export default defineConfig(({ command }) => ({
   // discover them mid-session, re-optimize, and tear React across the
   // already-loaded page. Including them makes the first optimize pass complete.
   optimizeDeps: {
+    entries: ['index.html'],
     include: [
       'react',
       'react-dom',
