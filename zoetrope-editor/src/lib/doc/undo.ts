@@ -42,11 +42,14 @@ function top(): Branch {
 
 export const canUndo = signal(false)
 export const canRedo = signal(false)
+/** A group is open: the frame on top is still taking commits. */
+export const groupOpen = signal(false)
 
 function publish(): void {
   const b = top()
   canUndo.value = b.cursor > 0
   canRedo.value = b.cursor < b.frames.length
+  groupOpen.value = b.group !== null
 }
 
 const GROUP_TIMEOUT_MS = 20_000
@@ -132,6 +135,7 @@ export function beginGroup(id: string, timeoutMs = GROUP_TIMEOUT_MS): void {
     b.group = { id, timer: null }
   }
   b.group.timer = setTimeout(() => endGroup(id), timeoutMs)
+  groupOpen.value = true
 }
 
 /** Close the open group. With `id`, only if that group is the open one. */
@@ -141,6 +145,7 @@ export function endGroup(id?: string): void {
   if (id !== undefined && b.group.id !== id) return
   clearTimer(b)
   b.group = null
+  groupOpen.value = false
 }
 
 /** Group commits that arrive within `idleMs` of each other (a scrub, a colour drag). */

@@ -51,6 +51,7 @@ export function resetEffects(): void {
 
 export interface ChangesAppliedEvent {
   applied: readonly Applied[]
+  label?: string
   touched: Record<Kind, Set<string>>
   docMeta: readonly DocMetaChange[]
   fromHistory: boolean
@@ -139,6 +140,7 @@ export async function commitChanges(params: CommitParams): Promise<void> {
 
   const event: ChangesAppliedEvent = {
     applied,
+    label: params.label,
     touched: touchedOf(applied),
     docMeta,
     fromHistory,

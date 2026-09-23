@@ -19,6 +19,7 @@ import {
   nodesOfPage,
   pageObjects,
   pagesInOrder,
+  type Imported,
   type LocalChange,
   type Node,
   type Page,
@@ -74,9 +75,14 @@ export class DocumentModel {
     }
   }
 
+  /** Load an exporter document (a new document, a seed, a file). */
   async loadDocument(doc: PenpotDocument): Promise<void> {
+    await this.loadRecords(importDocument(doc))
+  }
+
+  /** Load a document's records into the editor and show its first page. */
+  async loadRecords(imported: Imported): Promise<void> {
     clearHistory()
-    const imported = importDocument(doc)
     loadImported(imported)
     const firstPageId = imported.pages[0]?.id ?? null
     currentPageId.value = firstPageId

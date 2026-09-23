@@ -100,10 +100,21 @@ export function addsOf(im: Imported): Change[] {
   return out
 }
 
-/** Replace the live document with `im`: no history, no subscribers. */
+const replaced = new Set<() => void>()
+
+/** Called after `loadImported` swaps the whole document. Returns a disposer. */
+export function onDocumentReplaced(handler: () => void): () => void {
+  replaced.add(handler)
+  return () => {
+    replaced.delete(handler)
+  }
+}
+
+/** Replace the live document with `im`: no history, no change subscribers. */
 export function loadImported(im: Imported): void {
   clearTables()
   applyAll(tables, addsOf(im))
   rebuildDerived()
   metaSignal.value = im.meta
+  for (const h of replaced) h()
 }

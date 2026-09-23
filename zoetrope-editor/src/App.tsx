@@ -8,12 +8,7 @@ import { ComponentDragOverlay } from './lib/components/Overlay/ComponentDragOver
 import { LayersPanel } from './lib/components/LayersPanel/LayersPanel'
 import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { undo, redo } from './lib/page-crud'
-import {
-  activeDocumentId,
-  getPersistenceProvider,
-  openDocument,
-  startDocumentAutosave,
-} from './lib/persistence'
+import { activeDocumentId, openDocument, storeError } from './lib/persistence'
 import { navigate, route, startRouting } from './lib/routing/route'
 import { DocumentsHome } from './lib/components/DocumentsHome/DocumentsHome'
 import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
@@ -136,7 +131,6 @@ function Editor() {
   const renderer = useWorkspaceStore((s) => s.renderer)
   const currentRoute = useSignalValue(route)
   const loadedIdRef = useRef<string | null>(null)
-  const autosaveDisposeRef = useRef<(() => void) | null>(null)
   useEffect(() => {
     if (!renderer || currentRoute?.kind !== 'doc') return
     const { id } = currentRoute
@@ -148,7 +142,7 @@ function Editor() {
         loadedIdRef.current = null
         navigate(
           { kind: 'home' },
-          { replace: true, notice: `That document no longer exists (${id}).` },
+          { replace: true, notice: storeError.peek() ?? `That document no longer exists (${id}).` },
         )
         return
       }
@@ -158,17 +152,8 @@ function Editor() {
         await seedShowcaseDocument()
         console.debug(`[boot] showcase seeded at ${Math.round(performance.now())}ms`)
       }
-      autosaveDisposeRef.current ??= startDocumentAutosave(getPersistenceProvider())
     })()
   }, [renderer, currentRoute])
-
-  useEffect(
-    () => () => {
-      autosaveDisposeRef.current?.()
-      autosaveDisposeRef.current = null
-    },
-    [],
-  )
 
   // Once back online, retry any fonts that fell back to the default while offline.
   useFontReconnect()

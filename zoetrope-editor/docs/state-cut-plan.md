@@ -1,7 +1,8 @@
 # State cut — plan
 
-Status: steps a–d landed 2026-09-23 (`src/lib/doc/`). Builds
-`state-model.md` and `history-model.md`. Steps e and f open.
+Status: steps a–e landed 2026-09-23 (`src/lib/doc/`,
+`src/lib/persistence/`). Builds `state-model.md` and `history-model.md`.
+Step f open.
 
 ## Rules
 
@@ -149,13 +150,13 @@ Deleted: `history/journal/*`, `history/versions/*`, `focus-pending.ts`,
 ## 8. Commits and SQLite `doc/commits/`
 
 Tables: `objects(hash, bytes)`, `commits(id, parent, time, label, root)`,
-`commit_nodes(commit, kind, id)`, `heads(name, commit)`.
+`commit_records(kind, id, commit_id)`, `heads(name, commit_id)`.
 
 - after each frame: serialize touched records, hash, update trie, write one
   commit row, off the sync path, batched per animation frame
 - `checkout(commit)`: diff head vs commit → change set → `commitChanges`
 - `historyOf(kind, id)`: `commit_nodes`
-- web: `@sqlite.org/sqlite-wasm`, OPFS, in a worker; desktop: SQLite
+- `@sqlite.org/sqlite-wasm`, OPFS, in a worker, on web and desktop alike
 
 Deleted: `persistence/kv-indexeddb.ts` document envelope, JSON save of the
 whole document. The document list becomes a `docs` table.
@@ -212,6 +213,29 @@ carries behaviour as flat `records` per kind; `meta.stores` and the
 only user was the interactions aspect). Not built: cell references inside
 expressions are not declared to the registry (`expr()` in §2), so `readersOf`
 cannot yet answer "who reads this cell".
+
+What e built: `doc/commits/` is the history core with no browser in it.
+`tree.ts` is a content-addressed hash tree over `kind/id` → sha256 of the
+record's canonical JSON: 16-way on `sha256(key)`, leaves up to 32 entries,
+so one state has one root. `DocDb` holds one document: a commit is
+`sha256({parent, root, time, label})`, a commit that leaves the root
+unchanged is skipped, a `full` commit replaces the state, and
+`commit_records` answers `historyOf`. `persistence/` stores one SQLite file per
+document plus a library database (`documents`, `projects`, `settings`),
+behind `StoreBackend` in a worker. Each document is its own `opfs-sahpool`
+pool; at most one document pool is unpaused (LRU, `maxOpenDocuments`), the
+library pool always is. The worker holds the Web Lock `zoetrope-store` before
+it touches OPFS: a failed sahpool install calls `removeVfs`, which deletes the
+pool's files, so a second tab is refused ("open in another tab") and a
+reload waits up to 5 s for the old worker. The persister marks each applied
+change's key, writes after 200 ms of quiet and never inside an open undo
+group (`groupOpen`), forces on `detach` / `flush` / `pagehide`, and writes a
+full commit on `onDocumentReplaced` (seed, import). `checkout(commit)` diffs
+the stored state against the live records and applies deletes, adds and
+`replace-meta` as one undoable edit. Hard cut: IndexedDB documents are not
+read; `.penpot` export stays a one-way boundary. Not built: a history UI
+(`documentLog`, `recordHistory`, `checkout` are API only); desktop OPFS in
+Electron is unverified.
 
 ## Decide before a
 

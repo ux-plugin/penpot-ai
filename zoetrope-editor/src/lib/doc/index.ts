@@ -30,13 +30,14 @@ export type { Placement } from './tree'
 export { orderBetween, orderAt, initialOrders } from './order'
 export { pageObjects, nodesOfPage, treeOf, exportDocument, exportPage, exportRecords, rootFrame, toWasmNode, pagesInOrder } from './export'
 export type { PageObjects, TreeNode, DepthNode } from './export'
-export { importDocument, importPage, loadImported, addsOf, BEHAVIOUR_KINDS } from './import'
+export { importDocument, importPage, loadImported, onDocumentReplaced, addsOf, BEHAVIOUR_KINDS } from './import'
 export type { Imported, DocumentRecords, BehaviourKind } from './import'
 export {
   undo,
   redo,
   canUndo,
   canRedo,
+  groupOpen,
   beginGroup,
   endGroup,
   markInteraction,

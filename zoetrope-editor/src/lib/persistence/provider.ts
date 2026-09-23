@@ -1,25 +1,21 @@
 /**
- * provider — the capability-selected persistence provider for this session.
- *
- * Its own module rather than part of `index.ts` so `document-session` can reach
- * the singleton without importing the package barrel, which would close an import
- * cycle (barrel → session → barrel).
+ * The document store for this session, chosen by what the environment offers:
+ * SQLite over OPFS in a worker when both exist, nothing otherwise.
  */
+import { NoneDocumentStore, type DocumentStore } from './document-store'
+import { WorkerDocumentStore } from './worker-store'
 
-import {
-  selectPersistenceProvider,
-  type DocumentPersistenceProvider,
-} from './document-persistence'
-import { createIndexedDbKvStore } from './kv-indexeddb'
+let cached: DocumentStore | null = null
 
-let cached: DocumentPersistenceProvider | null = null
-
-/** The capability-selected provider for this session (memoized). */
-export function getPersistenceProvider(): DocumentPersistenceProvider {
-  return (cached ??= selectPersistenceProvider(createIndexedDbKvStore))
+function canUseOpfs(): boolean {
+  return typeof Worker !== 'undefined' && typeof navigator !== 'undefined' && typeof navigator.storage?.getDirectory === 'function'
 }
 
-/** Tests only: drop the memoized provider so the next call re-selects. */
-export function resetPersistenceProviderForTests(): void {
-  cached = null
+export function getPersistenceProvider(): DocumentStore {
+  return (cached ??= canUseOpfs() ? new WorkerDocumentStore() : new NoneDocumentStore())
+}
+
+/** Tests: use `store` for the rest of the session (`null` re-selects). */
+export function setPersistenceProviderForTests(store: DocumentStore | null): void {
+  cached = store
 }

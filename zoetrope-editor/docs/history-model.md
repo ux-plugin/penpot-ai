@@ -1,7 +1,10 @@
 # History model
 
-Status: decided 2026-09-22. Undo/redo built 2026-09-23 (`src/lib/doc/undo.ts`:
-frames, groups, scratch branches); snapshots and the database are not built.
+Status: decided 2026-09-22. Built 2026-09-23: undo/redo
+(`src/lib/doc/undo.ts`: frames, groups, scratch branches); commits, hash tree
+and the per-document database (`src/lib/doc/commits/`, `src/lib/persistence/`,
+see `state-cut-plan.md` step e). Revert-commit, restore-shape and retention are
+not built.
 Supersedes `history-redesign-plan.md` (journal, lens, rebase) and the
 per-subject `versions/` store, both deleted.
 
@@ -37,7 +40,7 @@ A snapshot is a **commit**: the document state after one edit, with structural
 sharing so an edit costs the size of what changed.
 
 ```
-commit { id, parent, time, label, touched: NodeId[], root: TreeHash }
+commit { id, parent, time, label, root: TreeHash }   touched = commit_records
 object { hash → bytes }          content-addressed: shape blobs, trie nodes
 ```
 
@@ -68,8 +71,9 @@ The store is a blob store plus one index, not a query engine. See
 leaves the document store).
 
 - `objects(hash, bytes)`, `commits(id, parent, time, label, root)`,
-  `commit_nodes(commit, node)` for per-shape history, `heads(name, commit)`.
-- Web: SQLite-WASM over OPFS. Desktop: SQLite. Server: the same tables.
+  `commit_records(kind, id, commit_id)` for per-record history,
+  `heads(name, commit_id)`. One database per document.
+- SQLite-WASM over OPFS on web and desktop. Server: the same tables.
 - Sync later is git push: objects and commits the other side lacks, with a
   revision check on the head for multiplayer.
 - Ruled out by this decision: CRDT stores (they own history), event-log

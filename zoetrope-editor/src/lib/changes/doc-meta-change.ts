@@ -90,7 +90,14 @@ export interface DelComponentChange {
   id: Uuid
 }
 
+/** Replace every document field at once: a checkout of an earlier commit. */
+export interface ReplaceMetaChange {
+  type: 'replace-meta'
+  meta: DocumentMeta
+}
+
 export type DocMetaChange =
+  | ReplaceMetaChange
   | AddTokenChange
   | ModTokenChange
   | DelTokenChange
@@ -126,6 +133,8 @@ export function processDocMetaChange(
   change: DocMetaChange,
 ): DocumentMeta {
   switch (change.type) {
+    case 'replace-meta':
+      return change.meta
     case 'add-token':
       return withTokens(meta, (lib) =>
         mapSetById(lib, change.setId, (set) => {

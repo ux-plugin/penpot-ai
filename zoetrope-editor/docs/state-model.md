@@ -2,8 +2,9 @@
 
 Status: decided 2026-09-22, built 2026-09-23 (`src/lib/doc/`, see
 `state-cut-plan.md`): pages, nodes, cells, bindings, rules, timelines and
-stores are record kinds. Supersedes the "Document layer — Valtio" section of
-`state-architecture.md`. Storage and sync are not built.
+stores are record kinds; storage built (`src/lib/persistence/`). Supersedes
+the "Document layer — Valtio" section of `state-architecture.md`. Sync is not
+built.
 
 ## Three kinds of state, one writer
 
@@ -53,8 +54,9 @@ Packages register their schemas; core never imports a feature.
 
 ## Storage
 
-Own the model, buy the bytes. SQLite-WASM over OPFS on web, SQLite on desktop,
-the same tables on the server: `objects`, `commits`, `commit_nodes`, `heads`.
+Own the model, buy the bytes. SQLite-WASM over OPFS on web and desktop, one
+database per document, the same tables on the server: `objects`, `commits`,
+`commit_records`, `heads`.
 See `history-model.md` for commits and rewind. Ruled out: TinyBase, RxDB,
 Zero, LiveStore, Yjs, Automerge, Loro, Jazz, in-memory SQL.
 

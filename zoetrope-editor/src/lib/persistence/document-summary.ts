@@ -10,16 +10,11 @@
  * shape here means the screen can render honestly — right cell count, real
  * captions — before page thumbnails exist.
  *
- * Counts are derived, not tracked. `save` re-derives on every write, so a summary
- * can never drift from the document it describes — the alternative (incrementing
- * counters at every page/board mutation site) has to be correct everywhere.
+ * Counts are derived, not tracked: every commit re-derives the summary, so it
+ * can never drift from the document it describes.
  */
 
-import type { PenpotDocument, PenpotNode } from 'penpot-exporter/types'
-
-/** The synthetic per-page root frame every page carries; boards are its children.
- *  Mirrors `createNewDocument` in ../page-crud.ts. */
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
+import { children, get, meta, pagesInOrder, type Imported, type Node, type Page } from '../doc'
 
 export interface PageSummary {
   id: string
@@ -60,27 +55,26 @@ export const boardCount = (summary: Pick<DocumentSummary, 'pages'>): number =>
 
 export const pageCount = (summary: Pick<DocumentSummary, 'pages'>): number => summary.pages.length
 
-/** Boards on one page: the `frame` children of that page's root frame. Anything
- *  unshaped counts as zero rather than throwing — a summary is not worth failing
- *  a save over. */
-function countBoards(pageChildren: PenpotNode[] | undefined): number {
-  if (!Array.isArray(pageChildren)) return 0
-  const root = pageChildren.find((node) => node?.id === ROOT_UUID) ?? pageChildren[0]
-  const boards = (root as { children?: PenpotNode[] } | undefined)?.children
-  if (!Array.isArray(boards)) return 0
-  return boards.filter((node) => node?.type === 'frame').length
+function pageSummary(page: Page, i: number, boardCount: number): PageSummary {
+  return { id: page.id, name: page.name || `Page ${i + 1}`, boardCount }
 }
 
-/** Describe a document for the list. Total-defensive: a malformed document
- *  summarizes as an empty one. */
-export function summarize(doc: PenpotDocument): DerivedSummary {
-  const pages = Array.isArray(doc?.children) ? doc.children : []
+const nameOf = (name: unknown): string => (typeof name === 'string' && name ? name : 'Untitled')
+
+/** Describe an imported document for the list. Boards are a page's top-level frames. */
+export function summarizeImported(im: Imported): DerivedSummary {
+  const boards = new Map<string, number>()
+  for (const n of im.nodes) if (!n.parentId && n.type === 'frame') boards.set(n.page, (boards.get(n.page) ?? 0) + 1)
+  const pages = [...im.pages].sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : 0))
+  return { name: nameOf(im.meta.name), pages: pages.map((p, i) => pageSummary(p, i, boards.get(p.id) ?? 0)) }
+}
+
+/** Describe the document in the editor, from the child index (no node scan). */
+export function summarizeLive(): DerivedSummary {
   return {
-    name: typeof doc?.name === 'string' && doc.name ? doc.name : 'Untitled',
-    pages: pages.map((page, i) => ({
-      id: typeof page?.id === 'string' ? page.id : `page-${i}`,
-      name: typeof page?.name === 'string' && page.name ? page.name : `Page ${i + 1}`,
-      boardCount: countBoards(page?.children),
-    })),
+    name: nameOf(meta.peek()?.name),
+    pages: pagesInOrder().map((p, i) =>
+      pageSummary(p, i, children(p.id).filter((id) => (get('node', id) as Node | undefined)?.type === 'frame').length),
+    ),
   }
 }

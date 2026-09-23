@@ -87,6 +87,7 @@ export default defineConfig(({ command }) => ({
       '@codemirror/lang-cpp',
       '@codemirror/autocomplete',
     ],
+    exclude: ['@sqlite.org/sqlite-wasm'],
   },
   build: {
     lib: {

@@ -17,8 +17,11 @@ import { Input } from '@/components/ui/input'
 import {
   boardCount,
   createDocument,
+  deleteDocument,
   getPersistenceProvider,
+  renameDocument,
   pageCount,
+  storeError,
   type DocumentSummary,
   type Project,
 } from '../../persistence'
@@ -163,14 +166,18 @@ export function DocumentsHome() {
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState<Scope>(ALL)
   const notice = useSignalValue(routeNotice)
+  const unavailable = useSignalValue(storeError)
 
   // Reading the store is a subscription to an external system, so state lands in
   // the callback; `alive` drops a load that resolves after an unmount.
   useEffect(() => {
     let alive = true
-    void readLibrary().then((next) => {
-      if (alive) setLibrary(next)
-    })
+    readLibrary().then(
+      (next) => {
+        if (alive) setLibrary(next)
+      },
+      () => undefined,
+    )
     return () => {
       alive = false
     }
@@ -249,7 +256,7 @@ export function DocumentsHome() {
     async (doc: DocumentSummary) => {
       const name = window.prompt('Rename document', doc.name)?.trim()
       if (!name || name === doc.name) return
-      await getPersistenceProvider().rename(doc.id, name)
+      await renameDocument(doc.id, name)
       await refresh()
     },
     [refresh],
@@ -274,7 +281,7 @@ export function DocumentsHome() {
     async (doc: DocumentSummary) => {
       const size = describeSize(doc)
       if (!window.confirm(`Delete “${doc.name}”? It has ${size}. This can't be undone.`)) return
-      await getPersistenceProvider().remove(doc.id)
+      await deleteDocument(doc.id)
       await refresh()
     },
     [refresh],
@@ -324,16 +331,16 @@ export function DocumentsHome() {
       </header>
 
       <div className="flex flex-col gap-7 px-7 pb-14 pt-6">
-        {notice && (
+        {(notice || unavailable) && (
           <div
             role="status"
             className="rounded-lg border border-border bg-muted px-3 py-2 text-sm text-muted-foreground"
           >
-            {notice}
+            {unavailable ?? notice}
           </div>
         )}
 
-        {documents === null ? (
+        {unavailable ? null : documents === null ? (
           <p className="text-sm text-muted-foreground">Loading documents…</p>
         ) : documents.length === 0 ? (
           <div className="flex flex-col items-start gap-3 py-16">
