@@ -1,6 +1,8 @@
 # History redesign plan — scoped selective undo
 
-Status: design, not started. Written 2026-07-25.
+Status: SUPERSEDED 2026-09-22 by `history-model.md` (in-memory undo stack +
+commit snapshots). Kept for the reasoning; do not build from it.
+Written 2026-07-25.
 Supersedes the stack-based model in `src/lib/history/`. See also
 `docs/state-architecture.md`, `docs/tokens-styles-port-plan.md`.
 
