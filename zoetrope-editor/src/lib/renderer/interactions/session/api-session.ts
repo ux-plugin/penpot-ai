@@ -1,19 +1,17 @@
 /**
  * ApiSession — the app-directed engine behind the ConversationSession port.
  *
- * Wraps the existing AI bridge (`aiChat` → dev-server `/__ai-chat` → `claude`),
- * falling back to the rule-based `interpret` stub when the bridge is down. It owns
- * the conversation history; `send()` records both turns and returns a structured
- * `{ reply, ir }`. Committing the IR stays with the caller, which knows the page id.
+ * Wraps the AI bridge (`aiChat`). It owns the conversation history; `send()`
+ * records both turns and returns a structured `{ reply, behaviour }`. Committing
+ * the behaviour stays with the caller (`replaceBehaviour`).
  *
  * This is the shipped path: same behavior the chat had inline, now reusable behind
  * the port. A TerminalSession can implement the same interface later without
  * touching the UI.
  */
 
-import { emptyPageInteractions } from '../ir'
+import { EMPTY_BEHAVIOUR } from '../ir'
 import { aiChat } from '../nl/ai-cli'
-import { interpret } from '../nl/interpret'
 import { hasSecureKeyStore } from '../../platform'
 import type { Backend, ConversationSession, SendInput, SendResult, SessionCaps, Turn } from './types'
 
@@ -49,20 +47,17 @@ export class ApiSession implements ConversationSession {
     this.turns.push({ role: 'user', text })
 
     const nodes = input.nodes ?? []
-    const ir = input.ir ?? emptyPageInteractions()
+    const behaviour = input.behaviour ?? EMPTY_BEHAVIOUR
     const selectedId = selectionToId(input.selection)
 
     try {
-      // Live AI session via the local `claude` CLI (dev-server bridge).
-      const result = await aiChat({ request: text, history: priorHistory, nodes, ir, selectedId })
+      const result = await aiChat({ request: text, history: priorHistory, nodes, page: input.page ?? '', behaviour, selectedId })
       this.turns.push({ role: 'assistant', text: result.reply })
-      return { reply: result.reply, ir: result.ir }
+      return { reply: result.reply, behaviour: result.behaviour }
     } catch {
-      // Bridge down / CLI missing — fall back to the rule-based interpreter.
-      const r = interpret(text, { nodes: nodes.map((n) => ({ id: n.id, name: n.name })), ir, selectedId })
-      const reply = `${r.reply}  (offline — basic interpreter)`
+      const reply = 'The AI backend is not reachable.'
       this.turns.push({ role: 'assistant', text: reply })
-      return { reply, ir: r.ok ? r.apply(ir) : undefined, offline: true }
+      return { reply, offline: true }
     }
   }
 }

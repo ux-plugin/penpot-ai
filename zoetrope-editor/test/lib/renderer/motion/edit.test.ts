@@ -13,13 +13,13 @@ import {
 
 /** Keys of one property track on a shape, for terse assertions. */
 const keys = (motions: ShapeMotion[], targetId: string, prop: string) =>
-  motions.find((m) => m.targetId === targetId)?.timeline.bindings.find((b) => b.target.prop === prop)?.curve.keys
+  motions.find((m) => m.node === targetId)?.timeline.bindings.find((b) => b.target.prop === prop)?.curve.keys
 
 describe('setKeyframe', () => {
   it('creates the shape, binding, and key; duration tracks the latest key', () => {
     const motions = setKeyframe([], 's1', 'x', 0, 10)
     expect(motions).toHaveLength(1)
-    expect(motions[0].targetId).toBe('s1')
+    expect(motions[0].node).toBe('s1')
     expect(motions[0].restFrame).toBe(0)
     expect(keys(motions, 's1', 'x')).toEqual([{ at: 0, value: 10 }])
     expect(motions[0].timeline.duration).toBe(0)

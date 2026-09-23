@@ -6,71 +6,74 @@
 ## Layers
 
 ```
-authoring surface (panel · later: text DSL)
-        │  edits
+authoring surface (panel · AI chat in text form)
+        │  edits = changes
         ▼
-stored sugar  ──(normalize)──►  reactive graph  ──(emit-react)──►  React source
-   ir.ts                          ir.ts (GraphNode)                 compile/emit-react.ts
+records in the document  ──behaviourOf(page)──►  Behaviour  ──(emit-react)──►  React source
+cell · binding · rule · store                     { cells, bindings, rules }    compile/emit-react.ts
+doc/schema/behaviour.ts                            ir.ts                 └──(runtime)──► live preview
 ```
 
-- **Stored sugar** is what serializes and what the UI edits. **The graph is a
-  compile artifact** (never stored). Expressions are stored as **trees whose
-  references are ids** (`Expr` / `Ref`); text is a projection made at the edge
-  (`expr.ts`), so renaming a cell never breaks a wire.
-- **Storage**: page-scoped — a `PageInteractions` block (`version: 3`) on the
-  page record (`Page.interactions`, see `docs/state-model.md`; nodes referenced
-  by id). Stores are document-wide: `DocumentMeta.stores`.
-- **Upgrade**: a stored `version: 1` (variables / derived / bindings / states /
-  repeaters / editable) or `version: 2` (expressions as text, cells by name)
-  block is converted on read by `upgradePageInteractions` (`upgrade.ts`); a
-  version-1 block's stores are hoisted onto the document. The 2 → 3 step is
-  deterministic: a cell's `uid` is its version-2 reference.
+- **Records** are what serializes and what the UI edits: `cell`, `binding`,
+  `rule` and `store` are record kinds of the document, beside `page` and `node`
+  (`docs/state-model.md`). Expressions are stored as **trees whose references
+  are ids** (`Expr` / `Ref`); text is a projection made at the edge (`expr.ts`),
+  so renaming a cell never breaks a wire.
+- **Ownership** is declared in the schemas: a rule, a binding or a node's cell
+  is deleted with its node, a page's with its page. A reference to a cell from
+  an expression is not an ownership: a deleted cell leaves the reference
+  dangling and validation reports it.
+- **Stores** are document-wide records; a cell names its store (`keep`). Deleting
+  a store detaches its cells (`removeStore`).
+- **Text form** (`TextBehaviour`, `toText` / `fromText`): the same records with
+  names instead of ids and source instead of trees. The AI chat reads and writes
+  it; `fromText` keeps the ids of records that did not change.
 
 ## The model — three things
 
 ```
-cells        the ONE kind of state       Cell { uid, id, owner, type, initial, formula?, store? }
-refs         a node's properties point   NodeRefs { node, props: { prop: Expr }, item? }
-             at cells
-interactions write cells                 Interaction { on: { node, trigger }, if?: Expr, do: Action[] }
+cells     the ONE kind of state       Cell { id, name, page?, node?, type, initial, formula?, store? }
+bindings  a node's property reads     Binding { id, page, node, prop, expr, item? }
+          cells
+rules     write cells                 Rule { id, page, node?, order, on: Trigger, if?: Expr, do: Action[] }
 
-Ref  = cell(uid) | item(name) | node(id) | name(text)          what a reference points at
-Expr = the constrained-JS AST with `ref` nodes holding a Ref   what is stored
+Ref  = cell(id) | item(name) | node(id) | name(text)            what a reference points at
+Expr = the constrained-JS AST with `ref` nodes holding a Ref     what is stored
 ```
 
-- A **cell** has a stable `uid` (identity, never shown) and an `id` (its name:
-  `draft`, or `state` in `card.state`). It either holds a value (`initial` is
-  what the preview starts from) or is a **formula** (`formula` present —
-  computed from other cells, read-only). `owner` says who it belongs to and so where the inspector shows it:
-  `document`, `page`, or `node` (a node's own cell, e.g. a **variant set**:
-  `type: { enum: [...] }`, addressed as `<node>.<cell>`). `store` names the
-  document store the cell lives in — present ⇔ the value is supplied from
-  outside; that membership is the whole "comes from the app" statement, and
-  everything about props/callbacks is derived from it at lowering.
-- A **reference** makes a node property read an expression over cells. Two
+- A **cell** has an `id` (identity, never shown) and a `name` (`draft`, or
+  `state` in `card.state`). It either holds a value (`initial` is what the
+  preview starts from) or is a **formula** (`formula` present — computed from
+  other cells, read-only). Where it lives is its references: `node` (a node's
+  own cell, e.g. a **variant set**: `type: { enum: [...] }`, addressed as
+  `<node>.<name>`), `page` only (the page's), or neither (the document's).
+  `store` names the store the cell lives in — present ⇔ the value is supplied
+  from outside; everything about props/callbacks is derived from it at lowering.
+- A **binding** makes one node property read an expression over cells. Two
   property names are reserved: `repeat` (the node is a template repeated over
   the list the expression names; `item` names the loop variable and keys the
   instances) and `value` (when the expression is a bare writable cell the node
   EDITS it — two-way, a controlled input).
-- An **interaction** is a trigger on a node, an optional guard, and actions that
-  write cells (`set-variable`, `increment`, `collection.append`, …) or do
-  things (`open-url`, `show-in-slot`, …). `AppRule` is the same with no node.
+- A **rule** is a trigger, an optional guard, and actions that write cells
+  (`set-variable`, `increment`, `collection.append`, …) or do things
+  (`open-url`, `show-in-slot`, …). With `node` it fires on that node; without,
+  it belongs to the page (load, timer, key). `order` is a fractional index.
 
 ## Files
 
 | File | Responsibility |
 |---|---|
-| [ir.ts](../../src/lib/renderer/interactions/ir.ts) | `Ref`/`Expr`, `Cell`/`NodeRefs`/`Interaction`, `PageInteractions` (v3), the earlier `V1*`/`V2*` shapes, the merge contract (`reconcile`/`referencedNodeIds`/`dropNodes`), normalized `GraphNode`. |
-| [expr.ts](../../src/lib/renderer/interactions/expr.ts) | The edge: `parseExpr`/`resolveExpr` (text → ids), `namesOf`/`exprText` (ids → text), `parseRef`, `walkRefs`/`cellsIn`/`unresolvedNames`, `toTextIR` (the version-2 text projection, the AI wire format). |
-| [upgrade.ts](../../src/lib/renderer/interactions/upgrade.ts) | `upgradePageInteractions`: v1 → v2 → v3 on read. |
+| [doc/schema/behaviour.ts](../../src/lib/doc/schema/behaviour.ts) | The record schemas with their references (`ref(kind, onDelete)`). |
+| [ir.ts](../../src/lib/renderer/interactions/ir.ts) | `Ref`/`Expr`, `Trigger`/`Action`, `Behaviour` and its lookups (`findCell`, `cellById`, `bindingOf`, `rulesOn`, `editedCell`, `behaviourNodes`). |
+| [expr.ts](../../src/lib/renderer/interactions/expr.ts) | The edge: `parseExpr`/`resolveExpr` (text → ids), `namesOf`/`exprText` (ids → text), `parseRef`, `walkRefs`/`cellsIn`/`unresolvedNames`, `formulasInOrder`, `toText`/`fromText` (the text form). |
 | [catalog/](../../src/lib/renderer/interactions/catalog) | Open-union registry for trigger/action types: platform tags, fallbacks, `lowers`. Phase 0 entries in `triggers.ts`/`actions.ts`. |
 | [expression.ts](../../src/lib/renderer/interactions/expression.ts) | Constrained JS-subset over NAMES: parser → `ExprNode`, `printExpr`, `evaluate` (preview), `toJs` (lowering), `freeRefs`. |
-| [addressing.ts](../../src/lib/renderer/interactions/addressing.ts) | The text namespace: `buildScope` (what names mean), `parseRefPath`, `resolveCell`; `validatePageInteractions` over stored trees. |
+| [addressing.ts](../../src/lib/renderer/interactions/addressing.ts) | The text namespace: `buildScope` (what names mean), `parseRefPath`, `resolveCell`; `validateBehaviour` over stored trees. |
 | [anchor.ts](../../src/lib/renderer/interactions/anchor.ts) | `data-node-id` format + the 1:1 anchor-invariant validator. |
-| [compile/normalize.ts](../../src/lib/renderer/interactions/compile/normalize.ts) | Sugar → reactive graph. |
-| [compile/emit-react.ts](../../src/lib/renderer/interactions/compile/emit-react.ts) | Reactive behavior → idiomatic React (web emitter). |
-| [document/edit-interactions.ts](../../src/lib/renderer/interactions/document/edit-interactions.ts) | Pure reducers the inspector commits through: cells, stores, refs, interactions. |
-| [preview/runtime.ts](../../src/lib/renderer/interactions/preview/runtime.ts) | The pure preview interpreter: `initRuntime`, `applyAction`, `diffRuntime`, `affectedNodes`. |
+| [compile/emit-react.ts](../../src/lib/renderer/interactions/compile/emit-react.ts) | Behaviour → idiomatic React (web emitter). |
+| [document/behaviour.ts](../../src/lib/renderer/interactions/document/behaviour.ts) | `behaviourOf(page)`, `storesOf`, `commitBehaviour`, `diffBehaviour`/`replaceBehaviour`. |
+| [document/edit-interactions.ts](../../src/lib/renderer/interactions/document/edit-interactions.ts) | The inspector's edits as changes: cells, stores, bindings, rules. |
+| [preview/runtime.ts](../../src/lib/renderer/interactions/preview/runtime.ts) | The pure preview interpreter: `initRuntime`, `applyAction`, `runRule`, `diffRuntime`, `affectedNodes`. |
 
 ## The addressing namespace (text)
 
@@ -81,7 +84,7 @@ ref ::= cell                  (a page or document cell:  items, cart.items)
 ```
 Resolution precedence: loop-item > cell > node. A node id that is not an
 identifier is spelled `n_…` in expressions (`nodeRef`). Text is resolved ONCE,
-when typed (the reducers) or when a version-2 block is read (the upgrade); a
+when typed (the edits) or when a text form is read (`fromText`); a
 name that resolves to nothing is kept as a `name` ref so nothing is lost. A
 page is valid when no stored expression holds an unresolved name or a missing
 cell, every behavior node exists, trigger/action types are known, and action
@@ -108,14 +111,14 @@ repair loop consumes).
 
 ## The three locked core decisions
 
-1. **App/page rule scope** — `AppRule` (sources with no node).
-2. **Where state lives** — `Cell.owner` (`document|page|node`) says who it
+1. **App/page rule scope** — a `Rule` with no `node`.
+2. **Where state lives** — a cell's `page` / `node` references say who it
    belongs to; `Cell.store` says it is supplied from outside. A store cell
    lowers to a typed prop, and a write to it to a callback — the business-logic
    seam, derived, never authored.
-3. **Regenerate/merge** — the behavior IR is source of truth; `reconcile(ir,
-   presentNodeIds)` flags dangling behavior after regeneration; new behaviorless
-   nodes are expected, not errors.
+3. **Regenerate/merge** — behaviour is owned by its node: when a node goes,
+   its rules, bindings and cells go in the same commit, and undo brings them
+   back. New behaviourless nodes are expected, not errors.
 
 ## Where this is going
 
@@ -140,7 +143,7 @@ deferred capability is **catalog-only, zero foundation change**:
 | **Discrete gesture** (swipe) | `registerTriggers` entry + an event-prop in the emitter table | none |
 | **Continuous gesture** (drag value) | a store cell + a reference; emitter lowers to an animation runtime | none |
 | **Async / backend** | `registerActions` entry (`lowers: 'effect'`); emitter async lowering | none |
-| **Data-driven state-variant** | a variant cell with a `formula` — already in the IR | none |
+| **Data-driven state-variant** | a variant cell with a `formula` — already in the model | none |
 
 Growth is confined to **(a) catalog entries** and **(b) the emitter's per-kind /
 per-platform lowering tables**. The foundation — IR types, expression language,

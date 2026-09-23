@@ -21,7 +21,7 @@
  */
 
 import { cn } from '@/lib/utils'
-import type { PageInteractions } from '../../renderer/interactions/ir'
+import type { Behaviour } from '../../renderer/interactions/ir'
 import { cellRef, isFormula } from '../../renderer/interactions/ir'
 import { exprText } from '../../renderer/interactions/expr'
 import { leavesDesign, type LoggedActivity, type StateChange } from '../../renderer/interactions/preview/runtime'
@@ -50,7 +50,7 @@ function changeLabel(c: StateChange): string {
 const rowCls = 'flex items-baseline gap-2 font-mono text-[11px] leading-6'
 
 export function StatePanel({
-  ir,
+  behaviour,
   env,
   log,
   open,
@@ -59,7 +59,7 @@ export function StatePanel({
   nameOf,
   onSelect,
 }: {
-  ir: PageInteractions
+  behaviour: Behaviour
   /** Current evaluation environment — cells plus computed formulas. */
   env: Record<string, unknown>
   log: LoggedActivity[]
@@ -72,7 +72,7 @@ export function StatePanel({
 }) {
   const latest = log[0]
   const justChanged = new Set((latest?.changes ?? []).map((c) => c.id))
-  const hasState = ir.cells.length > 0
+  const hasState = behaviour.cells.length > 0
 
   return (
     <div className="shrink-0 border-t border-border bg-white/60">
@@ -104,7 +104,7 @@ export function StatePanel({
                   own with the same shape, because that is what it is — the badge
                   is the only difference, and it says the number you're looking at
                   is a stand-in the design chose, not something it decided. */}
-              {ir.cells.filter((c) => !isFormula(c)).map((v) => (
+              {behaviour.cells.filter((c) => !isFormula(c)).map((v) => (
                 <div key={cellRef(v)} className={rowCls}>
                   <span className="text-muted-foreground">{cellRef(v)}</span>
                   <span className="text-foreground">{fmt(readRef(env, cellRef(v)))}</span>
@@ -127,11 +127,11 @@ export function StatePanel({
                   )}
                 </div>
               ))}
-              {ir.cells.filter(isFormula).map((d) => (
+              {behaviour.cells.filter(isFormula).map((d) => (
                 <div key={cellRef(d)} className={rowCls}>
                   <span className="text-muted-foreground">{cellRef(d)}</span>
                   <span className="text-foreground">{fmt(readRef(env, cellRef(d)))}</span>
-                  <span className="text-[10px] text-muted-foreground" title={exprText(d.formula, ir)}>
+                  <span className="text-[10px] text-muted-foreground" title={exprText(d.formula, behaviour)}>
                     ƒ
                   </span>
                 </div>
@@ -163,7 +163,7 @@ export function StatePanel({
                         <div key={`${c.kind}:${c.id}:${j}`} className="font-mono text-[10px] text-muted-foreground">
                           {changeLabel(c)}
                           {/* Derived from the cell, not from a logged call. */}
-                          {leavesDesign(ir, c) && <span title="this value is owned outside the design"> ↗</span>}
+                          {leavesDesign(behaviour, c) && <span title="this value is owned outside the design"> ↗</span>}
                         </div>
                       ))
                     )}

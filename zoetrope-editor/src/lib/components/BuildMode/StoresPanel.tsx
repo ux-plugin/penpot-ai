@@ -12,17 +12,16 @@
  * authored here. So this panel only ever edits data: names, types, samples, and a
  * sentence saying what each store maps to.
  *
- * The store list lives on the document (`meta.stores`); the cells a store
- * holds live on the page that uses them, like every other cell.
+ * Stores are records of the document; the cells a store holds are cells like
+ * any other, naming their store.
  */
 
 import { useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
-import { pagesInOrder, useCurrentPageId, useField, useMeta } from '../../doc'
+import { useCurrentPageId, type LocalChange } from '../../doc'
 import {
-  emptyPageInteractions,
   cellRef,
-  type PageInteractions,
+  type Behaviour,
   type Cell,
   type Store,
   type ValueType,
@@ -33,7 +32,6 @@ import {
   removeStore,
   setStoreDescription,
   addStoreField,
-  detachStore,
   removeCell,
   setCellType,
   setCellValue,
@@ -41,15 +39,12 @@ import {
   toCellId,
   isNameTaken,
 } from '../../renderer/interactions/document/edit-interactions'
-import {
-  commitInteractions,
-  currentInteractions,
-  commitStores,
-  currentStores,
-} from '../../renderer/interactions/document/commit-interactions'
+import { commitBehaviour, currentBehaviour, currentStores } from '../../renderer/interactions/document/behaviour'
+import { useBehaviour, useStores } from '../../renderer/interactions/document/use-behaviour'
+import { EMPTY_BEHAVIOUR } from '../../renderer/interactions/ir'
 
-type Commit = (next: PageInteractions) => void
-type LiveIR = () => PageInteractions
+type Commit = (changes: LocalChange[]) => void
+type LiveIR = () => Behaviour
 
 const fieldCls =
   'h-6 min-w-0 rounded border border-border bg-background px-1.5 text-[11px] text-foreground outline-none focus:border-ring'
@@ -237,17 +232,15 @@ function StoreCard({
 
 export function StoresPanel() {
   const pid = useCurrentPageId()
-  const ir = useField('page', pid, 'interactions') ?? emptyPageInteractions()
-  const stores = useMeta()?.stores ?? []
+  const ir = useBehaviour(pid)
+  const stores = useStores()
 
-  const liveIR: LiveIR = () => (pid ? currentInteractions(pid) : undefined) ?? emptyPageInteractions()
-  const commit: Commit = (next) => {
-    if (pid) void commitInteractions(pid, next)
-  }
+  const liveIR: LiveIR = () => (pid ? currentBehaviour(pid) : EMPTY_BEHAVIOUR)
+  const commit: Commit = (changes) => void commitBehaviour(changes)
 
   const fieldsByStore = useMemo(() => {
     const m = new Map<string, Cell[]>()
-    for (const c of ir.cells as Cell[]) {
+    for (const c of ir.cells) {
       if (!c.store) continue
       const list = m.get(c.store)
       if (list) list.push(c)
@@ -261,19 +254,13 @@ export function StoresPanel() {
   const free = !!sid && !isNameTaken(ir, sid, stores)
   const create = () => {
     if (!free) return
-    void commitStores(addStore(currentStores(), sid))
+    commit(addStore(currentStores(), sid))
     setNewStore('')
   }
 
   // Deleting the container releases its cells on EVERY page — they stay, as
   // design-owned values, so nothing wired to them breaks.
-  const remove = (id: string) => {
-    const pages: { pageId: string; next: PageInteractions }[] = []
-    for (const page of pagesInOrder()) {
-      if (page.interactions?.cells.some((c) => c.store === id)) pages.push({ pageId: page.id, next: detachStore(page.interactions, id) })
-    }
-    void commitStores(removeStore(currentStores(), id), pages)
-  }
+  const remove = (id: string) => commit(removeStore(id))
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -291,12 +278,12 @@ export function StoresPanel() {
           {stores.map((s) => (
             <StoreCard
               key={s.id}
-              store={s as Store}
+              store={s}
               fields={fieldsByStore.get(s.id) ?? []}
               commit={commit}
               liveIR={liveIR}
               onRemove={() => remove(s.id)}
-              onDescribe={(text) => void commitStores(setStoreDescription(currentStores(), s.id, text))}
+              onDescribe={(text) => commit(setStoreDescription(currentStores(), s.id, text))}
             />
           ))}
         </div>

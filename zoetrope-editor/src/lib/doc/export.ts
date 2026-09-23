@@ -9,8 +9,9 @@ import type { PenpotDocument, PenpotNode, PenpotPage } from 'penpot-exporter/typ
 import { children, descendants } from './derived'
 import { ROOT, type NodeId, type PageId, type ParentKey } from './ids'
 import { meta } from './meta'
-import type { Node, Page } from './schema'
-import { get, records } from './store'
+import { BEHAVIOUR_KINDS, type DocumentRecords } from './import'
+import type { AnyRecord, Node, Page } from './schema'
+import { get, records, tables, type Table } from './store'
 
 /** A node as the tree walkers see it: with its child list. */
 export type TreeNode = Node & { shapes?: NodeId[] }
@@ -110,7 +111,6 @@ export function exportPage(page: Page): PenpotPage {
     name: page.name ?? 'Page',
     background: page.background,
     children: [root, ...top.map(toExporterNode)],
-    interactions: page.interactions,
   } as PenpotPage
 }
 
@@ -118,8 +118,18 @@ export function pagesInOrder(): Page[] {
   return [...records('page')].sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : 0))
 }
 
+/** Every behaviour record, one list per kind; kinds with none are left out. */
+export function exportRecords(): DocumentRecords {
+  const out: DocumentRecords = {}
+  for (const kind of BEHAVIOUR_KINDS) {
+    const rows = [...(tables[kind] as Table<AnyRecord>).rows.values()].map((s) => s.peek())
+    if (rows.length) (out as Record<string, AnyRecord[]>)[kind] = rows
+  }
+  return out
+}
+
 export function exportDocument(): PenpotDocument | null {
   const m = meta.peek()
   if (!m) return null
-  return { ...m, children: pagesInOrder().map(exportPage) } as PenpotDocument
+  return { ...m, children: pagesInOrder().map(exportPage), records: exportRecords() } as PenpotDocument
 }

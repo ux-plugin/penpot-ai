@@ -1,6 +1,6 @@
 /**
- * The delta/rest authoring layer. A `ShapeMotion` pairs one shape's IR timeline
- * with its authoring-only rest metadata; these reducers add/update/remove/retime
+ * The delta/rest authoring layer. A `ShapeMotion` (the document's `timeline`
+ * record) pairs one node's IR timeline with its rest frame; these reducers add/update/remove/retime
  * keyframes and re-home a motion onto a chosen rest pose. Keyframe values are
  * *deltas* from the shape's rest pose (0 == at rest), so a motion is a portable
  * offset the renderer applies non-destructively over the document pose.
@@ -14,14 +14,9 @@ import { sampleBinding } from '../anim/sample'
 import { emptyTimeline, findBindingOn, findKey, moveKey, removeKey, setKey } from '../anim/edit'
 import type { Domain, Interp, Key, Target, Timeline } from '../anim/types'
 import type { AnimatableProperty } from './props'
+import type { ShapeMotion } from '../../doc'
 
-/** One shape's motion: its IR timeline plus authoring-only rest metadata (not part of the IR). */
-export interface ShapeMotion {
-  targetId: string
-  timeline: Timeline
-  /** The time (ms) whose pose is the shape's rest/home. Authoring metadata; default 0. */
-  restFrame: number
-}
+export type { ShapeMotion }
 
 const timelineId = (targetId: string): string => `tl-${targetId}`
 const nodeTarget = (targetId: string, property: AnimatableProperty): Target => ({
@@ -36,7 +31,7 @@ export function keyframeAt(
   property: AnimatableProperty,
   time: number,
 ): Key | undefined {
-  const m = motions.find((x) => x.targetId === targetId)
+  const m = motions.find((x) => x.node === targetId)
   return m ? findKey(m.timeline, nodeTarget(targetId, property), time) : undefined
 }
 
@@ -54,13 +49,13 @@ export function setKeyframe(
   interp?: Interp,
 ): ShapeMotion[] {
   const target = nodeTarget(targetId, property)
-  const existing = motions.find((m) => m.targetId === targetId)
+  const existing = motions.find((m) => m.node === targetId)
   if (existing) {
     const timeline = setKey(existing.timeline, target, time, value, interp)
-    return motions.map((m) => (m.targetId === targetId ? { ...m, timeline } : m))
+    return motions.map((m) => (m.node === targetId ? { ...m, timeline } : m))
   }
   const timeline = setKey(emptyTimeline(timelineId(targetId)), target, time, value, interp)
-  return [...motions, { targetId, timeline, restFrame: 0 }]
+  return [...motions, { id: timelineId(targetId), node: targetId, timeline, restFrame: 0 }]
 }
 
 /**
@@ -74,12 +69,12 @@ export function removeKeyframe(
   property: AnimatableProperty,
   time: number,
 ): ShapeMotion[] {
-  const existing = motions.find((m) => m.targetId === targetId)
+  const existing = motions.find((m) => m.node === targetId)
   if (!existing) return motions
   const timeline = removeKey(existing.timeline, nodeTarget(targetId, property), time)
   if (timeline === existing.timeline) return motions
-  if (timeline.bindings.length === 0) return motions.filter((m) => m.targetId !== targetId)
-  return motions.map((m) => (m.targetId === targetId ? { ...m, timeline } : m))
+  if (timeline.bindings.length === 0) return motions.filter((m) => m.node !== targetId)
+  return motions.map((m) => (m.node === targetId ? { ...m, timeline } : m))
 }
 
 /** Retime a keyframe on (target, property) from one time to another. No-op (same ref) when nothing changes. */
@@ -90,11 +85,11 @@ export function moveKeyframe(
   fromTime: number,
   toTime: number,
 ): ShapeMotion[] {
-  const existing = motions.find((m) => m.targetId === targetId)
+  const existing = motions.find((m) => m.node === targetId)
   if (!existing) return motions
   const timeline = moveKey(existing.timeline, nodeTarget(targetId, property), fromTime, toTime)
   if (timeline === existing.timeline) return motions
-  return motions.map((m) => (m.targetId === targetId ? { ...m, timeline } : m))
+  return motions.map((m) => (m.node === targetId ? { ...m, timeline } : m))
 }
 
 /** The sorted union of x/y time-domain key times on a timeline -- the motion-path waypoints. */
@@ -161,13 +156,13 @@ export function setPositionKeyframe(
   dy: number,
   interp?: Interp,
 ): ShapeMotion[] {
-  const existing = motions.find((m) => m.targetId === targetId)
+  const existing = motions.find((m) => m.node === targetId)
   const base = existing ? existing.timeline : emptyTimeline(timelineId(targetId))
   let tl = bakePositionNeighbors(base, targetId, time)
   tl = setKey(tl, nodeTarget(targetId, 'x'), time, dx, interp)
   tl = setKey(tl, nodeTarget(targetId, 'y'), time, dy, interp)
-  if (existing) return motions.map((m) => (m.targetId === targetId ? { ...m, timeline: tl } : m))
-  return [...motions, { targetId, timeline: tl, restFrame: 0 }]
+  if (existing) return motions.map((m) => (m.node === targetId ? { ...m, timeline: tl } : m))
+  return [...motions, { id: timelineId(targetId), node: targetId, timeline: tl, restFrame: 0 }]
 }
 
 /**
@@ -193,13 +188,13 @@ export function keyframeDelta(
   property: AnimatableProperty,
   time: number,
 ): number {
-  const m = motions.find((x) => x.targetId === targetId)
+  const m = motions.find((x) => x.node === targetId)
   if (!m) return 0
   return sampleDelta(m, property, time)
 }
 
 function sampleDelta(m: ShapeMotion, property: AnimatableProperty, time: number): number {
-  const binding = findBindingOn(m.timeline, nodeTarget(m.targetId, property), { kind: 'time' })
+  const binding = findBindingOn(m.timeline, nodeTarget(m.node, property), { kind: 'time' })
   if (!binding || binding.curve.keys.length === 0) return 0
   return sampleBinding(binding, { time, params: {} })?.value ?? 0
 }
@@ -221,13 +216,13 @@ export function setParamKeyframe(
 ): ShapeMotion[] {
   const target = nodeTarget(targetId, property)
   const domain: Domain = { kind: 'param', param }
-  const existing = motions.find((m) => m.targetId === targetId)
+  const existing = motions.find((m) => m.node === targetId)
   if (existing) {
     const timeline = setKey(existing.timeline, target, at, value, interp, domain)
-    return motions.map((m) => (m.targetId === targetId ? { ...m, timeline } : m))
+    return motions.map((m) => (m.node === targetId ? { ...m, timeline } : m))
   }
   const timeline = setKey(emptyTimeline(timelineId(targetId)), target, at, value, interp, domain)
-  return [...motions, { targetId, timeline, restFrame: 0 }]
+  return [...motions, { id: timelineId(targetId), node: targetId, timeline, restFrame: 0 }]
 }
 
 /** A re-home result: the shifted motions plus the x/y/rotation the document must move by. */
@@ -244,7 +239,7 @@ export interface RestRebase {
  * the document geometry carries). No-op delta when the shape has no motion.
  */
 export function rebaseToRest(motions: ShapeMotion[], targetId: string, restFrame: number): RestRebase {
-  const m = motions.find((x) => x.targetId === targetId)
+  const m = motions.find((x) => x.node === targetId)
   if (!m) return { motions, docDelta: { x: 0, y: 0, rotation: 0 } }
   const dx = sampleDelta(m, 'x', restFrame)
   const dy = sampleDelta(m, 'y', restFrame)
@@ -262,7 +257,7 @@ export function rebaseToRest(motions: ShapeMotion[], targetId: string, restFrame
   }
   const next: ShapeMotion = { ...m, timeline, restFrame: Math.max(0, Math.round(restFrame)) }
   return {
-    motions: motions.map((x) => (x.targetId === targetId ? next : x)),
+    motions: motions.map((x) => (x.node === targetId ? next : x)),
     docDelta: { x: dx, y: dy, rotation: drot },
   }
 }

@@ -7,6 +7,7 @@ import { signal } from '@preact/signals-core'
 import type { Change } from './changes'
 import type { AnyRecord, Kind } from './schema'
 import type { Table, Tables } from './store'
+import { KINDS } from './schema/kinds'
 
 export interface Applied {
   change: Change
@@ -104,7 +105,8 @@ export function inversesOf(applied: readonly Applied[]): Change[] {
 
 /** Ids touched, per kind. */
 export function touchedOf(applied: readonly Applied[]): Record<Kind, Set<string>> {
-  const t: Record<Kind, Set<string>> = { page: new Set(), node: new Set() }
+  const t = {} as Record<Kind, Set<string>>
+  for (const k of KINDS) t[k] = new Set()
   for (const a of applied) t[a.change.kind].add(a.change.op === 'add' ? a.change.record.id : a.change.id)
   return t
 }

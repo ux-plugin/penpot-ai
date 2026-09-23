@@ -21,7 +21,7 @@ export interface MotionRestSectionProps {
 
 export function MotionRestSection({ nodeId }: MotionRestSectionProps) {
   const shapes = useSignalCoalesced(motionShapes)
-  const targetShapes = shapes.filter((s) => s.targetId === nodeId)
+  const targetShapes = shapes.filter((s) => s.node === nodeId)
   const active = targetShapes[0]
   const [collapsed, setCollapsed] = useState(false)
   // While dragging the slider, the pending (previewed) rest; committed on release.

@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { seedNodes } from '../../fixtures'
 import { inspectorTab } from '../../../../src/lib/renderer/signals/inspector-tab'
 import {
   motionShapes,
@@ -13,9 +14,11 @@ import { setKeyframe, type ShapeMotion } from '../../../../src/lib/renderer/moti
 /** The keys of a shape's (property) track, for terse assertions. */
 function keysOf(targetId: string, property: 'x' | 'y' | 'rotation') {
   return motionShapes.value
-    .find((s) => s.targetId === targetId)
+    .find((s) => s.node === targetId)
     ?.timeline.bindings.find((b) => b.target.prop === property)?.curve.keys
 }
+
+beforeEach(() => seedNodes(['s1']))
 
 afterEach(() => {
   setMotionShapes([])

@@ -34,7 +34,7 @@ export function motionOverlayActive(): boolean {
 
 /** Whether a node carries an authored motion (a timeline with at least one binding). */
 export function hasMotion(id: string): boolean {
-  return motionShapes.value.some((s) => s.targetId === id && s.timeline.bindings.length > 0)
+  return motionShapes.value.some((s) => s.node === id && s.timeline.bindings.length > 0)
 }
 
 /**

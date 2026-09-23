@@ -1,21 +1,22 @@
 /**
- * Motion store — app-facing state and controls for timeline playback. Holds the
- * current shape motions and playhead as preact signals and owns a single
- * PlaybackController wired to the WASM canvas via WasmModifierSink. Pivots
- * (shape centres) are recomputed from live geometry before each play/seek so
- * rotation and scale pivot on the shape rather than the world origin.
+ * Motion store — app-facing state and controls for timeline playback. The
+ * motions are the document's `timeline` records on the current page
+ * (`motionShapes`, a computed over them); edits commit changes, so they
+ * persist and undo like any other edit. The playhead and playback state are
+ * signals here, and a single PlaybackController drives the WASM canvas via
+ * WasmModifierSink. Pivots (shape centres) are recomputed from live geometry
+ * before each play/seek so rotation and scale pivot on the shape rather than
+ * the world origin.
  *
- * Each `ShapeMotion` is one shape's IR timeline + its rest metadata; the store
- * feeds the raw timelines to the controller. A params provider is wired in so
- * param-domain bindings evaluate against live values (empty until the parameter
- * panel lands).
+ * A params provider is wired in so param-domain bindings evaluate against
+ * live values (empty until the parameter panel lands).
  */
 
-import { computed, signal } from '@preact/signals-core'
+import { computed, effect, signal } from '@preact/signals-core'
 import { useWorkspaceStore } from '../store/workspace-store'
 import { querySelectionRect, wasmSelectionRect } from '../signals/selection'
 import { getSelectedIdsSet } from '../store/document-selection'
-import { getActiveOrSinglePageId, getNode } from '../../doc'
+import { add, commitChanges, currentPageId, del, get, getActiveOrSinglePageId, getNode, mod, records, type LocalChange } from '../../doc'
 import { commitNodeGeometry } from '../properties/commit-node-properties'
 import { inspectorTab } from '../signals/inspector-tab'
 import { PlaybackController } from './playback-controller'
@@ -34,12 +35,18 @@ import {
 import type { AnimatableProperty } from './props'
 import type { AnimDoc, Interp, Param } from '../anim/types'
 import { buildAnimDoc, serializeAnimDoc } from '../anim/serialize'
-import { rustEval, rustLoadDoc, rustSetParam } from './rust-runtime'
+import { rustEval, rustLoadDoc, rustRuntimeEnabled, rustSetParam } from './rust-runtime'
 import type { Pivot } from './modifier'
 import { nearestKeyframeTime } from './motion-path'
 import type { Matrix } from 'penpot-exporter/types'
 
-export const motionShapes = signal<ShapeMotion[]>([])
+/** The motions of the current page's nodes, by node id. */
+export const motionShapes = computed<ShapeMotion[]>(() => {
+  const page = currentPageId.value
+  const out: ShapeMotion[] = []
+  for (const t of records('timeline')) if (get('node', t.node)?.page === page) out.push(t)
+  return out.sort((a, b) => a.node.localeCompare(b.node))
+})
 export const motionTime = signal(0)
 export const motionPlaying = signal(false)
 export const motionLoop = signal(false)
@@ -125,11 +132,11 @@ function computePivots(shapes: ShapeMotion[]): Map<string, Pivot> {
     // centre (correct). A displaced pivot double-counts the translation by
     // (1 − s)·delta, so scale/rotation + translation drifts and jumps -- pure
     // translation is unaffected because s = 1 leaves the pivot unused.
-    const node = getNode(shape.targetId) as
+    const node = getNode(shape.node) as
       | { selrect?: { x: number; y: number; width: number; height: number } }
       | undefined
     const sr = node?.selrect
-    if (sr) pivots.set(shape.targetId, { cx: sr.x + sr.width / 2, cy: sr.y + sr.height / 2 })
+    if (sr) pivots.set(shape.node, { cx: sr.x + sr.width / 2, cy: sr.y + sr.height / 2 })
   }
   return pivots
 }
@@ -181,10 +188,27 @@ function syncHitTransforms(): void {
   void workerClient.sendMessage('index/hit-transforms', { pageId, transforms })
 }
 
+effect(() => {
+  controller.setTimelines(motionShapes.value.map((s) => s.timeline))
+  if (rustRuntimeEnabled()) rustLoadDoc(currentAnimDoc())
+})
+
+/**
+ * Commit `shapes` as the current page's motions: the timeline records that
+ * differ are added, changed or deleted, as one undo frame. Applied before this
+ * returns, so `motionShapes` reads the new list at once.
+ */
 export function setMotionShapes(shapes: ShapeMotion[]): void {
-  motionShapes.value = shapes
-  controller.setTimelines(shapes.map((s) => s.timeline))
-  rustLoadDoc(currentAnimDoc()) // sync the Rust runtime (no-op unless it's built in)
+  const prev = new Map(motionShapes.peek().map((m) => [m.id, m]))
+  const changes: LocalChange[] = []
+  for (const m of shapes) {
+    const before = prev.get(m.id)
+    prev.delete(m.id)
+    if (!before) changes.push(add('timeline', m))
+    else if (before !== m) changes.push(mod('timeline', m.id, { node: m.node, timeline: m.timeline, restFrame: m.restFrame }))
+  }
+  for (const id of prev.keys()) changes.push(del('timeline', id))
+  if (changes.length) void commitChanges({ changes, label: 'motion' })
 }
 
 export function playMotion(): void {
@@ -246,7 +270,7 @@ export function setMotionLoop(loop: boolean): void {
 
 /** The rest-frame time (ms) for a target, defaulting to 0. */
 function restFrameFor(targetId: string): number {
-  return motionShapes.value.find((s) => s.targetId === targetId)?.restFrame ?? 0
+  return motionShapes.value.find((s) => s.node === targetId)?.restFrame ?? 0
 }
 
 /**

@@ -7,32 +7,34 @@
  *   - each row shows its label via a reference to the loop item.
  */
 
-import type { PageInteractions, V2PageInteractions } from '../ir'
-import { upgradePageInteractions } from '../upgrade'
+import type { Behaviour } from '../ir'
+import { fromText, type TextBehaviour } from '../expr'
 import type { PNode } from '../compile/emit-react'
 
-/** Written in the text form (version 2) and upgraded, which is how a document reads. */
-export function demoIR(): PageInteractions {
-  const v2: V2PageInteractions = {
-    version: 2,
+export const DEMO_PAGE = 'demo'
+
+/** Written in the text form and resolved, the way the AI's answers are. */
+export function demoBehaviour(): Behaviour {
+  const text: TextBehaviour = {
     cells: [
-      { id: 'items', owner: { kind: 'page' }, type: { collection: 'object' }, initial: [] },
-      { id: 'isEmpty', owner: { kind: 'page' }, type: 'boolean', initial: null, formula: 'items.length == 0' },
+      { name: 'items', type: { collection: 'object' }, initial: [] },
+      { name: 'isEmpty', type: 'boolean', initial: null, formula: 'items.length == 0' },
     ],
-    interactions: [
+    rules: [
       {
-        on: { node: 'addBtn', trigger: { type: 'press' } },
+        node: 'addBtn',
+        on: { type: 'press' },
         do: [{ type: 'collection.append', target: 'items', value: '{ label: "Item " + (items.length + 1) }' }],
       },
-      { on: { node: 'clearBtn', trigger: { type: 'press' } }, do: [{ type: 'set-variable', target: 'items', value: '[]' }] },
+      { node: 'clearBtn', on: { type: 'press' }, do: [{ type: 'set-variable', target: 'items', value: '[]' }] },
     ],
-    refs: [
-      { node: 'clearBtn', props: { disabled: 'isEmpty' } },
-      { node: 'row', props: { repeat: 'items', text: 'item.label' }, item: { as: 'item' } },
+    bindings: [
+      { node: 'clearBtn', prop: 'disabled', expr: 'isEmpty' },
+      { node: 'row', prop: 'repeat', expr: 'items', item: { as: 'item' } },
+      { node: 'row', prop: 'text', expr: 'item.label' },
     ],
-    appRules: [],
   }
-  return upgradePageInteractions(v2).ir
+  return fromText(text, DEMO_PAGE)
 }
 
 export const demoPresentation: PNode = {

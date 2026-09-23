@@ -2,7 +2,7 @@ import { beforeEach, describe, it, expect } from 'vitest'
 import type { PenpotDocument, PenpotPage } from 'penpot-exporter/types'
 import { nodesToPresentation } from '../../../../src/lib/renderer/interactions/document/nodes-to-presentation'
 import { initRuntime, applyAction, activeSlotView } from '../../../../src/lib/renderer/interactions/preview/runtime'
-import { emptyPageInteractions, LIT } from '../../../../src/lib/renderer/interactions/ir'
+import { EMPTY_BEHAVIOUR, LIT } from '../../../../src/lib/renderer/interactions/ir'
 import type { Action } from '../../../../src/lib/renderer/interactions/ir'
 import type { PNode } from '../../../../src/lib/renderer/interactions/compile/emit-react'
 import { resetWorkspace, seedDocument } from '../../fixtures'
@@ -68,14 +68,14 @@ beforeEach(resetWorkspace)
 describe('slot preview — document → projection → runtime resolution', () => {
   it('renders the design-time default view before any interaction fires', () => {
     const slot = outletOf('home')
-    const rt = initRuntime(emptyPageInteractions())
+    const rt = initRuntime(EMPTY_BEHAVIOUR)
     expect(shownView(slot, rt.slotViews)?.children?.[0]?.text).toBe('Home view')
   })
 
   it('a fired show-in-slot swaps the shown view to the targeted one', () => {
     const slot = outletOf('home')
     const show: Action = { type: 'show-in-slot', target: { kind: 'node', node: 'outlet' }, value: LIT('about') }
-    const rt = applyAction(show, {}, initRuntime(emptyPageInteractions()), emptyPageInteractions())
+    const rt = applyAction(show, {}, initRuntime(EMPTY_BEHAVIOUR), EMPTY_BEHAVIOUR)
 
     expect(rt.slotViews.outlet).toBe('about')
     // the override wins over the 'home' design default
@@ -84,7 +84,7 @@ describe('slot preview — document → projection → runtime resolution', () =
 
   it('an empty slot (no default, no override) shows nothing', () => {
     const slot = outletOf(undefined)
-    const rt = initRuntime(emptyPageInteractions())
+    const rt = initRuntime(EMPTY_BEHAVIOUR)
     expect(shownView(slot, rt.slotViews)).toBeUndefined()
   })
 })

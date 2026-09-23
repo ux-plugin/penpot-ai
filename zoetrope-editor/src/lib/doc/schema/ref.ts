@@ -3,8 +3,9 @@
  * declaration; nothing else knows what a field points at.
  */
 import { z } from 'zod'
+import type { Kind } from './kinds'
 
-export type Kind = 'page' | 'node'
+export type { Kind }
 
 /**
  * What a delete of the target does to the record holding the reference:

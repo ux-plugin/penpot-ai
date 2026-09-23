@@ -77,7 +77,7 @@ export function MotionPathOverlay({ canvasSize }: MotionPathOverlayProps) {
 
   const geom = useMemo(() => {
     if (!active || !wasmSelectionRect || !restAnchor) return null
-    const motion = shapes.find((s) => s.targetId === targetId)
+    const motion = shapes.find((s) => s.node === targetId)
     // livePoint = the live selection center; buildMotionPath overlays it onto the
     // current keyframe only while it diverges from the committed pose (a drag).
     return buildMotionPath(motion?.timeline, targetId!, restAnchor, time, wasmSelectionRect.center, params, 48, motion?.restFrame ?? 0)

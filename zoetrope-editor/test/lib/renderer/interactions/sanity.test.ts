@@ -4,9 +4,9 @@
  * CATALOG addition with ZERO change to the foundation.
  *
  * The proof is structural: every test below only (a) registers catalog entries at
- * runtime and (b) builds IR from the public types, then shows addressing +
- * normalize + anchor accept it. No test imports an internal, and none of these
- * scenarios required editing ir.ts / expression.ts / addressing.ts / anchor.ts.
+ * runtime and (b) builds behaviour from its text form, then shows addressing +
+ * anchor accept it. No test imports an internal, and none of these scenarios
+ * required editing ir.ts / expression.ts / addressing.ts / anchor.ts.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest'
@@ -17,10 +17,9 @@ import {
   registerActions,
   getTrigger,
 } from '../../../../src/lib/renderer/interactions/catalog'
-import { validatePageInteractions } from '../../../../src/lib/renderer/interactions/addressing'
-import { normalize } from '../../../../src/lib/renderer/interactions/compile/normalize'
+import { validateBehaviour } from '../../../../src/lib/renderer/interactions/addressing'
 import { requiredAnchors } from '../../../../src/lib/renderer/interactions/anchor'
-import { pageCell, listCell, formulaCell, variantCell, up } from './todo-ir'
+import { beh, pageCell, listCell, formulaCell, variantCell } from './behaviour-fixtures'
 
 beforeEach(() => {
   resetCatalog()
@@ -30,38 +29,35 @@ beforeEach(() => {
 describe('Phase 0 sanity gate — future needs are catalog-only, zero core change', () => {
   it('GESTURE (discrete): a swipe trigger is just a catalog entry', () => {
     registerTriggers([{ key: 'swipe', label: 'On swipe', scope: 'node', platforms: ['web', 'native'], params: ['direction'] }])
-    const ir = up({
-      interactions: [{ on: { node: 'card', trigger: { type: 'swipe', params: { direction: 'left' } } }, do: [{ type: 'close-overlay' }] }],
+    const b = beh({
+      rules: [{ node: 'card', on: { type: 'swipe', params: { direction: 'left' } }, do: [{ type: 'close-overlay' }] }],
     })
     expect(getTrigger('swipe')).toBeDefined()
-    expect(validatePageInteractions(ir, new Set(['card']))).toEqual([])
-    expect(normalize(ir).nodes.some((n) => n.kind === 'source' && n.produces === 'event')).toBe(true)
+    expect(validateBehaviour(b, new Set(['card']))).toEqual([])
+    expect(requiredAnchors(b).has('card')).toBe(true)
   })
 
   it('GESTURE (continuous): a drag value is an outside cell + a reference — already expressible', () => {
-    // A continuous gesture value is an external signal, i.e. a cell that lives in
-    // a store the designer made — not a second kind of thing, just where it lives.
-    const ir = up({ cells: [pageCell('dragX', 'number', 0, { store: 'gesture' })], refs: [{ node: 'row', props: { x: 'dragX' } }] })
-    expect(validatePageInteractions(ir, new Set(['row']))).toEqual([])
-    // lowers to an inbound port node — derived plumbing, no new IR kind needed
-    expect(normalize(ir).nodes.some((n) => n.kind === 'port' && n.dir === 'in')).toBe(true)
+    const b = beh({ cells: [pageCell('dragX', 'number', 0, { store: 'gesture' })], bindings: [{ node: 'row', prop: 'x', expr: 'dragX' }] })
+    expect(validateBehaviour(b, new Set(['row']))).toEqual([])
+    expect(requiredAnchors(b).has('row')).toBe(true)
   })
 
   it('ASYNC / backend: an effectful action is a catalog entry', () => {
     registerActions([{ key: 'api.save', label: 'Save to API', platforms: ['web', 'native'], lowers: 'effect', expects: { value: true } }])
-    const ir = up({
+    const b = beh({
       cells: [listCell('items')],
-      interactions: [{ on: { node: 'saveBtn', trigger: { type: 'press' } }, do: [{ type: 'api.save', value: 'items' }] }],
+      rules: [{ node: 'saveBtn', on: { type: 'press' }, do: [{ type: 'api.save', value: 'items' }] }],
     })
-    expect(validatePageInteractions(ir, new Set(['saveBtn']))).toEqual([])
-    expect(normalize(ir).nodes.some((n) => n.kind === 'effect')).toBe(true)
+    expect(validateBehaviour(b, new Set(['saveBtn']))).toEqual([])
+    expect(requiredAnchors(b).has('saveBtn')).toBe(true)
   })
 
   it('STATE-VARIANT (data-driven): "disabled when empty" is already core — a formula-driven variant cell', () => {
-    const ir = up({
+    const b = beh({
       cells: [listCell('items'), formulaCell('isEmpty', 'items.length == 0'), variantCell('addBtn', ['enabled', 'disabled'], { formula: "isEmpty ? 'disabled' : 'enabled'" })],
     })
-    expect(validatePageInteractions(ir, new Set(['addBtn']))).toEqual([])
-    expect(requiredAnchors(ir).has('addBtn')).toBe(true)
+    expect(validateBehaviour(b, new Set(['addBtn']))).toEqual([])
+    expect(requiredAnchors(b).has('addBtn')).toBe(true)
   })
 })

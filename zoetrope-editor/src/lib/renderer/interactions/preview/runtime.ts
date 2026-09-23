@@ -1,18 +1,18 @@
 /**
- * Preview runtime — a small LIVE interpreter for a PageInteractions IR.
+ * Preview runtime — a small LIVE interpreter for a page's `Behaviour`.
  *
  * This is the "preview mode" counterpart to the React emitter: instead of
- * generating source, it runs the IR directly (cells + formulas + actions) so the
+ * generating source, it runs the records directly (cells + formulas + rules) so the
  * design tool can show an interactive prototype. It shares semantics with the
  * emitter by reusing the same expression evaluator, and it's a *pure* core
  * (no React) so the behavior is unit-testable in node — the React renderer
  * (InteractionRuntime.tsx) is a thin wrapper over these functions.
  */
 
-import type { PageInteractions, Interaction, Action, NodeId, Cell, Expr, Ref } from '../ir'
-import { actionParam, isBacked, isFormula, isEnumType, cellRef, cellOf, nodeRef, refsOf, LIT, REPEAT_PROP } from '../ir'
+import type { Behaviour, Rule, Action, NodeId, Cell, Expr, Ref } from '../ir'
+import { actionParam, bindingOf, isBacked, isFormula, isEnumType, cellRef, cellOf, nodeRef, LIT, REPEAT_PROP } from '../ir'
 import { evaluate } from '../expression'
-import { namesOf } from '../expr'
+import { formulasInOrder, namesOf } from '../expr'
 
 export interface RuntimeState {
   /**
@@ -25,14 +25,14 @@ export interface RuntimeState {
    * slot id -> active view-frame id, set by `show-in-slot`. A runtime *override*:
    * empty until a swap fires, at which point the renderer prefers this over the
    * slot's own `activeView` design default. (Slot defaults live on the document
-   * objects, not the IR, so they can't be seeded here.)
+   * nodes, not the behaviour, so they can't be seeded here.)
    */
   slotViews: Record<string, string>
 }
 
-const safeEval = (expr: Expr, env: Record<string, unknown>, ir: PageInteractions): unknown => {
+const safeEval = (expr: Expr, env: Record<string, unknown>, b: Behaviour): unknown => {
   try {
-    return evaluate(namesOf(expr, ir), env)
+    return evaluate(namesOf(expr, b), env)
   } catch {
     return undefined
   }
@@ -40,9 +40,9 @@ const safeEval = (expr: Expr, env: Record<string, unknown>, ir: PageInteractions
 
 /** A cell's current value in an environment (a node's cell sits under its node). */
 export function cellValue(env: Record<string, unknown>, c: Cell): unknown {
-  if (c.owner.kind !== 'node') return env[c.id]
-  const root = env[nodeRef(c.owner.node)]
-  return isRecord(root) ? root[c.id] : undefined
+  if (c.node == null) return env[c.name]
+  const root = env[nodeRef(c.node)]
+  return isRecord(root) ? root[c.name] : undefined
 }
 const asArray = (x: unknown): unknown[] => (Array.isArray(x) ? x : [])
 const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
@@ -57,9 +57,6 @@ const asNumber = (x: unknown): number => {
  * agree without either inspecting runtime values.
  */
 const isObjectLiteral = (expr: Expr): boolean => expr.type === 'object'
-// JSON round-trip, not structuredClone: cell initials are always JSON, and the
-// IR may arrive as a valtio tracking proxy (from useSnapshot) that
-// structuredClone rejects with DataCloneError.
 const clone = <T>(x: T): T => (x === undefined ? x : (JSON.parse(JSON.stringify(x)) as T))
 
 /** A cell's starting value: its initial, or an enum's first value when unset. */
@@ -68,13 +65,13 @@ function startValue(c: Cell): unknown {
   return clone(c.initial)
 }
 
-export function initRuntime(ir: PageInteractions): RuntimeState {
+export function initRuntime(b: Behaviour): RuntimeState {
   // One loop for every cell, wherever its value comes from: a store cell's
   // `initial` IS its sample, which is what the preview runs on. A cell with no
   // sample stays undefined and renders as nothing — the honest display of "the
   // design doesn't know this value", not a rendering bug.
   const store: Record<string, unknown> = {}
-  for (const c of ir.cells) if (!isFormula(c)) store[cellRef(c)] = startValue(c)
+  for (const c of b.cells) if (!isFormula(c)) store[cellRef(c)] = startValue(c)
   return { store, slotViews: {} }
 }
 
@@ -83,26 +80,26 @@ export function initRuntime(ir: PageInteractions): RuntimeState {
  * id, a node's cell under `env[node][cell]` so `card.state` evaluates.
  */
 function place(env: Record<string, unknown>, c: Cell, value: unknown): void {
-  if (c.owner.kind === 'node') {
-    const root = nodeRef(c.owner.node)
-    env[root] = { ...(isRecord(env[root]) ? env[root] : {}), [c.id]: value }
-  } else env[c.id] = value
+  if (c.node != null) {
+    const root = nodeRef(c.node)
+    env[root] = { ...(isRecord(env[root]) ? env[root] : {}), [c.name]: value }
+  } else env[c.name] = value
 }
 
-/** Build the evaluation environment: stored cells, then formulas in declaration order. */
-export function buildEnv(ir: PageInteractions, rt: RuntimeState, extra: Record<string, unknown> = {}): Record<string, unknown> {
+/** Build the evaluation environment: stored cells, then formulas after what they read. */
+export function buildEnv(b: Behaviour, rt: RuntimeState, extra: Record<string, unknown> = {}): Record<string, unknown> {
   const env: Record<string, unknown> = { ...extra }
-  for (const c of ir.cells) if (!isFormula(c)) place(env, c, rt.store[cellRef(c)])
-  for (const c of ir.cells) if (isFormula(c)) place(env, c, safeEval(c.formula!, env, ir))
+  for (const c of b.cells) if (!isFormula(c)) place(env, c, rt.store[cellRef(c)])
+  for (const c of formulasInOrder(b)) place(env, c, safeEval(c.formula!, env, b))
   return env
 }
 
 /** The store key an action target writes: the cell it addresses (`card.state`), or a node (a slot). */
-function targetKey(ir: PageInteractions, target: Ref | undefined): string {
+function targetKey(b: Behaviour, target: Ref | undefined): string {
   if (!target) return ''
   switch (target.kind) {
     case 'cell': {
-      const c = cellOf(ir, target)
+      const c = cellOf(b, target)
       return c ? cellRef(c) : target.cell
     }
     case 'node':
@@ -112,10 +109,10 @@ function targetKey(ir: PageInteractions, target: Ref | undefined): string {
   }
 }
 
-/** Apply one action. `ir` resolves the target to its cell (a node's cell is stored as `card.state`). */
-export function applyAction(a: Action, env: Record<string, unknown>, rt: RuntimeState, ir: PageInteractions): RuntimeState {
-  const key = targetKey(ir, a.target)
-  const value = a.value != null ? safeEval(a.value, env, ir) : undefined
+/** Apply one action. `b` resolves the target to its cell (a node's cell is stored as `card.state`). */
+export function applyAction(a: Action, env: Record<string, unknown>, rt: RuntimeState, b: Behaviour): RuntimeState {
+  const key = targetKey(b, a.target)
+  const value = a.value != null ? safeEval(a.value, env, b) : undefined
   const setVar = (v: unknown): RuntimeState => ({ ...rt, store: { ...rt.store, [key]: v } })
   switch (a.type) {
     case 'collection.append':
@@ -123,11 +120,11 @@ export function applyAction(a: Action, env: Record<string, unknown>, rt: Runtime
     case 'collection.insert': {
       // `at` clamps into range; absent means 0, so the plain form is a prepend.
       const prev = asArray(rt.store[key])
-      const at = Math.max(0, Math.min(prev.length, Math.trunc(asNumber(safeEval(actionParam(a, 'at') ?? LIT(0), env, ir)))))
+      const at = Math.max(0, Math.min(prev.length, Math.trunc(asNumber(safeEval(actionParam(a, 'at') ?? LIT(0), env, b)))))
       return setVar([...prev.slice(0, at), value, ...prev.slice(at)])
     }
     case 'collection.remove':
-      return setVar(asArray(rt.store[key]).filter((item) => !safeEval(a.value ?? LIT(false), { ...env, item }, ir)))
+      return setVar(asArray(rt.store[key]).filter((item) => !safeEval(a.value ?? LIT(false), { ...env, item }, b)))
     case 'collection.update': {
       const where = actionParam(a, 'where')
       const patch = a.value ? isObjectLiteral(a.value) : false
@@ -135,9 +132,9 @@ export function applyAction(a: Action, env: Record<string, unknown>, rt: Runtime
         asArray(rt.store[key]).map((item) => {
           const itemEnv = { ...env, item }
           // No `where` means every item — stated in the panel, never silent.
-          if (where && !safeEval(where, itemEnv, ir)) return item
+          if (where && !safeEval(where, itemEnv, b)) return item
           if (!a.value) return item
-          const next = safeEval(a.value, itemEnv, ir)
+          const next = safeEval(a.value, itemEnv, b)
           return patch && isRecord(item) && isRecord(next) ? { ...item, ...next } : next
         }),
       )
@@ -180,10 +177,10 @@ export function activeSlotView(
   return slotViews[slotId] ?? designDefault
 }
 
-export function runInteraction(ir: PageInteractions, rt: RuntimeState, it: Interaction, env: Record<string, unknown>): RuntimeState {
-  if (it.if && !safeEval(it.if, env, ir)) return rt
+export function runRule(b: Behaviour, rt: RuntimeState, rule: Rule, env: Record<string, unknown>): RuntimeState {
+  if (rule.if && !safeEval(rule.if, env, b)) return rt
   let next = rt
-  for (const a of it.do) next = applyAction(a, env, next, ir)
+  for (const a of rule.do) next = applyAction(a, env, next, b)
   return next
 }
 
@@ -236,11 +233,10 @@ export function diffRuntime(before: RuntimeState, after: RuntimeState): StateCha
  *
  * Derived, not recorded. There is no log of outward calls because there is no
  * authored outward call: the write is the event, and living in a store is what
- * makes it one. Same question `normalize` answers by growing an out port and
- * `emitReactComponent` answers by emitting a callback.
+ * makes it one. Same question `emitReactComponent` answers by emitting a callback.
  */
-export function leavesDesign(ir: PageInteractions, change: StateChange): boolean {
-  return change.kind === 'cell' && ir.cells.some((c) => cellRef(c) === change.id && isBacked(c))
+export function leavesDesign(b: Behaviour, change: StateChange): boolean {
+  return change.kind === 'cell' && b.cells.some((c) => cellRef(c) === change.id && isBacked(c))
 }
 
 /**
@@ -252,9 +248,9 @@ export function leavesDesign(ir: PageInteractions, change: StateChange): boolean
  * evaluates to undefined in both environments, so it never reports on its own.
  * The `repeat` reference covers that case at the template level instead.
  */
-export function affectedNodes(ir: PageInteractions, before: RuntimeState, after: RuntimeState): AffectedNode[] {
-  const envBefore = buildEnv(ir, before)
-  const envAfter = buildEnv(ir, after)
+export function affectedNodes(b: Behaviour, before: RuntimeState, after: RuntimeState): AffectedNode[] {
+  const envBefore = buildEnv(b, before)
+  const envAfter = buildEnv(b, after)
   const byNode = new Map<NodeId, Set<string>>()
   const mark = (node: NodeId, prop: string) => {
     const set = byNode.get(node) ?? new Set<string>()
@@ -262,14 +258,12 @@ export function affectedNodes(ir: PageInteractions, before: RuntimeState, after:
     byNode.set(node, set)
   }
 
-  for (const r of ir.refs) {
-    for (const [prop, expr] of Object.entries(r.props)) {
-      if (!same(safeEval(expr, envBefore, ir), safeEval(expr, envAfter, ir))) mark(r.node, prop === REPEAT_PROP ? 'list' : prop)
-    }
+  for (const x of b.bindings) {
+    if (!same(safeEval(x.expr, envBefore, b), safeEval(x.expr, envAfter, b))) mark(x.node, x.prop === REPEAT_PROP ? 'list' : x.prop)
   }
   for (const c of diffRecord('cell', before.store, after.store)) {
-    const cell = ir.cells.find((x) => cellRef(x) === c.id)
-    if (cell?.owner.kind === 'node') mark(cell.owner.node, cell.id)
+    const cell = b.cells.find((x) => cellRef(x) === c.id)
+    if (cell?.node != null) mark(cell.node, cell.name)
   }
   for (const c of diffRecord('slot', before.slotViews, after.slotViews)) mark(c.id, 'view')
 
@@ -304,9 +298,8 @@ export function pushActivity(log: LoggedActivity[], entry: ActivityEntry, cap = 
 }
 
 /** The list a repeated node maps over, if the node is repeated. */
-export function repeatOf(ir: PageInteractions, node: NodeId): { over: Expr; as: string; key?: Expr } | undefined {
-  const refs = refsOf(ir, node)
-  const over = refs?.props[REPEAT_PROP]
-  if (!over) return undefined
-  return { over, as: refs?.item?.as ?? 'item', key: refs?.item?.key }
+export function repeatOf(b: Behaviour, node: NodeId): { over: Expr; as: string; key?: Expr } | undefined {
+  const x = bindingOf(b, node, REPEAT_PROP)
+  if (!x) return undefined
+  return { over: x.expr, as: x.item?.as ?? 'item', key: x.item?.key }
 }

@@ -7,17 +7,15 @@
  * store, the selection and the undo stack.
  */
 import type { Fill, PenpotDocument, PenpotNode, PenpotPage, Stroke, TextContent } from 'penpot-exporter/types'
-import { applyAll } from '../../src/lib/doc/apply'
 import { rebuildDerived } from '../../src/lib/doc/derived'
 import {
-  add,
   clearHistory,
   clearTables,
   currentPageId,
   getNode,
   importDocument,
+  loadImported,
   meta,
-  tables,
 } from '../../src/lib/doc'
 import { clearSelection } from '../../src/lib/renderer/store/document-selection'
 
@@ -119,11 +117,20 @@ export function makeBaseDocument(options: DocOptions = {}): PenpotDocument {
 /** Load `doc` into the store directly. First page becomes current. */
 export function seedDocument(doc: PenpotDocument): void {
   const imported = importDocument(doc)
-  clearTables()
-  applyAll(tables, [...imported.pages.map((p) => add('page', p)), ...imported.nodes.map((n) => add('node', n))])
-  rebuildDerived()
-  meta.value = imported.meta
+  loadImported(imported)
   currentPageId.value = imported.pages[0]?.id ?? null
+}
+
+/** A fresh document with one page holding a plain 10×10 rect per id. */
+export function seedNodes(nodeIds: readonly string[], pageId = PAGE_ID): void {
+  resetWorkspace()
+  const node = (id: string) => ({ id, type: 'rect', name: id, x: 0, y: 0, width: 10, height: 10 }) as unknown as PenpotNode
+  seedDocument({
+    id: 'doc',
+    name: 'doc',
+    components: {},
+    children: [{ id: pageId, name: 'Page', children: nodeIds.map(node) }],
+  } as unknown as PenpotDocument)
 }
 
 /** Empty store, selection and history between tests. */

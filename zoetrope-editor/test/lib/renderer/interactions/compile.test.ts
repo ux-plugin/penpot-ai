@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { normalize } from '../../../../src/lib/renderer/interactions/compile/normalize'
 import { emitReactComponent, type PNode } from '../../../../src/lib/renderer/interactions/compile/emit-react'
-import { validatePageInteractions } from '../../../../src/lib/renderer/interactions/addressing'
+import { validateBehaviour } from '../../../../src/lib/renderer/interactions/addressing'
 import { initDefaultCatalog } from '../../../../src/lib/renderer/interactions/catalog'
-import { todoIR } from './todo-ir'
+import { todo } from './behaviour-fixtures'
 
 const NODE_IDS = new Set(['page', 'addBtn', 'list', 'row'])
 
@@ -20,24 +19,11 @@ const presentation: PNode = {
 
 beforeAll(() => initDefaultCatalog())
 
-describe('normalize (sugar -> reactive graph)', () => {
-  it('lowers each sugar element to the right node-kind', () => {
-    const g = normalize(todoIR())
-    const kinds = g.nodes.map((n) => n.kind)
-    expect(kinds.filter((k) => k === 'derive')).toHaveLength(1) // isEmpty
-    expect(kinds.filter((k) => k === 'fold')).toHaveLength(1) // append
-    expect(kinds.filter((k) => k === 'sink')).toHaveLength(3) // disabled, repeat, text
-    expect(kinds).toContain('source') // items signal + press event
-    const fold = g.nodes.find((n) => n.kind === 'fold')
-    expect(fold && fold.kind === 'fold' && fold.state).toBe('items')
-  })
-})
+describe('emit-react (behaviour -> React)', () => {
+  const source = emitReactComponent(todo(), presentation, { componentName: 'TodoDemo' })
 
-describe('emit-react (IR -> React)', () => {
-  const source = emitReactComponent(todoIR(), presentation, { componentName: 'TodoDemo' })
-
-  it('cross-checks: the IR validates against its node ids', () => {
-    expect(validatePageInteractions(todoIR(), NODE_IDS)).toEqual([])
+  it('cross-checks: the behaviour validates against its node ids', () => {
+    expect(validateBehaviour(todo(), NODE_IDS)).toEqual([])
   })
 
   it('emits idiomatic state, formulas, and a handler', () => {

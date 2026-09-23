@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { seedNodes } from '../../fixtures'
 import { transformRectAABB } from '../../../../src/lib/renderer/geom/matrix'
 import {
   getAnimatedAABB,
@@ -8,6 +9,8 @@ import {
 } from '../../../../src/lib/renderer/motion/animated-pose'
 import { seekMotion, setMotionShapes, stopMotion } from '../../../../src/lib/renderer/motion/motion-store'
 import { setKeyframe } from '../../../../src/lib/renderer/motion/edit'
+
+beforeEach(() => seedNodes(['s1']))
 
 afterEach(() => {
   stopMotion()

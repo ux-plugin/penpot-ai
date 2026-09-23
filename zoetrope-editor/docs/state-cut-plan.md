@@ -1,7 +1,7 @@
 # State cut — plan
 
-Status: steps a, b and c landed 2026-09-23 (`src/lib/doc/`). Builds
-`state-model.md` and `history-model.md`. Steps d–f open.
+Status: steps a–d landed 2026-09-23 (`src/lib/doc/`). Builds
+`state-model.md` and `history-model.md`. Steps e and f open.
 
 ## Rules
 
@@ -195,6 +195,23 @@ index per reference field built on first use, with `childrenOf` answering
 each row subscribed to its own node, collapsible. New references declared:
 `shapeRef`, `views`, `activeView`. The interactions deletions moved to d:
 they need cells, bindings and rules to be records first.
+
+What d built: `cell`, `binding`, `rule`, `timeline`, `store` are kinds
+(`doc/schema/behaviour.ts`). A cell's owner is its references: `node` (and
+that node's `page`), `page` only, or neither for a document cell; ownership
+cascades, so a node's rules, bindings, own cells and motion go with it in one
+frame. Interactions and app rules are one `Rule` (`node` optional, fractional
+`order`); a binding is one property. The engine (runtime, emitter,
+addressing, anchors) reads a page's `Behaviour = { cells, bindings, rules }`
+from `behaviourOf(page)`; the inspector's edits are change builders. The AI
+chat speaks `TextBehaviour` (`toText` / `fromText`, ids kept where records
+match); the offline interpreter is gone. `motionShapes` is a computed over the
+current page's timelines, so motion persists and undoes. The exported document
+carries behaviour as flat `records` per kind; `meta.stores` and the
+`set-stores` doc-meta change are gone, and so is the aspects mechanism (its
+only user was the interactions aspect). Not built: cell references inside
+expressions are not declared to the registry (`expr()` in §2), so `readersOf`
+cannot yet answer "who reads this cell".
 
 ## Decide before a
 

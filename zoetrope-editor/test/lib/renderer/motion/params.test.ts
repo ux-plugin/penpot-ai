@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { seedNodes } from '../../fixtures'
 import { evaluateTimeline } from '../../../../src/lib/renderer/anim/evaluate'
 import {
   addNumberParam,
@@ -10,6 +11,8 @@ import {
   setMotionShapes,
   setParamValue,
 } from '../../../../src/lib/renderer/motion/motion-store'
+
+beforeEach(() => seedNodes(['s1']))
 
 afterEach(() => {
   setMotionShapes([])
@@ -44,7 +47,7 @@ describe('parameter store', () => {
   it('binds a property to a parameter so the evaluator drives it live', () => {
     const id = addNumberParam(0, 1)
     bindPropertyToParam('s1', 'x', id, 100)
-    const tl = motionShapes.value.find((s) => s.targetId === 's1')!.timeline
+    const tl = motionShapes.value.find((s) => s.node === 's1')!.timeline
     // param at min -> delta 0; at mid -> 50; at max -> 100 (through the real evaluator)
     expect(evaluateTimeline(tl, { time: 0, params: { [id]: 0 } }).get('s1')).toEqual({ x: 0 })
     expect(evaluateTimeline(tl, { time: 0, params: { [id]: 0.5 } }).get('s1')).toEqual({ x: 50 })

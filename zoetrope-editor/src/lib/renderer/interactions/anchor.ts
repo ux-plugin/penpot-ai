@@ -21,8 +21,8 @@
  * The attribute format lives here so the emitter and the validator can't drift.
  */
 
-import type { PageInteractions, NodeId } from './ir'
-import { referencedNodeIds } from './ir'
+import type { Behaviour, NodeId } from './ir'
+import { behaviourNodes } from './ir'
 import type { PNode } from './compile/emit-react'
 
 export const ANCHOR_ATTR = 'data-node-id'
@@ -35,7 +35,7 @@ export const instanceKeyAttr = (keyExpr: string): string => `${INSTANCE_KEY_ATTR
  * Node ids that MUST be anchored because they carry behavior: an interaction,
  * a property reference, or a cell of their own.
  */
-export const requiredAnchors = (ir: PageInteractions): Set<NodeId> => referencedNodeIds(ir)
+export const requiredAnchors = (b: Behaviour): Set<NodeId> => behaviourNodes(b)
 
 /**
  * Count `data-node-id` occurrences in a JSX source string. Supports the two
@@ -82,8 +82,8 @@ export interface AnchorReport {
  * Extra anchors on purely-presentational nodes are allowed (they just carry no
  * behavior) — but duplicates are never allowed, since they break identity.
  */
-export function validateAnchors(ir: PageInteractions, anchors: Map<NodeId, number>): AnchorReport {
-  const required = requiredAnchors(ir)
+export function validateAnchors(b: Behaviour, anchors: Map<NodeId, number>): AnchorReport {
+  const required = requiredAnchors(b)
   const violations: AnchorViolation[] = []
   for (const node of required) {
     const count = anchors.get(node) ?? 0
@@ -95,13 +95,13 @@ export function validateAnchors(ir: PageInteractions, anchors: Map<NodeId, numbe
   return { ok: violations.length === 0, violations }
 }
 
-/** Validate a generated/AI JSX source string against the IR's behavior. */
-export const validateGeneratedSource = (ir: PageInteractions, source: string): AnchorReport =>
-  validateAnchors(ir, collectAnchors(source))
+/** Validate a generated/AI JSX source string against the page's behaviour. */
+export const validateGeneratedSource = (b: Behaviour, source: string): AnchorReport =>
+  validateAnchors(b, collectAnchors(source))
 
-/** Validate a structured presentation tree against the IR's behavior. */
-export const validatePresentation = (ir: PageInteractions, root: PNode): AnchorReport =>
-  validateAnchors(ir, collectAnchorsFromTree(root))
+/** Validate a structured presentation tree against the page's behaviour. */
+export const validatePresentation = (b: Behaviour, root: PNode): AnchorReport =>
+  validateAnchors(b, collectAnchorsFromTree(root))
 
 export function formatAnchorReport(report: AnchorReport): string {
   if (report.ok) return 'anchors OK'

@@ -14,16 +14,16 @@ describe('changes-builder', () => {
   it('mergeBundle keeps redo order and reverses doc-meta undo order', () => {
     let a = emptyChangesBuilder()
     a = appendDocMetaPair(a, {
-      redo: { type: 'set-stores', stores: [] },
-      undo: { type: 'set-stores', stores: [{ id: 'A', name: 'a' } as never] },
+      redo: { type: 'set-active-themes', activeThemes: [] },
+      undo: { type: 'set-active-themes', activeThemes: ['A'] },
     })
     let b = emptyChangesBuilder()
     b = appendDocMetaPair(b, {
-      redo: { type: 'set-stores', stores: [{ id: 'B', name: 'b' } as never] },
-      undo: { type: 'set-stores', stores: [] },
+      redo: { type: 'set-active-themes', activeThemes: ['B'] },
+      undo: { type: 'set-active-themes', activeThemes: [] },
     })
     const m = mergeBundle(a, b)
-    expect(m.docMeta?.map((c) => (c.type === 'set-stores' ? c.stores.length : -1))).toEqual([0, 1])
-    expect(m.docMetaUndo?.map((c) => (c.type === 'set-stores' ? c.stores.length : -1))).toEqual([0, 1])
+    expect(m.docMeta?.map((c) => (c.type === 'set-active-themes' ? c.activeThemes.length : -1))).toEqual([0, 1])
+    expect(m.docMetaUndo?.map((c) => (c.type === 'set-active-themes' ? c.activeThemes.length : -1))).toEqual([0, 1])
   })
 })

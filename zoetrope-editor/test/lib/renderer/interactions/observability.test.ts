@@ -10,12 +10,12 @@
 
 import { describe, it, expect, beforeAll } from 'vitest'
 import { initDefaultCatalog } from '../../../../src/lib/renderer/interactions/catalog'
-import type { PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
-import { pageCell, listCell, variantCell, up } from './todo-ir'
+import type { Behaviour } from '../../../../src/lib/renderer/interactions/ir'
+import { beh, pageCell, listCell, variantCell } from './behaviour-fixtures'
 import {
   initRuntime,
   buildEnv,
-  runInteraction,
+  runRule,
   diffRuntime,
   affectedNodes,
   pushActivity,
@@ -54,23 +54,21 @@ describe('diffRuntime', () => {
 
 describe('affectedNodes — where an effect actually lands', () => {
   /** Click Save → status flips; a Badge elsewhere reads status through a reference. */
-  function ir(): PageInteractions {
-    return up({
+  function ir(): Behaviour {
+    return beh({
       cells: [pageCell('status', 'string', 'draft')],
-      refs: [
-        { node: 'badge', props: { text: 'status' } },
-        { node: 'footer', props: { text: '"static"' } },
+      bindings: [
+        { node: 'badge', prop: 'text', expr: 'status' },
+        { node: 'footer', prop: 'text', expr: '"static"' },
       ],
-      interactions: [
-        { id: 'i1', on: { node: 'saveBtn', trigger: { type: 'press' } }, do: [{ type: 'set-variable', target: 'status', value: '"done"' }] },
-      ],
+      rules: [{ id: 'i1', node: 'saveBtn', on: { type: 'press' }, do: [{ type: 'set-variable', target: 'status', value: '"done"' }] }],
     })
   }
 
   it('names the node whose reference changed — not the node that was clicked', () => {
     const model = ir()
     const before = initRuntime(model)
-    const after = runInteraction(model, before, model.interactions[0], buildEnv(model, before))
+    const after = runRule(model, before, model.rules[0], buildEnv(model, before))
 
     const affected = affectedNodes(model, before, after)
     expect(affected).toEqual([{ node: 'badge', props: ['text'] }])
@@ -82,19 +80,19 @@ describe('affectedNodes — where an effect actually lands', () => {
   it('leaves references that do not depend on the change alone', () => {
     const model = ir()
     const before = initRuntime(model)
-    const after = runInteraction(model, before, model.interactions[0], buildEnv(model, before))
+    const after = runRule(model, before, model.rules[0], buildEnv(model, before))
     expect(affectedNodes(model, before, after).map((a) => a.node)).not.toContain('footer')
   })
 
   it('flags a repeated template when its list changes', () => {
-    const model = up({ cells: [listCell('items')], refs: [{ node: 'row', props: { repeat: 'items' } }] })
+    const model = beh({ cells: [listCell('items')], bindings: [{ node: 'row', prop: 'repeat', expr: 'items' }] })
     const before = initRuntime(model)
     const after = { ...before, store: { items: [{ id: 1 }] } }
     expect(affectedNodes(model, before, after)).toEqual([{ node: 'row', props: ['list'] }])
   })
 
   it('flags a node whose own cell changed and a slot that swapped', () => {
-    const model = up({ cells: [variantCell('card', ['idle', 'open'])] })
+    const model = beh({ cells: [variantCell('card', ['idle', 'open'])] })
     const affected = affectedNodes(model, rtOf({ 'card.state': 'idle' }, {}), rtOf({ 'card.state': 'open' }, { outlet: 'about' }))
     expect(affected).toEqual([
       { node: 'card', props: ['state'] },

@@ -3,7 +3,7 @@
  *
  *   expand bulk → effects → apply (cascading deletes) → derived → undo frame → emit
  *
- * Effects (component sync, aspects, …) see the document as it stands before
+ * Effects (component sync, 3D crop resize) see the document as it stands before
  * apply and return more changes for the same frame. They are skipped on
  * undo/redo replay, whose frames already carry them.
  *
@@ -30,15 +30,9 @@ export interface CommitParams {
   /** Undo/redo replay: no frame, no effects. */
   fromHistory?: boolean
   ignoreRendererSync?: boolean
-  /** Subtrees this commit duplicates (source id → new id), for effects that follow copies. */
-  copies?: ReadonlyArray<ReadonlyMap<string, string>>
 }
 
-export interface EffectContext {
-  copies: ReadonlyArray<ReadonlyMap<string, string>>
-}
-
-export type Effect = (changes: readonly Change[], ctx: EffectContext) => readonly LocalChange[]
+export type Effect = (changes: readonly Change[]) => readonly LocalChange[]
 
 const effects: Effect[] = []
 
@@ -117,10 +111,9 @@ export async function commitChanges(params: CommitParams): Promise<void> {
   let changes = expand(params.changes ?? [])
 
   if (!fromHistory && effects.length > 0 && changes.length > 0) {
-    const ctx: EffectContext = { copies: params.copies ?? [] }
     const extra: Change[] = []
     const seen = withCascade(changes)
-    for (const fx of effects) extra.push(...expand(fx(seen, ctx)))
+    for (const fx of effects) extra.push(...expand(fx(seen)))
     if (extra.length > 0) changes = [...changes, ...extra]
   }
 

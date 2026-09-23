@@ -1,5 +1,5 @@
 /**
- * InteractionRuntime — renders a PageInteractions IR as a LIVE interactive React
+ * InteractionRuntime — renders a page's `Behaviour` as a LIVE interactive React
  * tree (the "preview mode"). Thin wrapper over the pure runtime core: state lives
  * in `useState`, the presentation `PNode` tree is walked into real elements with
  * bound props, event handlers, and repeaters. Every element keeps its
@@ -7,8 +7,8 @@
  */
 
 import { useEffect, useMemo, useState, createElement, type ReactNode } from 'react'
-import type { PageInteractions, Interaction, Expr } from '../ir'
-import { cellRef, editedCell, refsOf, REPEAT_PROP, VALUE_PROP } from '../ir'
+import type { Behaviour, Rule, Expr } from '../ir'
+import { bindingsOn, cellRef, editedCell, REPEAT_PROP, VALUE_PROP } from '../ir'
 import {
   STYLE_PROPS,
   VOID_TAGS,
@@ -22,7 +22,7 @@ import { namesOf } from '../expr'
 import {
   initRuntime,
   buildEnv,
-  runInteraction,
+  runRule,
   activeSlotView,
   diffRuntime,
   affectedNodes,
@@ -39,8 +39,8 @@ type Edit = (node: string, target: string, value: unknown) => void
 
 /**
  * Runtime state plus what produced it (null before anything fires). The cause is
- * flattened to node+trigger rather than the Interaction itself, so a two-way
- * edit — which has no Interaction — reports through the same path and shows up
+ * flattened to node+trigger rather than the rule itself, so a two-way
+ * edit — which has no rule — reports through the same path and shows up
  * in the activity log like everything else.
  */
 interface Snapshot {
@@ -54,9 +54,9 @@ const EVENT_PROP: Record<string, string> = {
   'mouse-leave': 'onMouseLeave',
 }
 
-const safeEval = (expr: Expr, env: Env, ir: PageInteractions): unknown => {
+const safeEval = (expr: Expr, env: Env, b: Behaviour): unknown => {
   try {
-    return evaluate(namesOf(expr, ir), env)
+    return evaluate(namesOf(expr, b), env)
   } catch {
     return undefined
   }
@@ -66,11 +66,11 @@ const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'obj
 const asText = (v: unknown): string => (typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? ''))
 
 export function InteractionRuntime({
-  ir,
+  behaviour: b,
   root,
   onRuntime,
 }: {
-  ir: PageInteractions
+  behaviour: Behaviour
   root: PNode
   /**
    * Observe the running state. Called once on mount and after every state
@@ -84,14 +84,14 @@ export function InteractionRuntime({
   // produced this state and what preceded it, so the reporting effect can diff
   // without a ref. The updater stays pure — StrictMode's double-invoke yields
   // the same snapshot rather than a duplicate log entry.
-  const [snap, setSnap] = useState<Snapshot>(() => ({ rt: initRuntime(ir), cause: null }))
+  const [snap, setSnap] = useState<Snapshot>(() => ({ rt: initRuntime(b), cause: null }))
   const { rt } = snap
-  const env = useMemo(() => buildEnv(ir, rt), [ir, rt])
+  const env = useMemo(() => buildEnv(b, rt), [b, rt])
   // recompute env from the *current* state inside the updater to avoid staleness
-  const fire = (it: Interaction) =>
+  const fire = (rule: Rule) =>
     setSnap((cur) => ({
-      rt: runInteraction(ir, cur.rt, it, buildEnv(ir, cur.rt)),
-      cause: { node: it.on.node, trigger: it.on.trigger.type, before: cur.rt },
+      rt: runRule(b, cur.rt, rule, buildEnv(b, cur.rt)),
+      cause: { node: rule.node ?? '', trigger: rule.on.type, before: cur.rt },
     }))
 
   /** The write half of an edited cell: a discrete event folding into it. */
@@ -114,40 +114,40 @@ export function InteractionRuntime({
       node: cause.node,
       trigger: cause.trigger,
       changes: diffRuntime(cause.before, state),
-      affected: affectedNodes(ir, cause.before, state),
+      affected: affectedNodes(b, cause.before, state),
     })
-  }, [snap, ir, onRuntime])
+  }, [snap, b, onRuntime])
 
-  return <>{renderNode(root, env, ir, fire, edit, rt.slotViews)}</>
+  return <>{renderNode(root, env, b, fire, edit, rt.slotViews)}</>
 }
 
 function renderNode(
   node: PNode,
   env: Env,
-  ir: PageInteractions,
-  fire: (it: Interaction) => void,
+  b: Behaviour,
+  fire: (rule: Rule) => void,
   edit: Edit,
   slots: Record<string, string>,
   key?: number | string,
 ): ReactNode {
-  const rep = repeatOf(ir, node.nodeId)
+  const rep = repeatOf(b, node.nodeId)
   if (rep) {
-    const coll = asArray(safeEval(rep.over, env, ir))
+    const coll = asArray(safeEval(rep.over, env, b))
     return coll.map((item, i) => {
       const itemEnv: Env = { ...env, [rep.as]: item }
-      const k = rep.key ? safeEval(rep.key, itemEnv, ir) : isRecord(item) && 'id' in item ? item.id : i
+      const k = rep.key ? safeEval(rep.key, itemEnv, b) : isRecord(item) && 'id' in item ? item.id : i
       const key = typeof k === 'string' || typeof k === 'number' ? k : i
-      return renderElement(node, itemEnv, ir, fire, edit, slots, true, key)
+      return renderElement(node, itemEnv, b, fire, edit, slots, true, key)
     })
   }
-  return renderElement(node, env, ir, fire, edit, slots, false, key)
+  return renderElement(node, env, b, fire, edit, slots, false, key)
 }
 
 function renderElement(
   node: PNode,
   env: Env,
-  ir: PageInteractions,
-  fire: (it: Interaction) => void,
+  b: Behaviour,
+  fire: (rule: Rule) => void,
   edit: Edit,
   slots: Record<string, string>,
   instance: boolean,
@@ -164,13 +164,12 @@ function renderElement(
     if (instance) props['data-instance-key'] = key
   }
 
-  const refs = refsOf(ir, node.nodeId)
-  const edited = editedCell(ir, node.nodeId)
+  const edited = editedCell(b, node.nodeId)
   let textChild: unknown
-  for (const [prop, from] of Object.entries(refs?.props ?? {})) {
+  for (const { prop, expr } of bindingsOn(b, node.nodeId)) {
     if (prop === REPEAT_PROP) continue
     if (prop === VALUE_PROP && edited) continue
-    const val = safeEval(from, env, ir)
+    const val = safeEval(expr, env, b)
     if (prop === 'text' || prop === 'children') textChild = val
     else if (STYLE_PROPS.has(prop)) style[prop] = val
     else props[prop] = val
@@ -180,7 +179,7 @@ function renderElement(
   // Edited cell: read it into the value prop, write the change back into it.
   if (edited) {
     const key = cellRef(edited)
-    const inputType = inputTypeFor(ir, node.nodeId)
+    const inputType = inputTypeFor(b, node.nodeId)
     if (inputType) props.type = inputType
     props[VALUE_PROP] = cellValue(env, edited) ?? ''
     props.onChange = (ev: { target: { value: unknown } }) => edit(node.nodeId, key, ev.target.value)
@@ -188,20 +187,20 @@ function renderElement(
 
   // Only the events the design authored — matching the emitted code, which adds
   // no role, tab stop or keyboard activation on top of an authored click.
-  for (const it of ir.interactions) {
-    if (it.on.node !== node.nodeId) continue
-    const ev = EVENT_PROP[it.on.trigger.type]
+  for (const rule of b.rules) {
+    if (rule.node !== node.nodeId) continue
+    const ev = EVENT_PROP[rule.on.type]
     if (!ev) continue
-    props[ev] = () => fire(it)
+    props[ev] = () => fire(rule)
   }
 
   let children: ReactNode
   if (node.slot) {
     const activeId = activeSlotView(slots, node.nodeId, node.slot.activeView)
     const view = activeId ? node.slot.views[activeId] : undefined
-    children = view ? renderNode(view, env, ir, fire, edit, slots) : null
+    children = view ? renderNode(view, env, b, fire, edit, slots) : null
   } else if (textChild !== undefined) children = asText(textChild)
-  else if (node.children) children = node.children.map((c, i) => renderNode(c, env, ir, fire, edit, slots, i))
+  else if (node.children) children = node.children.map((c, i) => renderNode(c, env, b, fire, edit, slots, i))
   else children = node.text ?? null
 
   const tag = tagForRole(node.role)

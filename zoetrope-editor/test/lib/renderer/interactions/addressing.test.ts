@@ -3,40 +3,43 @@ import {
   buildScope,
   resolveRoot,
   parseRefPath,
-  validatePageInteractions,
+  validateBehaviour,
   AddressingError,
 } from '../../../../src/lib/renderer/interactions/addressing'
-import type { PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
+import type { Behaviour } from '../../../../src/lib/renderer/interactions/ir'
+import type { TextBehaviour } from '../../../../src/lib/renderer/interactions/expr'
 import { initDefaultCatalog } from '../../../../src/lib/renderer/interactions/catalog'
-import { act, ex, listCell, formulaCell, refs, up, variantCell } from './todo-ir'
+import { act, beh, ex, listCell, formulaCell, variantCell } from './behaviour-fixtures'
 
 const NODE_IDS = new Set(['addBtn', 'list', 'card'])
 
-/** A valid "todo" page: add to list, disable-when-empty, a repeat, a variant set. */
-function todoIR(): PageInteractions {
-  return up({
+/**
+ * A valid "todo" page: add to list, disable-when-empty, a repeat, a variant
+ * set, and a list the real app supplies (a store cell is a cell like any other,
+ * so nothing reading an expression has to know where a value came from).
+ */
+function todoText(): TextBehaviour {
+  return {
     cells: [
       listCell('items'),
-      // A cell the real app supplies is a cell like any other — same kind in the
-      // scope, so nothing reading an expression has to know where a value came from.
       listCell('initialItems', [], { store: 'app' }),
       formulaCell('isEmpty', 'items.length == 0'),
       variantCell('card', ['collapsed', 'expanded'], { initial: 'collapsed' }),
     ],
-    interactions: [
-      { on: { node: 'addBtn', trigger: { type: 'press' } }, do: [{ type: 'collection.append', target: 'items', value: '{ label: "" }' }] },
+    rules: [{ node: 'addBtn', on: { type: 'press' }, do: [{ type: 'collection.append', target: 'items', value: '{ label: "" }' }] }],
+    bindings: [
+      { node: 'addBtn', prop: 'disabled', expr: 'isEmpty' },
+      { node: 'list', prop: 'repeat', expr: 'items', item: { as: 'item' } },
     ],
-    refs: [
-      { node: 'addBtn', props: { disabled: 'isEmpty' } },
-      { node: 'list', props: { repeat: 'items' }, item: { as: 'item' } },
-    ],
-  })
+  }
 }
+
+const todoB = (): Behaviour => beh(todoText())
 
 beforeAll(() => initDefaultCatalog())
 
 describe('buildScope / resolveRoot', () => {
-  const scope = buildScope(todoIR(), NODE_IDS)
+  const scope = buildScope(todoB(), NODE_IDS)
   it('classifies every kind of symbol', () => {
     expect(resolveRoot(scope, 'items')?.kind).toBe('cell')
     expect(resolveRoot(scope, 'isEmpty')?.kind).toBe('cell')
@@ -60,53 +63,52 @@ describe('parseRefPath', () => {
   })
 })
 
-describe('validatePageInteractions', () => {
+describe('validateBehaviour', () => {
   it('accepts a well-formed page with no issues', () => {
-    expect(validatePageInteractions(todoIR(), NODE_IDS)).toEqual([])
+    expect(validateBehaviour(todoB(), NODE_IDS)).toEqual([])
   })
 
   it('flags an unknown reference in a guard', () => {
-    const ir = todoIR()
-    ir.interactions[0].if = ex(ir, 'missing > 0')
-    const issues = validatePageInteractions(ir, NODE_IDS)
-    expect(issues.some((x) => /unknown reference 'missing'/.test(x.message))).toBe(true)
+    const b = todoB()
+    b.rules[0].if = ex(b, 'missing > 0')
+    const issues = validateBehaviour(b, NODE_IDS)
+    expect(issues).toContainEqual({ where: 'rule[0].if', message: "unknown reference 'missing'" })
   })
 
-  it('flags a reference on a node that does not exist', () => {
-    const ir = todoIR()
-    ir.refs.push(refs(ir, 'ghost', { disabled: 'isEmpty' }))
-    const issues = validatePageInteractions(ir, NODE_IDS)
-    expect(issues.some((x) => /unknown node 'ghost'/.test(x.message))).toBe(true)
+  it('flags a binding on a node that does not exist', () => {
+    const t = todoText()
+    const b = beh({ ...t, bindings: [...t.bindings, { node: 'ghost', prop: 'disabled', expr: 'isEmpty' }] })
+    const issues = validateBehaviour(b, NODE_IDS)
+    expect(issues.some((x) => x.where === 'bindings[2](ghost.disabled)' && /unknown node 'ghost'/.test(x.message))).toBe(true)
   })
 
   it('flags an action target of the wrong kind', () => {
-    const ir = todoIR()
-    // append must target a list; card.state is a value, but not a list
-    ir.interactions[0].do = [act(ir, { type: 'collection.append', target: 'card.state', value: '1' })]
-    const issues = validatePageInteractions(ir, NODE_IDS)
+    const b = todoB()
+    b.rules[0].do = [act(b, { type: 'collection.append', target: 'card.state', value: '1' })]
+    const issues = validateBehaviour(b, NODE_IDS)
     expect(issues.some((x) => /must be a list/.test(x.message))).toBe(true)
   })
 
   it('flags unknown action and trigger types', () => {
-    const ir = todoIR()
-    ir.interactions[0].on.trigger.type = 'hover'
-    ir.interactions[0].do = [{ type: 'frobnicate' }]
-    const issues = validatePageInteractions(ir, NODE_IDS)
+    const b = todoB()
+    b.rules[0].on.type = 'hover'
+    b.rules[0].do = [{ type: 'frobnicate' }]
+    const issues = validateBehaviour(b, NODE_IDS)
     expect(issues.some((x) => /unknown trigger 'hover'/.test(x.message))).toBe(true)
     expect(issues.some((x) => /unknown action 'frobnicate'/.test(x.message))).toBe(true)
   })
 
   it("writes a node's cell as <node>.<cell>, and refuses a cell the node does not have", () => {
-    const ir = todoIR()
-    ir.interactions[0].do = [act(ir, { type: 'set-variable', target: 'card.state', value: '"expanded"' })]
-    expect(validatePageInteractions(ir, NODE_IDS)).toEqual([])
-    ir.interactions[0].do = [act(ir, { type: 'set-variable', target: 'card.nope', value: '"expanded"' })]
-    expect(validatePageInteractions(ir, NODE_IDS).some((x) => /not a value/.test(x.message))).toBe(true)
+    const b = todoB()
+    b.rules[0].do = [act(b, { type: 'set-variable', target: 'card.state', value: '"expanded"' })]
+    expect(validateBehaviour(b, NODE_IDS)).toEqual([])
+    b.rules[0].do = [act(b, { type: 'set-variable', target: 'card.nope', value: '"expanded"' })]
+    expect(validateBehaviour(b, NODE_IDS).some((x) => /not a value/.test(x.message))).toBe(true)
   })
 
   it('refuses to write a formula', () => {
-    const ir = todoIR()
-    ir.interactions[0].do = [act(ir, { type: 'set-variable', target: 'isEmpty', value: 'true' })]
-    expect(validatePageInteractions(ir, NODE_IDS).some((x) => /formula/.test(x.message))).toBe(true)
+    const b = todoB()
+    b.rules[0].do = [act(b, { type: 'set-variable', target: 'isEmpty', value: 'true' })]
+    expect(validateBehaviour(b, NODE_IDS).some((x) => /formula/.test(x.message))).toBe(true)
   })
 })

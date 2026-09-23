@@ -3,7 +3,7 @@
  * schemas once; nothing per feature.
  */
 import type { z } from 'zod'
-import { schemas, refMetaOf, type Kind, type OnDelete, type AnyRecord } from './schema'
+import { KINDS, schemas, refMetaOf, type Kind, type OnDelete, type AnyRecord } from './schema'
 
 export interface RefField {
   field: string
@@ -76,4 +76,4 @@ export function cascadeFields(kind: Kind): readonly RefField[] {
   return refFields(kind).filter((f) => f.onDelete === 'cascade')
 }
 
-export const kinds = Object.keys(schemas) as Kind[]
+export const kinds: readonly Kind[] = KINDS

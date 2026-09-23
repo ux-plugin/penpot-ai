@@ -51,7 +51,7 @@ export function TimelinePanel() {
     s.timeline.bindings
       .filter((b) => b.curve.domain.kind === 'time') // param-domain bindings live in the parameter panel, not the time ruler
       .map((b) => ({
-        targetId: s.targetId,
+        targetId: s.node,
         property: b.target.prop as AnimatableProperty,
         keys: b.curve.keys,
       })),

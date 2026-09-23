@@ -7,7 +7,7 @@
  * backend can't do, so one panel serves both engines without branching on type.
  */
 
-import type { PageInteractions } from '../ir'
+import type { Behaviour } from '../ir'
 
 export type Backend = 'api' | 'terminal'
 
@@ -21,7 +21,7 @@ export interface SessionCaps {
   compact: boolean
   /** The session can switch to another context/thread. */
   switchContext: boolean
-  /** Replies can carry a structured `{ reply, ir }` payload. */
+  /** Replies can carry a structured `{ reply, behaviour }` payload. */
   structuredOutput: boolean
   /** The model can call tools (MCP). */
   toolUse: boolean
@@ -39,13 +39,14 @@ export interface SendInput {
   text: string
   nodes?: { id: string; name?: string; type?: string }[]
   selection?: { id: string; name?: string; type?: string }[]
-  ir?: PageInteractions
+  page?: string
+  behaviour?: Behaviour
 }
 
 export interface SendResult {
   reply: string
-  /** Present only when the backend returned a usable full IR. */
-  ir?: PageInteractions
+  /** Present only when the backend returned a usable full behaviour. */
+  behaviour?: Behaviour
   /** True when the reply came from an offline fallback, not the live backend. */
   offline?: boolean
 }

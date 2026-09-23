@@ -1,21 +1,33 @@
 /**
  * The door: an exporter document in, records out. The nil-UUID root frame is
- * not a record; its children are the page's top level.
+ * not a record; its children are the page's top level. Behaviour (cells,
+ * bindings, rules, timelines, stores) travels beside the pages as flat
+ * records, one list per kind (`DocumentRecords`).
  */
 import type { PenpotDocument, PenpotNode, PenpotPage } from 'penpot-exporter/types'
 import { applyGeometryDefaults } from '@zoetrope-editor/common/shape-defaults'
-import type { AnyPageInteractions } from '../renderer/interactions/ir'
-import { upgradePageInteractions } from '../renderer/interactions/upgrade'
 import { emptyTokensLib } from '../tokens/types'
 import { ROOT, type NodeId, type PageId } from './ids'
-import type { DocumentMeta } from './meta'
+import { applyAll } from './apply'
+import { add, type Change } from './changes'
+import { rebuildDerived } from './derived'
+import { meta as metaSignal, type DocumentMeta } from './meta'
 import { initialOrders } from './order'
-import type { Node, Page } from './schema'
+import type { Node, Page, RecordOf } from './schema'
+import { clearTables, tables } from './store'
+
+/** The records that are not pages or nodes, as the exported document carries them. */
+export type DocumentRecords = { [K in BehaviourKind]?: RecordOf<K>[] }
+
+export type BehaviourKind = 'store' | 'cell' | 'binding' | 'rule' | 'timeline'
+
+export const BEHAVIOUR_KINDS: readonly BehaviourKind[] = ['store', 'cell', 'binding', 'rule', 'timeline']
 
 export interface Imported {
   meta: DocumentMeta
   pages: Page[]
   nodes: Node[]
+  records: DocumentRecords
 }
 
 /** A UUID with garbage appended (an old concatenation bug) truncated to 36 chars. */
@@ -63,34 +75,35 @@ export function importPage(page: PenpotPage, order: string): { page: Page; nodes
   const topLevel = hasRoot ? [...rootChildren, ...kids.slice(1)] : kids
   const nodes: Node[] = []
   importNodes(id, topLevel, undefined, undefined, nodes)
-  const stored = (page as { interactions?: AnyPageInteractions }).interactions
-  return {
-    page: {
-      id,
-      name: page.name,
-      background: page.background,
-      order,
-      interactions: stored ? upgradePageInteractions(stored).ir : undefined,
-    },
-    nodes,
-  }
+  return { page: { id, name: page.name, background: page.background, order }, nodes }
 }
 
 export function importDocument(doc: PenpotDocument): Imported {
-  const { children, ...rest } = doc
+  const { children, records, ...rest } = doc as PenpotDocument & { records?: DocumentRecords }
   const meta = rest as DocumentMeta
   const pages: Page[] = []
   const nodes: Node[] = []
   const orders = initialOrders(children?.length ?? 0)
-  const stores = [...(meta.stores ?? [])]
   ;(children ?? []).forEach((p, i) => {
-    const stored = (p as { interactions?: AnyPageInteractions }).interactions
-    if (stored) for (const s of upgradePageInteractions(stored).stores) if (!stores.some((x) => x.id === s.id)) stores.push(s)
     const r = importPage(p, orders[i])
     pages.push(r.page)
     nodes.push(...r.nodes)
   })
-  meta.stores = stores
   if (!Array.isArray((meta.tokens as { sets?: unknown } | undefined)?.sets)) meta.tokens = emptyTokensLib()
-  return { meta, pages, nodes }
+  return { meta, pages, nodes, records: records ?? {} }
+}
+
+/** Every record of `im` as `add` changes, owners first. */
+export function addsOf(im: Imported): Change[] {
+  const out: Change[] = [...im.pages.map((p) => add('page', p)), ...im.nodes.map((n) => add('node', n))]
+  for (const kind of BEHAVIOUR_KINDS) for (const r of im.records[kind] ?? []) out.push(add(kind, r as never) as Change)
+  return out
+}
+
+/** Replace the live document with `im`: no history, no subscribers. */
+export function loadImported(im: Imported): void {
+  clearTables()
+  applyAll(tables, addsOf(im))
+  rebuildDerived()
+  metaSignal.value = im.meta
 }

@@ -14,9 +14,10 @@
  * contract, so behavior weaving keeps working unchanged.
  */
 
-import { getPage, pageObjects, ROOT, type PageObjects, type TreeNode } from '../../../doc'
-import type { PageInteractions } from '../ir'
-import { editedCell, propRef, REPEAT_PROP } from '../ir'
+import { pageObjects, ROOT, type PageObjects, type TreeNode } from '../../../doc'
+import type { Behaviour } from '../ir'
+import { editedCell, propRef, REPEAT_PROP, rulesOn } from '../ir'
+import { behaviourOf } from './behaviour'
 import type { ComponentPresentation, PNode, SlotPresentation, NodeRole } from '../compile/emit-react'
 import { isComponentCopyRoot, isComponentMain, isSlotShape } from '../../../worker/geometry/shapes'
 import type { LocalComponent } from '../../../common/component'
@@ -30,15 +31,14 @@ import type { LocalComponent } from '../../../common/component'
  * Order matters: the most specific behaviour wins. A node that both edits a cell
  * and has a press is a field first.
  */
-function deriveRole(shape: TreeNode, ir: PageInteractions | undefined, childIds: string[]): NodeRole {
+function deriveRole(shape: TreeNode, b: Behaviour, childIds: string[]): NodeRole {
   const id = shape.id
-  const onNode = (it: { on: { node: string } }) => it.on.node === id
 
-  if (ir && editedCell(ir, id)) return 'field'
-  const interactions = ir?.interactions.filter(onNode) ?? []
-  if (interactions.some((it) => it.do.some((a) => a.type === 'open-url'))) return 'link'
-  if (interactions.some((it) => it.on.trigger.type === 'press')) return 'button'
-  const repeats = (n: string) => Boolean(ir && propRef(ir, n, REPEAT_PROP))
+  if (editedCell(b, id)) return 'field'
+  const rules = rulesOn(b, id)
+  if (rules.some((r) => r.do.some((a) => a.type === 'open-url'))) return 'link'
+  if (rules.some((r) => r.on.type === 'press')) return 'button'
+  const repeats = (n: string) => Boolean(propRef(b, n, REPEAT_PROP))
   if (repeats(id)) return 'item'
   if (childIds.some(repeats)) return 'list'
 
@@ -215,7 +215,7 @@ function styleFor(shape: TreeNode, isRoot: boolean, hasChildren: boolean): Recor
 function slotPresentation(
   slot: { views: string[]; activeView?: string },
   objects: PageObjects,
-  ir: PageInteractions | undefined,
+  b: Behaviour,
   projecting: Set<string>,
   components?: Record<string, LocalComponent>,
 ): SlotPresentation {
@@ -225,7 +225,7 @@ function slotPresentation(
     const view = objects[viewId]
     if (!view) continue
     projecting.add(viewId)
-    views[viewId] = toPNode(view, objects, ir, projecting, components)
+    views[viewId] = toPNode(view, objects, b, projecting, components)
     projecting.delete(viewId)
   }
   return { activeView: slot.activeView, views }
@@ -259,14 +259,14 @@ function componentPresentation(
   copy: TreeNode,
   component: LocalComponent,
   objects: PageObjects,
-  ir: PageInteractions | undefined,
+  b: Behaviour,
   projecting: Set<string>,
 ): ComponentPresentation | null {
   const main = objects[component.mainInstanceId]
   if (!main || projecting.has(main.id)) return null
 
   projecting.add(main.id)
-  const definition = toPNode(main, objects, ir, projecting)
+  const definition = toPNode(main, objects, b, projecting)
   projecting.delete(main.id)
 
   const byId = new Map<string, PNode>()
@@ -295,12 +295,12 @@ function componentPresentation(
 function toPNode(
   shape: TreeNode,
   objects: PageObjects,
-  ir: PageInteractions | undefined,
+  b: Behaviour,
   projecting: Set<string> = new Set(),
   components?: Record<string, LocalComponent>,
 ): PNode {
   const childIds: string[] = shape.shapes ?? []
-  const node: PNode = { nodeId: shape.id, role: deriveRole(shape, ir, childIds) }
+  const node: PNode = { nodeId: shape.id, role: deriveRole(shape, b, childIds) }
   const isRoot = shape.parentId == null
 
   // A component copy emits as a call to its component instead of inlining its
@@ -314,7 +314,7 @@ function toPNode(
   if (components && (isComponentCopyRoot(shape) || isComponentMain(shape))) {
     const component = components[(shape as { componentId?: string }).componentId ?? '']
     const presentation = component
-      ? componentPresentation(shape, component, objects, ir, projecting)
+      ? componentPresentation(shape, component, objects, b, projecting)
       : null
     if (presentation) {
       const style = styleFor(shape, isRoot, childIds.length > 0)
@@ -327,7 +327,7 @@ function toPNode(
   // A slot owns no children — it references view frames. Emit a slot descriptor
   // carrying each candidate's projected subtree instead of walking `shapes`.
   if (isSlotShape(shape)) {
-    node.slot = slotPresentation(shape, objects, ir, projecting, components)
+    node.slot = slotPresentation(shape, objects, b, projecting, components)
     const style = styleFor(shape, isRoot, false)
     // Clip the shown view to the outlet box when the slot clips (showContent:false).
     node.style = shape.showContent === false ? { ...style, overflow: 'hidden' } : style
@@ -338,7 +338,7 @@ function toPNode(
   const children = childIds
     .map((id) => objects[id])
     .filter((c): c is TreeNode => Boolean(c))
-    .map((c) => toPNode(c, objects, ir, projecting, components))
+    .map((c) => toPNode(c, objects, b, projecting, components))
 
   // Style depends on whether this node ends up a container, so it's built after
   // the children are known.
@@ -367,7 +367,7 @@ export function nodesToPresentation(
 ): PNode | null {
   const objects = pageObjects(pageId)
   const root = objects[ROOT]
-  return root ? toPNode(root, objects, getPage(pageId)?.interactions, new Set(), components) : null
+  return root ? toPNode(root, objects, behaviourOf(pageId).value, new Set(), components) : null
 }
 
 /**

@@ -1,9 +1,9 @@
 # State model
 
-Status: decided 2026-09-22, built 2026-09-23 for pages and nodes (`src/lib/doc/`,
-see `state-cut-plan.md`). Supersedes the "Document layer — Valtio" section of
-`state-architecture.md`. Cells, bindings, rules and timelines are still the
-`interactions` block on the page record; storage and sync are not built.
+Status: decided 2026-09-22, built 2026-09-23 (`src/lib/doc/`, see
+`state-cut-plan.md`): pages, nodes, cells, bindings, rules, timelines and
+stores are record kinds. Supersedes the "Document layer — Valtio" section of
+`state-architecture.md`. Storage and sync are not built.
 
 ## Three kinds of state, one writer
 

@@ -3,7 +3,7 @@
  *
  * Generalizes the Phase-1 demo harness off the hardcoded demo: it reads the
  * REAL current page, runs it through nodesToPresentation (document -> engine
- * presentation, the M0 adapter) plus the page's PageInteractions, then:
+ * presentation, the M0 adapter) plus the page's behaviour, then:
  *   - Preview tab: InteractionRuntime renders it as a live interactive React tree
  *   - Code tab:    emitReactComponent emits the whole-app React source
  *
@@ -25,7 +25,8 @@ import { cn } from '@/lib/utils'
 import { getNode, useCurrentPageId, useField, useNode, useSignal } from '../../doc'
 import { setSelectedIds, useSelectedIds } from '../../renderer/store/document-selection'
 import { nodesToPresentation, findPNode } from '../../renderer/interactions/document/nodes-to-presentation'
-import { emptyPageInteractions, cellRef, type PageInteractions } from '../../renderer/interactions/ir'
+import { cellRef } from '../../renderer/interactions/ir'
+import { useBehaviour } from '../../renderer/interactions/document/use-behaviour'
 import { emitReactComponent } from '../../renderer/interactions/compile/emit-react'
 import { InteractionRuntime } from '../../renderer/interactions/preview/InteractionRuntime'
 import {
@@ -68,8 +69,7 @@ export function PreviewStage() {
 
   // A computed tracks every node and child list the walk reads.
   const full = useSignal(useMemo(() => computed(() => (pid ? nodesToPresentation(pid) : null)), [pid]))
-  const stored = useField('page', pid, 'interactions')
-  const ir: PageInteractions = useMemo(() => stored ?? emptyPageInteractions(), [stored])
+  const behaviour = useBehaviour(pid)
 
   // Selection DRIVES the stage: you see a component's contents by selecting it.
   // There is no whole-page fallback — with nothing (or several things) selected
@@ -102,17 +102,17 @@ export function PreviewStage() {
   const code = useMemo(() => {
     if (!root) return ''
     try {
-      return emitReactComponent(ir, root, { componentName: name })
+      return emitReactComponent(behaviour, root, { componentName: name })
     } catch (e) {
       return '// Failed to generate code:\n// ' + (e instanceof Error ? e.message : String(e))
     }
-  }, [ir, root, name])
+  }, [behaviour, root, name])
 
   // Re-seed the runtime store when the variable SET changes (add/remove), so newly
   // authored state shows up live. Trigger/action/binding edits are picked up
   // without a reset, so they don't appear here. Scope changes re-seed too —
   // carrying a half-mutated store into a different subtree reads as a glitch.
-  const runtimeKey = `${root?.nodeId ?? ''}::${ir.cells.map(cellRef).join('|')}`
+  const runtimeKey = `${root?.nodeId ?? ''}::${behaviour.cells.map(cellRef).join('|')}`
 
   // Live runtime observation for the state panel. `onRuntime` fires from an
   // effect inside the runtime, so these setStates are safe.
@@ -128,7 +128,7 @@ export function PreviewStage() {
     setLog((cur) => (activity ? pushActivity(cur, activity) : []))
   }, [])
 
-  const env = useMemo(() => (rt ? buildEnv(ir, rt) : {}), [ir, rt])
+  const env = useMemo(() => (rt ? buildEnv(behaviour, rt) : {}), [behaviour, rt])
 
   const inView = useCallback((nodeId: string) => !!root && !!findPNode(root, nodeId), [root])
   const nameOf = useCallback((nodeId: string) => getNode(nodeId)?.name ?? nodeId.slice(0, 8), [])
@@ -210,7 +210,7 @@ export function PreviewStage() {
               onClickCapture={onPreviewClickCapture}
               data-preview-root
             >
-              <InteractionRuntime key={runtimeKey} ir={ir} root={root} onRuntime={onRuntime} />
+              <InteractionRuntime key={runtimeKey} behaviour={behaviour} root={root} onRuntime={onRuntime} />
             </div>
           </div>
         ) : (
@@ -224,7 +224,7 @@ export function PreviewStage() {
           you see that it happened at all. */}
       {root && tab === 'preview' && (
         <StatePanel
-          ir={ir}
+          behaviour={behaviour}
           env={env}
           log={log}
           open={panelOpen}

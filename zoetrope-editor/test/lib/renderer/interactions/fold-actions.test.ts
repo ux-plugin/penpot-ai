@@ -16,15 +16,16 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { initDefaultCatalog, listActions, isPlanned } from '../../../../src/lib/renderer/interactions/catalog'
 import { applyAction, type RuntimeState } from '../../../../src/lib/renderer/interactions/preview/runtime'
 import { emitAction } from '../../../../src/lib/renderer/interactions/compile/emit-react'
-import type { Action, PageInteractions, V2Action } from '../../../../src/lib/renderer/interactions/ir'
-import { act, listCell, pageCell, up } from './todo-ir'
+import type { Action, Behaviour } from '../../../../src/lib/renderer/interactions/ir'
+import type { TextAction } from '../../../../src/lib/renderer/interactions/expr'
+import { act, beh, listCell, pageCell } from './behaviour-fixtures'
 
 beforeAll(() => initDefaultCatalog())
 
 /** The page every fixture targets: `v` (any), `todos` (a list). */
-const IR: PageInteractions = up({ cells: [pageCell('v', 'any', null), listCell('todos')] })
+const IR: Behaviour = beh({ cells: [pageCell('v', 'any', null), listCell('todos')] })
 /** An action from its text form, against that page. */
-const A = (a: V2Action): Action => act(IR, a)
+const A = (a: TextAction): Action => act(IR, a)
 
 const emptyRt = (store: Record<string, unknown>): RuntimeState => ({ store, slotViews: {} })
 

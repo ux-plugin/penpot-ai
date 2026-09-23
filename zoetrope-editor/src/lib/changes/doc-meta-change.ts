@@ -16,7 +16,6 @@
 
 import type { Uuid } from 'penpot-exporter/types'
 import type { LocalComponent } from '../common/component'
-import type { Store } from '../renderer/interactions/ir'
 import type { DocumentMeta } from '../doc/meta'
 import { emptyTokensLib } from '../tokens/types'
 import type { Token, TokenSet, TokenTheme, TokensLib } from '../tokens/types'
@@ -91,16 +90,7 @@ export interface DelComponentChange {
   id: Uuid
 }
 
-// ── Interaction stores (document-wide data sources) ──────────────────────────
-
-/** Replace the document's stores wholesale; undo carries the previous list. */
-export interface SetStoresChange {
-  type: 'set-stores'
-  stores: Store[]
-}
-
 export type DocMetaChange =
-  | SetStoresChange
   | AddTokenChange
   | ModTokenChange
   | DelTokenChange
@@ -209,8 +199,6 @@ export function processDocMetaChange(
       delete components[change.id]
       return { ...meta, components }
     }
-    case 'set-stores':
-      return { ...meta, stores: [...change.stores] }
     default: {
       const _exhaustive: never = change
       void _exhaustive

@@ -1,9 +1,9 @@
 /**
  * Inspector → Interactions tab. Shared by both modes.
  *
- * Authors per-node interactions against the page's PageInteractions IR using the
- * pure reducers in edit-interactions, committing each change via
- * commitInteractions (so the live preview reacts immediately). Trigger/action
+ * Authors the page's behaviour records with the edit builders in
+ * edit-interactions, committing each edit's changes via commitBehaviour (so the
+ * live preview reacts immediately). Trigger/action
  * menus are sourced from the catalog registry — they grow as the catalog does.
  */
 
@@ -17,30 +17,32 @@ import {
   nodesOfPage,
   useChildren,
   useCurrentPageId,
-  useMeta,
   useNode,
-  useRecord,
   useSignal,
+  type LocalChange,
   type Node,
 } from '../../doc'
 import { useSelectedIds } from '../../renderer/store/document-selection'
 import {
-  emptyPageInteractions,
+  EMPTY_BEHAVIOUR,
+  bindingOf,
+  bindingsOn,
   cellRef,
   isFormula,
   isCollectionType,
-  refsOf,
+  ownerKind,
   propRef,
   editedCell,
   editableError,
   actionParam,
+  rulesOn,
   REPEAT_PROP,
   VALUE_PROP,
-  type PageInteractions,
-  type Interaction,
+  type Behaviour,
+  type Rule,
   type Action,
   type Cell,
-  type Owner,
+  type OwnerKind,
   type Store,
   type ValueType,
   type Json,
@@ -51,8 +53,8 @@ import { addViewToSlot } from '../../renderer/slot/slot-edit'
 import { parse } from '../../renderer/interactions/expression'
 import { exprText, refName } from '../../renderer/interactions/expr'
 import {
-  addInteraction,
-  removeInteraction,
+  addRule,
+  removeRule,
   setTrigger,
   setCondition,
   addAction,
@@ -79,15 +81,15 @@ import {
   setRef,
   clearRef,
   moveRef,
+  DOCUMENT,
+  pageHome,
+  type Home,
 } from '../../renderer/interactions/document/edit-interactions'
-import {
-  commitInteractions,
-  currentInteractions,
-  currentStores,
-} from '../../renderer/interactions/document/commit-interactions'
+import { commitBehaviour, currentBehaviour, currentStores } from '../../renderer/interactions/document/behaviour'
+import { useBehaviour, useStores } from '../../renderer/interactions/document/use-behaviour'
 
-type Commit = (next: PageInteractions) => void
-type LiveIR = () => PageInteractions
+type Commit = (changes: LocalChange[]) => void
+type LiveIR = () => Behaviour
 
 function exprError(src?: string): string | null {
   if (!src || !src.trim()) return null
@@ -140,7 +142,7 @@ function ActionRow({
   commit,
   liveIR,
 }: {
-  it: Interaction
+  it: Rule
   index: number
   /** Every cell an action may write — anything but a formula. */
   cells: readonly Cell[]
@@ -309,7 +311,7 @@ function InteractionCard({
   commit,
   liveIR,
 }: {
-  it: Interaction
+  it: Rule
   triggers: ReturnType<typeof listTriggers>
   cells: readonly Cell[]
   nodes: readonly Node[]
@@ -325,12 +327,12 @@ function InteractionCard({
         <span className="text-[11px] text-muted-foreground">When</span>
         <select
           className={selectCls}
-          value={it.on.trigger.type}
+          value={it.on.type}
           onChange={(e) => commit(setTrigger(liveIR(), id, e.target.value))}
           aria-label="Trigger"
         >
           {triggers.map((t) => (
-            <option key={t.key} value={t.key} disabled={isPlanned(t) && t.key !== it.on.trigger.type}>
+            <option key={t.key} value={t.key} disabled={isPlanned(t) && t.key !== it.on.type}>
               {optionLabel(t)}
             </option>
           ))}
@@ -340,7 +342,7 @@ function InteractionCard({
           className="ml-auto shrink-0 rounded p-1 text-muted-foreground hover:text-destructive"
           aria-label="Remove interaction"
           title="Remove interaction"
-          onClick={() => commit(removeInteraction(liveIR(), id))}
+          onClick={() => commit(removeRule(id))}
         >
           ✕
         </button>
@@ -402,7 +404,7 @@ function ListSection({
   liveIR,
 }: {
   node: Node
-  ir: PageInteractions
+  ir: Behaviour
   /** Every list available to repeat over — page state AND lists arriving from outside. */
   lists: readonly { id: string }[]
   commit: Commit
@@ -410,10 +412,10 @@ function ListSection({
 }) {
   const kids = children(node.id).map(getNode).filter((c): c is Node => Boolean(c))
   const template = kids.find((c) => propRef(ir, c.id, REPEAT_PROP) !== undefined)
-  const rep = template ? refsOf(ir, template.id) : undefined
+  const rep = template ? bindingOf(ir, template.id, REPEAT_PROP) : undefined
   const on = Boolean(rep && template)
   const hasLists = lists.length > 0
-  const over = exprText(rep?.props[REPEAT_PROP], ir)
+  const over = exprText(rep?.expr, ir)
   const overMissing = on && over !== '' && !lists.some((v) => v.id === over)
   const keyText = exprText(rep?.item?.key, ir)
   const keyErr = exprError(keyText)
@@ -472,7 +474,7 @@ function ListSection({
             />
           </div>
 
-          {children.length > 1 && (
+          {kids.length > 1 && (
             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
               <span>item template</span>
               <select
@@ -593,7 +595,7 @@ function EditsSection({
   liveIR,
 }: {
   nodeId: string
-  ir: PageInteractions
+  ir: Behaviour
   commit: Commit
   liveIR: LiveIR
 }) {
@@ -649,7 +651,7 @@ function BindSection({
   liveIR,
 }: {
   nodeId: string
-  ir: PageInteractions
+  ir: Behaviour
   forEachItem: boolean
   commit: Commit
   liveIR: LiveIR
@@ -657,13 +659,11 @@ function BindSection({
   // `repeat` is authored in the List section and an edited `value` in Edits;
   // everything else a property references shows here.
   const edited = editedCell(ir, nodeId)
-  const bindings = Object.entries(refsOf(ir, nodeId)?.props ?? {}).filter(
-    ([prop]) => prop !== REPEAT_PROP && !(edited && prop === VALUE_PROP),
-  )
+  const bindings = bindingsOn(ir, nodeId).filter((x) => x.prop !== REPEAT_PROP && !(edited && x.prop === VALUE_PROP))
   const add = () => {
     const live = liveIR()
     const prop = COMMON_PROPS.find((p) => propRef(live, nodeId, p) === undefined) ?? 'text'
-    const first = live.cells.find((c) => c.owner.kind !== 'node')
+    const first = live.cells.find((c) => c.node == null)
     commit(setRef(live, nodeId, prop, first ? cellRef(first) : '""'))
   }
   return (
@@ -671,7 +671,7 @@ function BindSection({
       <h3 className={sectionHeadCls}>{forEachItem ? 'Bind · for each item' : 'Bind'}</h3>
       {bindings.length === 0 && <p className="mb-1.5 text-[11px] text-muted-foreground/70">No bindings yet.</p>}
       <div className="mb-2 flex flex-col gap-1.5">
-        {bindings.map(([prop, expr]) => (
+        {bindings.map(({ prop, expr }) => (
           <BindRow key={prop} nodeId={nodeId} prop={prop} expr={exprText(expr, ir)} forEachItem={forEachItem} commit={commit} liveIR={liveIR} />
         ))}
       </div>
@@ -776,13 +776,19 @@ function CellValueEditor({ c, commit, liveIR }: { c: Cell; commit: Commit; liveI
 }
 
 /** Where a cell lives, in the designer's words. */
-const OWNER_LABEL: Record<Owner['kind'], string> = {
+const OWNER_LABEL: Record<OwnerKind, string> = {
   node: 'this component',
   page: 'this page',
   document: 'whole document',
 }
-/** The owners a cell can be moved to from here; a node's cell stays on its node. */
-const OWNERS: Owner[] = [{ kind: 'page' }, { kind: 'document' }]
+/** The owners a cell can be moved to from here; a node's cell can go back to its node. */
+const OWNERS: OwnerKind[] = ['page', 'document']
+
+/** The references that put a cell in `kind`, on `page`. */
+function homeFor(kind: OwnerKind, c: Cell, page: string): Home {
+  if (kind === 'node' && c.node != null) return { page: c.page ?? page, node: c.node }
+  return kind === 'page' ? pageHome(page) : DOCUMENT
+}
 
 /**
  * One component-local cell — the design's own state. Name, type, where it lives,
@@ -795,11 +801,13 @@ const OWNERS: Owner[] = [{ kind: 'page' }, { kind: 'document' }]
  */
 function CellRow({
   c,
+  page,
   stores,
   commit,
   liveIR,
 }: {
   c: Cell
+  page: string
   stores: readonly Store[]
   commit: Commit
   liveIR: LiveIR
@@ -807,7 +815,7 @@ function CellRow({
   const ref = cellRef(c)
   const cur = typeKey(c.type)
   const keys = TYPE_KEYS.includes(cur) ? TYPE_KEYS : [cur, ...TYPE_KEYS]
-  const owners = c.owner.kind === 'node' ? [c.owner, ...OWNERS] : OWNERS
+  const owners: OwnerKind[] = c.node != null ? ['node', ...OWNERS] : OWNERS
   return (
     <div className="rounded-md border border-border/70 p-2">
       <div className="flex items-center gap-1.5">
@@ -839,16 +847,16 @@ function CellRow({
       <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <select
           className={typeSelectCls}
-          value={c.owner.kind}
+          value={ownerKind(c)}
           onChange={(e) => {
-            const owner = owners.find((o) => o.kind === e.target.value)
-            if (owner) commit(setCellOwner(liveIR(), ref, owner))
+            const kind = owners.find((o) => o === e.target.value)
+            if (kind) commit(setCellOwner(liveIR(), ref, homeFor(kind, c, page)))
           }}
           aria-label={`${ref} lives in`}
         >
           {owners.map((o) => (
-            <option key={o.kind} value={o.kind}>
-              {OWNER_LABEL[o.kind]}
+            <option key={o} value={o}>
+              {OWNER_LABEL[o]}
             </option>
           ))}
         </select>
@@ -916,13 +924,12 @@ function FormulaRow({ c, commit, liveIR }: { c: Cell; commit: Commit; liveIR: Li
 export function InteractionsTab() {
   const currentPageId = useCurrentPageId()
   const pid = currentPageId ?? getActiveOrSinglePageId()
-  const page = useRecord('page', pid)
   const selectedIds = useSelectedIds()
   const singleId = selectedIds.size === 1 ? Array.from(selectedIds)[0] : null
 
-  const ir = page?.interactions ?? emptyPageInteractions()
-  const stores = useMeta()?.stores ?? []
-  const cells = ir.cells as Cell[]
+  const ir = useBehaviour(pid)
+  const stores = useStores()
+  const cells = ir.cells
   // Store cells are authored in the Data panel and formulas below; this section
   // is the design's own state. All remain one namespace an interaction can name.
   const localCells = cells.filter((c) => !c.store && !isFormula(c))
@@ -933,29 +940,28 @@ export function InteractionsTab() {
   // A computed over the page, so target pickers track adds, deletes and renames.
   const nodes = useSignal(useMemo(() => computed(() => (pid ? nodesOfPage(pid) : [])), [pid]))
 
-  const liveIR: LiveIR = () => (pid ? currentInteractions(pid) : undefined) ?? emptyPageInteractions()
-  const commit: Commit = (next) => {
-    if (pid) void commitInteractions(pid, next)
-  }
+  const liveIR: LiveIR = () => (pid ? currentBehaviour(pid) : EMPTY_BEHAVIOUR)
+  const commit: Commit = (changes) => void commitBehaviour(changes)
 
   const [newVar, setNewVar] = useState('')
   const addVar = (collection: boolean) => {
     const id = toCellId(newVar)
-    if (!id) return
-    commit(addCell(liveIR(), collection ? makeListCell(id) : makeCell(id, 'string', ''), currentStores()))
+    if (!id || !pid) return
+    const home = pageHome(pid)
+    commit(addCell(liveIR(), collection ? makeListCell(id, home) : makeCell(id, 'string', '', home), currentStores()))
     setNewVar('')
   }
 
   const [newDerived, setNewDerived] = useState('')
   const addFormula = () => {
     const id = toCellId(newDerived)
-    if (!id) return
-    commit(addCell(liveIR(), makeFormula(id), currentStores()))
+    if (!id || !pid) return
+    commit(addCell(liveIR(), makeFormula(id, undefined, pageHome(pid)), currentStores()))
     setNewDerived('')
   }
 
   const node = useNode(singleId)
-  const nodeInteractions = singleId ? ir.interactions.filter((it) => it.on.node === singleId) : []
+  const nodeInteractions = singleId ? rulesOn(ir, singleId) : []
   const isContainer = useChildren(singleId).length > 0
   const isTemplate = node ? propRef(ir, node.id, REPEAT_PROP) !== undefined : false
 
@@ -971,7 +977,7 @@ export function InteractionsTab() {
         )}
         <div className="mb-2 flex flex-col gap-1.5">
           {localCells.map((c) => (
-            <CellRow key={cellRef(c)} c={c} stores={stores as Store[]} commit={commit} liveIR={liveIR} />
+            <CellRow key={cellRef(c)} c={c} page={pid ?? ''} stores={stores} commit={commit} liveIR={liveIR} />
           ))}
         </div>
         <div className="flex items-center gap-1.5">
@@ -1075,7 +1081,7 @@ export function InteractionsTab() {
             <button
               type="button"
               className="self-start rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
-              onClick={() => commit(addInteraction(liveIR(), singleId as string, crypto.randomUUID()))}
+              onClick={() => commit(addRule(liveIR(), singleId as string, crypto.randomUUID()))}
             >
               + Add interaction
             </button>

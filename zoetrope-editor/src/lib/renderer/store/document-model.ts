@@ -3,12 +3,9 @@
  * add and delete pages, and the renderer / worker handoff for each.
  */
 import type { PenpotDocument } from 'penpot-exporter/types'
-import { applyAll } from '../../doc/apply'
-import { rebuildDerived } from '../../doc/derived'
 import {
   add,
   clearHistory,
-  clearTables,
   count,
   currentPageId,
   del,
@@ -17,11 +14,11 @@ import {
   getNode,
   ids,
   importDocument,
+  loadImported,
   meta,
   nodesOfPage,
   pageObjects,
   pagesInOrder,
-  tables,
   type LocalChange,
   type Node,
   type Page,
@@ -80,10 +77,7 @@ export class DocumentModel {
   async loadDocument(doc: PenpotDocument): Promise<void> {
     clearHistory()
     const imported = importDocument(doc)
-    clearTables()
-    applyAll(tables, [...imported.pages.map((p) => add('page', p)), ...imported.nodes.map((n) => add('node', n))])
-    rebuildDerived()
-    meta.value = imported.meta
+    loadImported(imported)
     const firstPageId = imported.pages[0]?.id ?? null
     currentPageId.value = firstPageId
 

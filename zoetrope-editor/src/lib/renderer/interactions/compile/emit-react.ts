@@ -16,11 +16,11 @@
  * additive sibling.
  */
 
-import type { PageInteractions, NodeId, ValueType, Action, ActionType, Cell, NodeRefs, Ref } from '../ir'
-import { actionParam, isBacked, isFormula, isEnumType, cellOf, cellRef, nodeRef, editedCell, refsOf, emptyPageInteractions, REPEAT_PROP, VALUE_PROP } from '../ir'
+import type { Behaviour, Binding, NodeId, ValueType, Action, ActionType, Cell, Ref } from '../ir'
+import { actionParam, bindingOf, bindingsOn, isBacked, isFormula, isEnumType, cellOf, cellRef, nodeRef, editedCell, EMPTY_BEHAVIOUR, REPEAT_PROP, VALUE_PROP } from '../ir'
 import { getAction } from '../catalog'
 import { toJs, objectBodyJs, type ToJsOptions } from '../expression'
-import { namesOf, refName } from '../expr'
+import { formulasInOrder, namesOf, refName } from '../expr'
 import { anchorAttr, instanceKeyAttr } from '../anchor'
 
 /**
@@ -112,8 +112,8 @@ export function baseStyleFor(role: NodeRole): Record<string, string> {
  * to a boolean and it is a checkbox. No enum to keep in sync with the cell.
  * Returns undefined when the default (text) applies.
  */
-export function inputTypeFor(ir: PageInteractions, nodeId: NodeId): string | undefined {
-  const type = editedCell(ir, nodeId)?.type
+export function inputTypeFor(b: Behaviour, nodeId: NodeId): string | undefined {
+  const type = editedCell(b, nodeId)?.type
   if (type === 'boolean') return 'checkbox'
   if (type === 'number') return 'number'
   return undefined
@@ -170,11 +170,11 @@ const handlerName = (node: string, trigger: string) => `handle_${ident(node)}_${
 
 /**
  * The identifier a cell's value is read as in generated code: a page or
- * document cell by its id, a node's cell as `<node>_<cell>` — one flat
+ * document cell by its name, a node's cell as `<node>_<cell>` — one flat
  * identifier per cell, whichever owns it.
  */
 export function cellIdent(c: Cell): string {
-  return c.owner.kind === 'node' ? `${ident(nodeRef(c.owner.node))}_${ident(c.id)}` : ident(c.id)
+  return c.node != null ? `${ident(nodeRef(c.node))}_${ident(c.name)}` : ident(c.name)
 }
 const setterFor = (c: Cell) => `set${cap(cellIdent(c))}`
 const setterName = (root: string) => `set${cap(ident(root))}`
@@ -183,10 +183,10 @@ const setterName = (root: string) => `set${cap(ident(root))}`
  * How expressions lower: a node's cell (`card.state`) reads as the identifier
  * its hook declared. Everything else is plain JS.
  */
-function jsOptions(ir: PageInteractions): ToJsOptions {
+function jsOptions(b: Behaviour): ToJsOptions {
   return {
     member: (root, prop) => {
-      const c = ir.cells.find((c) => c.owner.kind === 'node' && nodeRef(c.owner.node) === root && c.id === prop)
+      const c = b.cells.find((c) => c.node != null && nodeRef(c.node) === root && c.name === prop)
       return c ? cellIdent(c) : undefined
     },
   }
@@ -234,16 +234,15 @@ function tsType(vt: ValueType): string {
 }
 
 /** Cells the design WRITES — every action target plus every edited cell. */
-function writtenCells(ir: PageInteractions): Set<string> {
+function writtenCells(b: Behaviour): Set<string> {
   const written = new Set<string>()
   const add = (target: Ref | undefined) => {
-    const c = cellOf(ir, target)
+    const c = cellOf(b, target)
     if (c) written.add(cellRef(c))
   }
-  for (const it of ir.interactions) for (const a of it.do) add(a.target)
-  for (const ar of ir.appRules) for (const a of ar.do) add(a.target)
-  for (const r of ir.refs) {
-    const edited = editedCell(ir, r.node)
+  for (const r of b.rules) for (const a of r.do) add(a.target)
+  for (const x of b.bindings) {
+    const edited = editedCell(b, x.node)
     if (edited) written.add(cellRef(edited))
   }
   return written
@@ -272,10 +271,10 @@ const changeProp = (c: Cell) => `on${cap(cellIdent(c))}Change`
  * statement of the expected shape. Whoever binds this — a person or a model —
  * reads the comment, not the type.
  */
-function emitPropsType(ir: PageInteractions, name: string): { decl: string; params: string } | undefined {
-  const backed = ir.cells.filter((c) => isBacked(c) && !isFormula(c))
+function emitPropsType(b: Behaviour, name: string): { decl: string; params: string } | undefined {
+  const backed = b.cells.filter((c) => isBacked(c) && !isFormula(c))
   if (!backed.length) return undefined
-  const written = writtenCells(ir)
+  const written = writtenCells(b)
 
   const lines: string[] = []
   const params: string[] = []
@@ -333,10 +332,10 @@ const outsideWriter = (c: Cell): CellWriter => ({
 })
 
 /** The writer for `target`, chosen by whether the design owns that cell. */
-export function writerFor(ir: PageInteractions, target: Ref | undefined, dependsOnPrev: boolean): CellWriter {
-  const c = cellOf(ir, target)
+export function writerFor(b: Behaviour, target: Ref | undefined, dependsOnPrev: boolean): CellWriter {
+  const c = cellOf(b, target)
   if (c && isBacked(c)) return outsideWriter(c)
-  const setter = c ? setterFor(c) : setterName(target ? refName(target, ir) : '')
+  const setter = c ? setterFor(c) : setterName(target ? refName(target, b) : '')
   return dependsOnPrev ? localWriter(setter) : plainWriter(setter)
 }
 
@@ -360,9 +359,9 @@ export function readsPrev(type: ActionType): boolean {
  * is what the parity tests exercise; `emitReactComponent` passes one chosen per
  * target via `writerFor`, and `opts` its expression lowering.
  */
-export function emitAction(a: Action, ir: PageInteractions, writer?: CellWriter, opts: ToJsOptions = {}): string {
-  const targetRoot = a.target ? refName(a.target, ir) : ''
-  const value = a.value ? toJs(namesOf(a.value, ir), opts) : 'undefined'
+export function emitAction(a: Action, b: Behaviour, writer?: CellWriter, opts: ToJsOptions = {}): string {
+  const targetRoot = a.target ? refName(a.target, b) : ''
+  const value = a.value ? toJs(namesOf(a.value, b), opts) : 'undefined'
   const w = writer ?? (readsPrev(a.type) ? localWriter(setterName(targetRoot)) : plainWriter(setterName(targetRoot)))
   const prev = w.prev
   const set = (v: string) => w.deliver(v)
@@ -371,7 +370,7 @@ export function emitAction(a: Action, ir: PageInteractions, writer?: CellWriter,
       return set(`[...${prev}, ${value}]`)
     case 'collection.insert': {
       const at = actionParam(a, 'at')
-      const i = at ? toJs(namesOf(at, ir), opts) : '0'
+      const i = at ? toJs(namesOf(at, b), opts) : '0'
       return set(`[...${prev}.slice(0, ${i}), ${value}, ...${prev}.slice(${i})]`)
     }
     case 'collection.remove':
@@ -384,11 +383,11 @@ export function emitAction(a: Action, ir: PageInteractions, writer?: CellWriter,
       let next: string
       if (!a.value) next = 'item'
       else {
-        const body = objectBodyJs(namesOf(a.value, ir), opts)
+        const body = objectBodyJs(namesOf(a.value, b), opts)
         next = body === undefined ? value : body ? `{ ...item, ${body} }` : 'item'
       }
       const where = actionParam(a, 'where')
-      const mapped = where ? `${toJs(namesOf(where, ir), opts)} ? ${next} : item` : next
+      const mapped = where ? `${toJs(namesOf(where, b), opts)} ? ${next} : item` : next
       // The arrow body is ALWAYS parenthesized: an unwrapped `{ ...item, x: 1 }`
       // parses as a block statement, not an object literal.
       return set(`${prev}.map((item) => (${mapped}))`)
@@ -412,12 +411,12 @@ export function emitAction(a: Action, ir: PageInteractions, writer?: CellWriter,
   }
 }
 
-export function emitReactComponent(ir: PageInteractions, root: PNode, opts: EmitOptions = {}): string {
+export function emitReactComponent(b: Behaviour, root: PNode, opts: EmitOptions = {}): string {
   const name = opts.componentName ?? 'Page'
-  const js = jsOptions(ir)
+  const js = jsOptions(b)
 
   const hooks: string[] = []
-  for (const c of ir.cells) {
+  for (const c of b.cells) {
     // A store cell arrives as a prop, so it gets no hook — its value already
     // exists under the same identifier, which is why every expression the emitter
     // produces works unchanged either way. A formula is a const below.
@@ -426,14 +425,15 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
     hooks.push(`const [${cellIdent(c)}, ${setterFor(c)}] = useState<${tsType(c.type)}>(${JSON.stringify(init)})`)
   }
 
-  const formulas = ir.cells.filter(isFormula).map((c) => `const ${cellIdent(c)} = ${toJs(namesOf(c.formula!, ir), js)}`)
+  const formulas = formulasInOrder(b).map((c) => `const ${cellIdent(c)} = ${toJs(namesOf(c.formula!, b), js)}`)
 
-  const handlers = ir.interactions.map((it) => {
-    const stmts = it.do.map((a) => emitAction(a, ir, writerFor(ir, a.target, readsPrev(a.type)), js))
+  const handlers = b.rules.flatMap((r) => {
+    if (r.node == null) return []
+    const stmts = r.do.map((a) => emitAction(a, b, writerFor(b, a.target, readsPrev(a.type)), js))
     let body: string
-    if (it.if) body = `  if (${toJs(namesOf(it.if, ir), js)}) {\n${stmts.map((s) => '    ' + s).join('\n')}\n  }`
+    if (r.if) body = `  if (${toJs(namesOf(r.if, b), js)}) {\n${stmts.map((s) => '    ' + s).join('\n')}\n  }`
     else body = stmts.map((s) => '  ' + s).join('\n')
-    return `const ${handlerName(it.on.node, it.on.trigger.type)} = () => {\n${body}\n}`
+    return [`const ${handlerName(r.node, r.on.type)} = () => {\n${body}\n}`]
   })
 
   const imports = hooks.length ? `import { useState } from 'react'\n\n` : ''
@@ -449,7 +449,7 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
   collectComponentDefs(root, defs)
   const componentFns = [...defs.values()].map(emitComponentFn)
 
-  const jsx = emitNode(root, ir, js)
+  const jsx = emitNode(root, b, js)
   const indentedBody = bodyLines
     .map((l) => (l === '' ? '' : l.split('\n').map((x) => '  ' + x).join('\n')))
     .join('\n')
@@ -458,7 +458,7 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
     .map((l) => '    ' + l)
     .join('\n')
 
-  const props = emitPropsType(ir, name)
+  const props = emitPropsType(b, name)
   const prelude = componentFns.length ? `${componentFns.join('\n\n')}\n\n` : ''
   return `${imports}${prelude}${props?.decl ?? ''}export function ${name}(${props?.params ?? ''}) {\n${indentedBody}\n\n  return (\n${indentedJsx}\n  )\n}\n`
 }
@@ -480,9 +480,8 @@ function collectComponentDefs(node: PNode, into: Map<string, ComponentPresentati
  * a component boundary is its own problem.
  */
 function emitComponentFn(component: ComponentPresentation): string {
-  const empty = emptyPageInteractions()
   const params = component.propNames?.length ? `{ ${component.propNames.map(ident).join(', ')} }` : ''
-  const body = emitNode(component.definition!, empty, {})
+  const body = emitNode(component.definition!, EMPTY_BEHAVIOUR, {})
     .split('\n')
     .map((l) => '    ' + l)
     .join('\n')
@@ -498,10 +497,9 @@ function emitComponentCall(node: PNode, component: ComponentPresentation): strin
   return `<${component.name} ${props.join(' ')} />`
 }
 
-function emitNode(node: PNode, ir: PageInteractions, js: ToJsOptions): string {
-  const refs = refsOf(ir, node.nodeId)
-  const repeat = refs?.props[REPEAT_PROP]
-  const el = emitElement(node, ir, js, repeat ? refs : undefined)
+function emitNode(node: PNode, b: Behaviour, js: ToJsOptions): string {
+  const repeat = bindingOf(b, node.nodeId, REPEAT_PROP)
+  const el = emitElement(node, b, js, repeat)
   // A boolean prop's target renders behind its condition.
   if (node.whenExpr) {
     const inner = el
@@ -511,23 +509,23 @@ function emitNode(node: PNode, ir: PageInteractions, js: ToJsOptions): string {
     const guarded = `{${node.whenExpr} && (\n${inner}\n)}`
     if (!repeat) return guarded
   }
-  if (!repeat || !refs) return el
-  const as = refs.item?.as ?? 'item'
+  if (!repeat) return el
+  const as = repeat.item?.as ?? 'item'
   const inner = el
     .split('\n')
     .map((l) => '  ' + l)
     .join('\n')
-  return `{${toJs(namesOf(repeat, ir), js)}.map((${as}) => (\n${inner}\n))}`
+  return `{${toJs(namesOf(repeat.expr, b), js)}.map((${as}) => (\n${inner}\n))}`
 }
 
-function emitElement(node: PNode, ir: PageInteractions, js: ToJsOptions, rep?: NodeRefs): string {
+function emitElement(node: PNode, b: Behaviour, js: ToJsOptions, rep?: Binding): string {
   // A copy emits as a call to its component, not as its own subtree.
   if (node.component) return emitComponentCall(node, node.component)
 
   const props: string[] = [anchorAttr(node.nodeId)]
   if (rep) {
     const as = rep.item?.as ?? 'item'
-    const keyExpr = rep.item?.key ? toJs(namesOf(rep.item.key, ir), js) : `${as}.id`
+    const keyExpr = rep.item?.key ? toJs(namesOf(rep.item.key, b), js) : `${as}.id`
     props.push(`key={${keyExpr}}`, instanceKeyAttr(keyExpr))
   }
 
@@ -537,13 +535,12 @@ function emitElement(node: PNode, ir: PageInteractions, js: ToJsOptions, rep?: N
   for (const [k, v] of Object.entries(baseStyleFor(node.role))) styleMap.set(k, JSON.stringify(v))
   if (node.style) for (const [k, v] of Object.entries(node.style)) styleMap.set(k, JSON.stringify(v))
 
-  const refs = refsOf(ir, node.nodeId)
-  const edited = editedCell(ir, node.nodeId)
+  const edited = editedCell(b, node.nodeId)
   let textChild: string | undefined
-  for (const [prop, from] of Object.entries(refs?.props ?? {})) {
+  for (const { prop, expr: from } of bindingsOn(b, node.nodeId)) {
     if (prop === REPEAT_PROP) continue
     if (prop === VALUE_PROP && edited) continue
-    const expr = toJs(namesOf(from, ir), js)
+    const expr = toJs(namesOf(from, b), js)
     if (prop === 'text' || prop === 'children') textChild = expr
     else if (STYLE_PROPS.has(prop)) styleMap.set(prop, expr)
     else props.push(`${prop}={${expr}}`)
@@ -554,21 +551,21 @@ function emitElement(node: PNode, ir: PageInteractions, js: ToJsOptions, rep?: N
   // routed through the same writer, so a field editing a store cell reports
   // outward instead of setting local state it doesn't own.
   if (edited) {
-    const inputType = inputTypeFor(ir, node.nodeId)
+    const inputType = inputTypeFor(b, node.nodeId)
     if (inputType) props.push(`type="${inputType}"`)
     props.push(`${VALUE_PROP}={${cellIdent(edited)}}`)
-    const write = writerFor(ir, { kind: 'cell', cell: edited.uid }, false).deliver(CHANGE_EVENT.read)
+    const write = writerFor(b, { kind: 'cell', cell: edited.id }, false).deliver(CHANGE_EVENT.read)
     props.push(`${CHANGE_EVENT.prop}={(e) => ${write}}`)
   }
 
   // Just the events the design authored. A box with an onClick stays exactly
   // that — no ARIA role, tab stop or keyboard activation added on top; those are
   // the designer's to author (or the receiving codebase's to add).
-  for (const it of ir.interactions) {
-    if (it.on.node !== node.nodeId) continue
-    const ev = EVENT_PROP[it.on.trigger.type]
+  for (const r of b.rules) {
+    if (r.node !== node.nodeId) continue
+    const ev = EVENT_PROP[r.on.type]
     if (!ev) continue
-    props.push(`${ev}={${handlerName(it.on.node, it.on.trigger.type)}}`)
+    props.push(`${ev}={${handlerName(r.node, r.on.type)}}`)
   }
 
   if (styleMap.size) {
@@ -580,7 +577,7 @@ function emitElement(node: PNode, ir: PageInteractions, js: ToJsOptions, rep?: N
   // design-time default); runtime view-switching lowers later.
   const slotDefault = node.slot ? node.slot.views[node.slot.activeView ?? ''] : undefined
   const childSource = slotDefault ? [slotDefault] : (node.children ?? [])
-  const childNodes = childSource.map((c) => emitNode(c, ir, js))
+  const childNodes = childSource.map((c) => emitNode(c, b, js))
 
   const tag = tagForRole(node.role)
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { PenpotDocument, PenpotPage } from 'penpot-exporter/types'
-import { emptyPageInteractions } from '../../../../src/lib/renderer/interactions/ir'
+import { EMPTY_BEHAVIOUR } from '../../../../src/lib/renderer/interactions/ir'
 import { nodesToPresentation } from '../../../../src/lib/renderer/interactions/document/nodes-to-presentation'
 import { emitReactComponent } from '../../../../src/lib/renderer/interactions/compile/emit-react'
 import type { LocalComponent } from '../../../../src/lib/common/component'
@@ -94,7 +94,7 @@ beforeEach(() => {
 
 function emit(): string {
   const root = nodesToPresentation('p', library)!
-  return emitReactComponent(emptyPageInteractions(), root, { componentName: 'Page' })
+  return emitReactComponent(EMPTY_BEHAVIOUR, root, { componentName: 'Page' })
 }
 
 describe('component codegen', () => {
@@ -149,7 +149,7 @@ describe('component codegen', () => {
     seedDocument(docOf(twoCopies))
 
     const root = nodesToPresentation('p', library)!
-    const source = emitReactComponent(emptyPageInteractions(), root)
+    const source = emitReactComponent(EMPTY_BEHAVIOUR, root)
 
     expect(source.match(/function Button\(/g)).toHaveLength(1)
     // Three call sites: the main plus both copies.
@@ -159,7 +159,7 @@ describe('component codegen', () => {
 
   it('falls back to inlining when the library is not supplied', () => {
     const root = nodesToPresentation('p')!
-    const source = emitReactComponent(emptyPageInteractions(), root)
+    const source = emitReactComponent(EMPTY_BEHAVIOUR, root)
 
     expect(source).not.toContain('function Button(')
     expect(source).toContain('data-node-id="copy-label"')

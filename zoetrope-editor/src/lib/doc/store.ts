@@ -7,6 +7,7 @@
  */
 import { computed, signal, type ReadonlySignal, type Signal } from '@preact/signals-core'
 import type { Kind, RecordOf } from './schema'
+import { KINDS } from './schema/kinds'
 import type { PageId } from './ids'
 
 export interface Table<R> {
@@ -15,17 +16,16 @@ export interface Table<R> {
   rev: Signal<number>
 }
 
-export interface Tables {
-  page: Table<RecordOf<'page'>>
-  node: Table<RecordOf<'node'>>
-}
+export type Tables = { [K in Kind]: Table<RecordOf<K>> }
 
 function table<R>(): Table<R> {
   return { rows: new Map(), rev: signal(0) }
 }
 
 export function createTables(): Tables {
-  return { page: table(), node: table() }
+  const t = {} as Record<Kind, Table<unknown>>
+  for (const k of KINDS) t[k] = table()
+  return t as Tables
 }
 
 /** The live document. */
