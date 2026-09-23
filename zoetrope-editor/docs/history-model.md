@@ -62,7 +62,8 @@ call site are untouched.
 ## Database
 
 The store is a blob store plus one index, not a query engine. See
-`state-architecture.md` for the in-memory side (valtio stays).
+`state-model.md` for the in-memory side (flat records in signals; valtio
+leaves the document store).
 
 - `objects(hash, bytes)`, `commits(id, parent, time, label, root)`,
   `commit_nodes(commit, node)` for per-shape history, `heads(name, commit)`.
@@ -70,5 +71,5 @@ The store is a blob store plus one index, not a query engine. See
 - Sync later is git push: objects and commits the other side lacks, with a
   revision check on the head for multiplayer.
 - Ruled out by this decision: CRDT stores (they own history), event-log
-  engines (there is no log), reactive query layers (valtio is the in-memory
-  model).
+  engines (there is no log), reactive query layers (the in-memory model is
+  signals over flat records, see `state-model.md`).

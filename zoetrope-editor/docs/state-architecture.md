@@ -19,7 +19,7 @@ Four complementary tools handle distinct concerns:
 
 ---
 
-## 1. Document layer — Valtio ✅ Done
+## 1. Document layer — Valtio ✅ Done (SUPERSEDED 2026-09-22 by `state-model.md`: flat records in signals, valtio leaves the document store; the rest of this section describes what is built today)
 
 ```
 docProxy (valtio/proxy)
