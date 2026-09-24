@@ -20,7 +20,7 @@ pub(crate) enum Kind {
     /// written in place by its spine's composes, filled from the node each halo continues.
     Root(Vec<DrawItem>),
     /// A leaf drawn into its rect at its resolution; a distance leaf's decode rides along for
-    /// its readers' records.
+    /// its readers' records — the bake's own, since it measures in the leaf's texels.
     Leaf { item: DrawItem, decode: f32 },
     /// A leaf the marker's own silhouette stands in for: analytic coverage of one shape, read
     /// only where the marker draws it. It has no rows of its own.
@@ -262,7 +262,7 @@ impl Work {
         match &node.op {
             Op::Draw(items) => {
                 let decode = match items.first().map(|it| it.style) {
-                    Some(DrawStyle::Distance { decode }) => decode * cx.res.k[i],
+                    Some(DrawStyle::Distance { decode }) => decode,
                     _ => 0.0,
                 };
                 let item = items.first().cloned().expect("a leaf draws an item");

@@ -544,6 +544,31 @@ mod tests {
         plan(&g, 632, 480, 8192, 4.0, &mut HashMap::new()).validate().unwrap_or_else(|e| panic!("{e}"));
     }
 
+    #[test]
+    fn a_lowered_distance_leaf_is_decoded_in_its_own_texels() {
+        let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let lens = Rect::new(100.0, 100.0, 500.0, 400.0);
+        let key = 0x61;
+        let g = FrameGraph::new(frame, Color::WHITE, vec![
+            GNode { op: Op::Draw(vec![body(1, frame)]), inputs: vec![], label: "ground".into() },
+            GNode { op: Op::Resample { target: 0.25, key }, inputs: vec![0], label: "down".into() },
+            GNode { op: Op::Draw(vec![DrawItem { shape: 2, style: DrawStyle::Distance { decode: 400.0 }, bounds: lens }]), inputs: vec![], label: "sdf".into() },
+            GNode { op: Op::Warp(vec![0.0; 24]), inputs: vec![1, 2], label: "warp".into() },
+            GNode { op: Op::Resample { target: 1.0, key }, inputs: vec![3], label: "up".into() },
+            GNode { op: Op::Draw(vec![cov(3, lens)]), inputs: vec![], label: "mask".into() },
+            GNode { op: Op::Compose { mode: ComposeMode::MaskedMix, colour: None, offset: [0.0; 2] }, inputs: vec![0, 4, 5], label: "glass".into() },
+        ]);
+        g.validate().unwrap_or_else(|e| panic!("{e}"));
+        let s = Resolved::of(&g, 640, 480, 8192, 4.0);
+        assert_eq!((s.res.k[2], s.res.k[3]), (0.25, 0.25), "the distance leaf is drawn at its reader's quarter");
+        let w = Work::of(&s);
+        let sc = Schedule::fit(&s, &w);
+        let ps = Params::bake(&s, &w, &sc);
+        let arm = &ps.arms[w.arm_of[3].expect("the warp rides an arm")];
+        let rec = arm.off as usize + 26 + 3 * bake::REC_STRIDE;
+        assert_eq!(ps.floats[rec + 7], 400.0, "the bake measures in the leaf's own texels, so its decode is the item's, not scaled by k again");
+    }
+
     /// The plan of `g` as it is: no expansion.
     fn plan_as_is(g: &FrameGraph) -> FramePlan {
         plan_of(g, 640, 480, 8192, 4.0, &mut HashMap::new())

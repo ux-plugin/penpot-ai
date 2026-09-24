@@ -197,8 +197,8 @@ pub const RESAMPLE_TRANSPARENT: f32 = 1.0;
 pub const RESAMPLE_KEEP: f32 = 2.0;
 
 /// `u` with its device-pixel quantities scaled to resolution `k`, by the field program the payload
-/// declares: a lens's box, bezel and device scale; a noise warp's reach, grain and anchor; a
-/// radial mask's centre and radius.
+/// declares: a lens's box, bezel, device scale and chromatic shift; a noise warp's reach, grain
+/// and anchor; a radial mask's centre and radius.
 #[must_use]
 pub fn payload_at(u: &[f32], k: f32) -> Vec<f32> {
     let mut out = u.to_vec();
@@ -211,7 +211,7 @@ pub fn payload_at(u: &[f32], k: f32) -> Vec<f32> {
     } else if program == PROGRAM_RADIAL {
         &[2, 3, 4]
     } else {
-        &[0, 1, 2, 3, 4, 5, 6, 8, 16]
+        &[0, 1, 2, 3, 4, 5, 6, 8, 16, 17]
     };
     for &s in slots {
         if let Some(v) = out.get_mut(s) {
@@ -347,6 +347,17 @@ mod tests {
     fn shade() -> UnitOp { UnitOp::Shade(Vec::new()) }
     fn maskmix() -> UnitOp { UnitOp::MaskMix(Vec::new()) }
     fn colour() -> UnitOp { UnitOp::Colour(Vec::new()) }
+
+    #[test]
+    fn a_lens_keeps_its_chromatic_shift_in_frame_pixels_at_any_resolution() {
+        let mut u = vec![0.0f32; 24];
+        u[16] = 3.0;
+        u[17] = 6.0;
+        for k in [0.5, 0.25, 0.125] {
+            let at = payload_at(&u, k);
+            assert_eq!((at[16], at[17]), (3.0 * k, 6.0 * k), "the shift is in texels at {k}, the same frame pixels as at 1");
+        }
+    }
 
     /// Sharp glass — the one fused arm `[Warp, Shade, MaskMix]` bakes to exactly the descriptor
     /// `wv_lens_fine_uniform`/`wv_fine_passes` emits today: bits 56.
